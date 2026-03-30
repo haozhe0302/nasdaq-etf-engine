@@ -26,21 +26,27 @@ nasdaq-etf-engine/
     │   │   └── System/             # Health, readiness, observability
     │   ├── Program.cs
     │   └── Dockerfile
-    └── hqqq-ui/                    # React + Vite frontend
+    └── hqqq-ui/                    # React + Vite terminal-style dashboard
         └── src/
+            ├── app/                # Router and application root
+            ├── components/         # Panel, StatCard, StatusBadge, Chart, etc.
+            ├── layout/             # AppShell, TopStatusBar, SidebarNav
+            ├── lib/                # Data types, data sourcing hooks
+            ├── pages/              # Market, Constituents, History, System
+            └── styles/             # Tailwind theme tokens
 ```
 
-See [docs/architecture.md](docs/architecture.md) for module responsibilities and
-dependency rules.
+See [docs/architecture.md](docs/architecture.md) for module responsibilities,
+frontend page structure, and dependency rules.
 
 ## Prerequisites
 
-| Tool           | Version  | Notes                        |
-|----------------|----------|------------------------------|
-| .NET SDK       | 8.0      | `dotnet --version`           |
+| Tool           | Version  | Notes                          |
+|----------------|----------|--------------------------------|
+| .NET SDK       | 8.0      | `dotnet --version`             |
 | Node.js        | 22 LTS   | Pinned in `src/hqqq-ui/.nvmrc` |
-| npm            | 10.x     | Ships with Node 22           |
-| Docker Desktop | Latest   | For local infrastructure     |
+| npm            | 10.x     | Ships with Node 22             |
+| Docker Desktop | Latest   | For local infrastructure       |
 
 ## Quick start
 
@@ -99,6 +105,18 @@ proxied to the backend automatically.
 | Prometheus     | http://localhost:9090         |
 | Grafana        | http://localhost:3000         |
 
+## Frontend pages
+
+| Route            | Page          | Purpose                                        |
+|------------------|---------------|-------------------------------------------------|
+| `/market`        | Market        | Live iNAV, market price, P/D, movers, freshness |
+| `/constituents`  | Constituents  | Holdings table, concentration, data quality      |
+| `/history`       | History       | Historical iNAV comparison, tracking error       |
+| `/system`        | System        | Service health, runtime metrics, pipeline status |
+
+`/` redirects to `/market`. The frontend uses a persistent shell with a top status
+bar (branding, UTC clock, system health) and a left sidebar for navigation.
+
 ## Environment variables
 
 See [`.env.example`](.env.example) for the full list. Copy it to `.env` and fill
@@ -123,3 +141,21 @@ Docker image tags are pinned in `docker-compose.yml` to keep local dev determini
 docker compose down        # stop containers, keep data
 docker compose down -v     # stop containers and remove volumes
 ```
+
+## Screenshots
+
+### Market — Real-time iNAV command center
+
+![Market page](images/hqqq-ui-market-demo.png)
+
+### Constituents — Holdings table and basket insights
+
+![Constituents page](images/hqqq-ui-constituents-demo.png)
+
+### History — Historical analytics and tracking error
+
+![History page](images/hqqq-ui-history-demo.png)
+
+### System — Service health and pipeline monitoring
+
+![System page](images/hqqq-ui-system-demo.png)

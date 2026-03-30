@@ -1,12 +1,8 @@
-import { useState, useEffect } from "react";
+import { useAppStatus } from "@/lib/hooks";
+import { StatusBadge } from "@/components/StatusBadge";
 
 export function TopStatusBar() {
-  const [now, setNow] = useState(new Date());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const s = useAppStatus();
 
   return (
     <header className="flex h-9 shrink-0 items-center justify-between border-b border-edge bg-surface px-4 text-xs">
@@ -16,21 +12,18 @@ export function TopStatusBar() {
         </span>
         <span className="text-muted">iNAV Engine</span>
         <span className="text-edge">│</span>
-        <span className="text-muted">101 symbols</span>
+        <span className="text-muted">{s.symbolCount} symbols</span>
         <span className="text-edge">│</span>
         <span className="font-mono text-muted">
-          {now.toISOString().slice(11, 19)} UTC
+          {s.lastUpdate.toISOString().slice(11, 19)} UTC
         </span>
       </div>
       <div className="flex items-center gap-4">
-        <span className="flex items-center gap-1.5 text-positive">
-          <span className="h-1.5 w-1.5 rounded-full bg-positive" />
-          Market Open
+        <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[11px] text-accent">
+          {s.mode.toUpperCase()}
         </span>
-        <span className="flex items-center gap-1.5 text-muted">
-          <span className="h-1.5 w-1.5 rounded-full bg-positive" />
-          API
-        </span>
+        <span className="text-muted">↻ {s.refreshMs / 1000}s</span>
+        <StatusBadge status={s.overallHealth} label="System" />
       </div>
     </header>
   );

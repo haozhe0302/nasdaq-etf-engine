@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #0a0e17;
+  --color-surface: #111827;
+  --color-overlay: #1a2233;
+  --color-edge: #1e293b;
+  --color-content: #e1e4e8;
+  --color-muted: #8b949e;
+  --color-accent: #3b82f6;
+  --color-positive: #22c55e;
+  --color-negative: #ef4444;
+
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-canvas text-content font-sans antialiased;
+  }
+}

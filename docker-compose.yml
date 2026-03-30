@@ -3,7 +3,7 @@ services:
   # PostgreSQL + TimescaleDB  (historical iNAV)
   # ──────────────────────────────────────────────
   db:
-    image: timescale/timescaledb:latest-pg15
+    image: timescale/timescaledb:2.17.2-pg16
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -22,7 +22,7 @@ services:
   # Redis  (latest prices & calculation cache)
   # ──────────────────────────────────────────────
   cache:
-    image: redis:alpine
+    image: redis:7.4.8-alpine
     ports:
       - "6379:6379"
     volumes:
@@ -36,11 +36,11 @@ services:
   # ──────────────────────────────────────────────
   # Kafka (KRaft mode, no Zookeeper)
   # Dual listeners:
-  #   INTERNAL  - containers on the compose network (kafka:29092)
-  #   EXTERNAL  - host / local development          (localhost:9092)
+  #   INTERNAL  — containers on the compose network (kafka:29092)
+  #   EXTERNAL  — host / local development          (localhost:9092)
   # ──────────────────────────────────────────────
   kafka:
-    image: apache/kafka:latest
+    image: apache/kafka:3.9.0
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -66,7 +66,7 @@ services:
   # Kafka UI  (dev-time topic/consumer inspection)
   # ──────────────────────────────────────────────
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui:v0.7.2
     ports:
       - "8080:8080"
     environment:
@@ -80,7 +80,7 @@ services:
   # Prometheus  (metrics scraping)
   # ──────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.1.0
     ports:
       - "9090:9090"
     volumes:
@@ -93,7 +93,7 @@ services:
   # Grafana  (dashboards & alerting)
   # ──────────────────────────────────────────────
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.4.0
     ports:
       - "3000:3000"
     environment:
@@ -106,9 +106,10 @@ services:
 
   # ──────────────────────────────────────────────
   # [OPTIONAL] hqqq-api in Docker
-  # Uncomment below when you need full containerized local testing.
-  # For daily development, run the API on the host with `dotnet watch run`
-  # to get native debugging and hot reload without container overhead.
+  # Uncomment when you need full containerized local testing.
+  # For daily development, run the API on the host with
+  #   dotnet watch run --project src/hqqq-api
+  # to get native debugging and hot reload.
   # ──────────────────────────────────────────────
   # api:
   #   build:

@@ -1,6 +1,6 @@
 @hqqq_api_HostAddress = http://localhost:5015
 
-GET {{hqqq_api_HostAddress}}/weatherforecast/
+GET {{hqqq_api_HostAddress}}/api/system/health
 Accept: application/json
 
 ###

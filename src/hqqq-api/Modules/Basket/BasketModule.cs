@@ -1,4 +1,5 @@
-using Hqqq.Api.Configuration;
+using Hqqq.Api.Modules.Basket.Contracts;
+using Hqqq.Api.Modules.Basket.Services;
 
 namespace Hqqq.Api.Modules.Basket;
 
@@ -6,8 +7,17 @@ public static class BasketModule
 {
     public static IServiceCollection AddBasketModule(this IServiceCollection services)
     {
-        // IBasketSnapshotProvider implementation will be registered here
-        // once the Invesco holdings fetcher is built in a later phase.
+        services.AddHttpClient<StockAnalysisAdapter>();
+        services.AddHttpClient<SchwabHoldingsAdapter>();
+        services.AddHttpClient<AlphaVantageAdapter>();
+        services.AddHttpClient<NasdaqHoldingsAdapter>();
+        services.AddSingleton<RawSourceCacheService>();
+        services.AddSingleton<BasketCacheService>();
+        services.AddSingleton<BasketSnapshotProvider>();
+        services.AddSingleton<IBasketSnapshotProvider>(sp =>
+            sp.GetRequiredService<BasketSnapshotProvider>());
+        services.AddHostedService<BasketRefreshService>();
+
         return services;
     }
 
@@ -15,12 +25,74 @@ public static class BasketModule
     {
         var group = app.MapGroup("/api/basket").WithTags("Basket");
 
-        group.MapGet("/constituents", () =>
+        group.MapGet("/current", (BasketSnapshotProvider provider) =>
         {
-            // Placeholder — will delegate to IBasketSnapshotProvider
-            return Results.Ok(new { message = "Basket constituents endpoint reserved" });
+            var state = provider.GetState();
+            if (state.Active is null)
+            {
+                return Results.Json(new
+                {
+                    status = "unavailable",
+                    error = state.LastError ?? "Basket not yet loaded",
+                    hasPending = state.Pending is not null,
+                    sourceFetchOutcomes = provider.GetLastFetchOutcomes(),
+                }, statusCode: 503);
+            }
+
+            return Results.Ok(new
+            {
+                active = new
+                {
+                    summary = BasketSummary.FromSnapshot(state.Active),
+                    constituents = state.Active.Constituents,
+                },
+                pending = state.Pending is not null ? new
+                {
+                    summary = BasketSummary.FromSnapshot(state.Pending),
+                    effectiveAtUtc = state.PendingEffectiveAtUtc,
+                } : null,
+                sourceFetchOutcomes = provider.GetLastFetchOutcomes(),
+            });
         })
-        .WithName("GetBasketConstituents")
+        .WithName("GetCurrentBasket")
+        .WithOpenApi();
+
+        group.MapPost("/refresh", async (BasketSnapshotProvider provider, CancellationToken ct) =>
+        {
+            var hadPendingBefore = provider.GetState().Pending is not null;
+
+            await provider.RefreshAsync(ct);
+
+            var after = provider.GetState();
+            var outcomes = provider.GetLastFetchOutcomes();
+            var newPending = !hadPendingBefore && after.Pending is not null;
+
+            if (after.Active is null && after.Pending is null)
+            {
+                return Results.Json(new
+                {
+                    status = "failed",
+                    error = after.LastError,
+                    sourceFetchOutcomes = outcomes,
+                    newPendingCreated = false,
+                }, statusCode: 503);
+            }
+
+            return Results.Ok(new
+            {
+                status = "refreshed",
+                newPendingCreated = newPending,
+                sourceFetchOutcomes = outcomes,
+                active = after.Active is not null
+                    ? BasketSummary.FromSnapshot(after.Active) : null,
+                pending = after.Pending is not null ? new
+                {
+                    summary = BasketSummary.FromSnapshot(after.Pending),
+                    effectiveAtUtc = after.PendingEffectiveAtUtc,
+                } : null,
+            });
+        })
+        .WithName("RefreshBasket")
         .WithOpenApi();
 
         return app;

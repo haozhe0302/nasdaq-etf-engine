@@ -8,4 +8,6 @@ public sealed record BasketSnapshot
     public required DateOnly AsOfDate { get; init; }
     public required IReadOnlyList<BasketConstituent> Constituents { get; init; }
     public required DateTimeOffset FetchedAtUtc { get; init; }
+    public required BasketSourceInfo Source { get; init; }
+    public BasketQualityReport? QualityReport { get; init; }
 }

@@ -19,6 +19,8 @@ public static class EnvironmentVariableMapper
         ("HQQQ_BASKET_HOLDINGS_URL",           "Basket:HoldingsSourceUrl"),
         ("HQQQ_BASKET_REFRESH_TIME",           "Basket:RefreshTimeLocal"),
         ("HQQQ_BASKET_CACHE_FILE",             "Basket:CacheFilePath"),
+        ("ALPHA_VANTAGE_API_KEY",              "Basket:AlphaVantageApiKey"),
+        ("ALPHA_VANTAGE_BASE_URL",             "Basket:AlphaVantageBaseUrl"),
 
         ("HQQQ_SCALE_STATE_FILE",              "Pricing:ScaleStateFilePath"),
         ("HQQQ_QUOTE_BROADCAST_INTERVAL_MS",   "Pricing:QuoteBroadcastIntervalMs"),

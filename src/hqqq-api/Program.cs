@@ -1,18 +1,45 @@
+using dotenv.net;
+using Hqqq.Api.Configuration;
+using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Basket;
 using Hqqq.Api.Modules.MarketData;
 using Hqqq.Api.Modules.Pricing;
 using Hqqq.Api.Modules.System;
 
+DotEnv.Load(options: new DotEnvOptions(probeForEnv: true, probeLevelsToSearch: 5));
+
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Configuration.AddFlatEnvironmentVariables();
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddSignalR();
+
+builder.Services.Configure<TiingoOptions>(
+    builder.Configuration.GetSection(TiingoOptions.SectionName));
+builder.Services.Configure<BasketOptions>(
+    builder.Configuration.GetSection(BasketOptions.SectionName));
+builder.Services.Configure<PricingOptions>(
+    builder.Configuration.GetSection(PricingOptions.SectionName));
+builder.Services.Configure<FeatureOptions>(
+    builder.Configuration.GetSection(FeatureOptions.SectionName));
 
 builder.Services
     .AddBasketModule()
     .AddMarketDataModule()
     .AddPricingModule()
     .AddSystemModule();
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+        policy
+            .WithOrigins("http://localhost:5173", "http://localhost:3000")
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials());
+});
 
 var app = builder.Build();
 
@@ -22,11 +49,14 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseCors();
 app.UseHttpsRedirection();
 
 app.MapBasketEndpoints();
 app.MapMarketDataEndpoints();
 app.MapPricingEndpoints();
 app.MapSystemEndpoints();
+
+app.MapHub<MarketHub>("/hubs/market");
 
 app.Run();

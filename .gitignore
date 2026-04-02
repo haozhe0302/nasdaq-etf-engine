@@ -73,6 +73,9 @@ nunit-*.xml
 # ── ASP.NET ──────────────────────────────────
 ScaffoldingReadMe.txt
 
+# ── Local data / state ──────────────────────
+data/
+
 # ── Temp files ───────────────────────────────
 ~$*
 *.tmp

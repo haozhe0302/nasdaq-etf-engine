@@ -37,6 +37,7 @@ interface BQuoteSnapshot {
     symbolsStale: number;
     freshPct: number;
     lastTickUtc: string | null;
+    avgTickIntervalMs: number | null;
   };
   feeds: {
     webSocketConnected: boolean;
@@ -93,6 +94,14 @@ interface BSystemHealth {
   status: string;
   checkedAtUtc: string;
   version: string;
+  runtime: {
+    uptimeSeconds: number;
+    memoryMb: number;
+    gcGen0: number;
+    gcGen1: number;
+    gcGen2: number;
+    threadCount: number;
+  };
   dependencies: {
     name: string;
     status: string;
@@ -136,7 +145,9 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     lastNavCalcMs: Math.max(0, Math.round(now - asOfMs)),
     lastTickMs: Math.max(0, Math.round(lastTickMs)),
     calcLatencyP99Ms: 0,
-    avgTickIntervalMs: 0,
+    avgTickIntervalMs: q.freshness.avgTickIntervalMs
+      ? Math.round(q.freshness.avgTickIntervalMs)
+      : 0,
     staleSymbols: q.freshness.symbolsStale,
     totalSymbols: q.freshness.symbolsTotal,
   };
@@ -234,15 +245,17 @@ export function adaptSystemHealth(raw: unknown): SystemSnapshot {
     })),
   ];
 
+  const rt = h.runtime;
+
   return {
     services,
     runtime: {
-      uptimeSeconds: 0,
-      memoryMb: 0,
+      uptimeSeconds: rt?.uptimeSeconds ?? 0,
+      memoryMb: rt?.memoryMb ?? 0,
       memoryMaxMb: 0,
       cpuPct: 0,
-      gcCollections: 0,
-      activeConnections: 0,
+      gcCollections: rt ? rt.gcGen0 + rt.gcGen1 + rt.gcGen2 : 0,
+      activeConnections: rt?.threadCount ?? 0,
       requestsPerSec: 0,
       avgResponseMs: 0,
       errorRatePct: 0,

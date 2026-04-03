@@ -4,10 +4,13 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { MetricRow } from "@/components/MetricRow";
 
 function fmtUptime(s: number): string {
+  if (s <= 0) return "—";
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return `${h}h ${m}m ${sec}s`;
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
 }
 
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
@@ -37,10 +40,6 @@ export function SystemPage() {
               <StatusBadge status={s.status} />
               <div className="mt-2 text-sm font-medium">{s.name}</div>
               <div className="mt-0.5 text-xs text-muted">{s.detail}</div>
-              <div className="mt-2 flex items-baseline gap-1 font-mono text-xs">
-                <span className="text-content">{s.latencyMs}ms</span>
-                <span className="text-muted">latency</span>
-              </div>
             </div>
           </Panel>
         ))}
@@ -51,59 +50,24 @@ export function SystemPage() {
           <div className="grid grid-cols-2 gap-x-8 p-3">
             <div className="space-y-0.5">
               <MetricRow label="Process uptime" value={fmtUptime(rt.uptimeSeconds)} />
-              <MetricRow label="Memory usage" value={`${rt.memoryMb} / ${rt.memoryMaxMb} MB`} />
-              <MetricRow label="CPU usage" value={`${rt.cpuPct}%`} />
-              <MetricRow label="GC collections (gen0)" value={String(rt.gcCollections)} />
+              <MetricRow label="Memory usage" value={rt.memoryMb > 0 ? `${rt.memoryMb} MB` : "—"} />
+              <MetricRow label="GC collections" value={rt.gcCollections > 0 ? String(rt.gcCollections) : "—"} />
             </div>
             <div className="space-y-0.5">
-              <MetricRow label="Active connections" value={String(rt.activeConnections)} />
-              <MetricRow label="Requests / sec" value={String(rt.requestsPerSec)} />
-              <MetricRow label="Avg response (p50)" value={`${rt.avgResponseMs}ms`} />
-              <MetricRow label="Error rate (5m)" value={<span className="text-positive">{rt.errorRatePct.toFixed(2)}%</span>} />
+              <MetricRow label="Threads" value={rt.activeConnections > 0 ? String(rt.activeConnections) : "—"} />
+              <MetricRow label="CPU usage" value={<span className="text-muted">N/A</span>} />
+              <MetricRow label="Requests / sec" value={<span className="text-muted">N/A</span>} />
             </div>
           </div>
         </Panel>
 
-        <Panel title="Recent Events">
-          <div className="space-y-2 p-3 text-xs">
-            {d.events.map((e, i) => (
-              <div key={i} className="flex gap-2">
-                <span className="shrink-0 font-mono text-muted">{e.time}</span>
-                <span className={e.level === "success" ? "text-positive" : ""}>{e.message}</span>
-              </div>
-            ))}
+        <Panel title="Notes">
+          <div className="space-y-2 p-3 text-xs text-muted">
+            <p>CPU, request throughput, error rates, and pipeline metrics require instrumentation middleware (post-MVP).</p>
+            <p>Planned: Kafka + Redis + TimescaleDB will provide pipeline throughput, lag, and event streams.</p>
           </div>
         </Panel>
       </div>
-
-      <Panel title="Pipeline Status">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-edge text-[11px] text-muted">
-                <th className="px-3 py-2 font-medium">Pipeline</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium text-right">Throughput</th>
-                <th className="px-3 py-2 font-medium text-right">Lag</th>
-                <th className="px-3 py-2 font-medium text-right">Last Processed</th>
-                <th className="px-3 py-2 font-medium text-right">Errors (1h)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.pipelines.map((p) => (
-                <tr key={p.name} className="border-b border-edge/30 last:border-0">
-                  <td className="px-3 py-1.5 font-medium">{p.name}</td>
-                  <td className="px-3 py-1.5"><StatusBadge status={p.status} /></td>
-                  <td className="px-3 py-1.5 text-right font-mono">{p.throughputPerSec}/s</td>
-                  <td className="px-3 py-1.5 text-right font-mono">{p.lagMs}ms</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-muted">{p.lastProcessedAgo}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-positive">{p.errorsLastHour}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
     </div>
   );
 }

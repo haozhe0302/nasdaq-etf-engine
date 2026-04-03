@@ -87,6 +87,8 @@ export function MarketPage() {
       axisLabel: {
         color: AX.text,
         fontSize: 10,
+        showMinLabel: true,
+        showMaxLabel: true,
         formatter: (value: number) => formatEtTime(value),
       },
       axisLine: { lineStyle: { color: AX.grid } },

@@ -82,9 +82,77 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     useState<ConnectionState>("connecting");
   const [error, setError] = useState<string>();
   const hubRef = useRef<HubConnection | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+
+    const onQuoteUpdate = (raw: unknown) => {
+      if (cancelled) return;
+      try {
+        setData(adaptQuote(raw));
+        recordUpdate("market");
+        setConnectionState("live");
+        setError(undefined);
+      } catch (e) {
+        console.error("Failed to process QuoteUpdate", e);
+      }
+    };
+
+    const stopRetryTimer = () => {
+      if (retryTimerRef.current) {
+        clearInterval(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+
+    const setupHub = (hub: HubConnection) => {
+      hub.on("QuoteUpdate", onQuoteUpdate);
+
+      hub.onreconnecting(() => {
+        if (!cancelled) {
+          setConnectionState("stale");
+          setError("Reconnecting to market feed\u2026");
+        }
+      });
+
+      hub.onreconnected(() => {
+        if (!cancelled) {
+          fetchQuote()
+            .then((raw) => { if (!cancelled) onQuoteUpdate(raw); })
+            .catch(() => {});
+          setConnectionState("live");
+          setError(undefined);
+        }
+      });
+
+      hub.onclose(() => {
+        if (cancelled) return;
+        setConnectionState("error");
+        setError("Market feed disconnected — retrying\u2026");
+        startRetryLoop();
+      });
+    };
+
+    const startRetryLoop = () => {
+      stopRetryTimer();
+      retryTimerRef.current = setInterval(async () => {
+        if (cancelled) { stopRetryTimer(); return; }
+        try {
+          const raw = await fetchQuote();
+          if (cancelled) return;
+          onQuoteUpdate(raw);
+
+          stopRetryTimer();
+          const newHub = createMarketHubConnection();
+          hubRef.current = newHub;
+          setupHub(newHub);
+          await newHub.start();
+        } catch {
+          // backend still down, keep retrying
+        }
+      }, 5_000);
+    };
 
     fetchQuote()
       .then((raw) => {
@@ -98,43 +166,12 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
         if (cancelled) return;
         setConnectionState("error");
         setError(err.message);
+        startRetryLoop();
       });
 
     const hub = createMarketHubConnection();
     hubRef.current = hub;
-
-    hub.on("QuoteUpdate", (raw: unknown) => {
-      if (cancelled) return;
-      try {
-        setData(adaptQuote(raw));
-        recordUpdate("market");
-        setConnectionState("live");
-        setError(undefined);
-      } catch (e) {
-        console.error("Failed to process QuoteUpdate", e);
-      }
-    });
-
-    hub.onreconnecting(() => {
-      if (!cancelled) {
-        setConnectionState("stale");
-        setError("Reconnecting to market feed\u2026");
-      }
-    });
-
-    hub.onreconnected(() => {
-      if (!cancelled) {
-        setConnectionState("live");
-        setError(undefined);
-      }
-    });
-
-    hub.onclose((err) => {
-      if (!cancelled) {
-        setConnectionState("error");
-        setError(err?.message ?? "Market feed disconnected");
-      }
-    });
+    setupHub(hub);
 
     hub.start().catch((err) => {
       if (!cancelled) {
@@ -145,6 +182,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
 
     return () => {
       cancelled = true;
+      stopRetryTimer();
       unregisterFeed("market");
       if (hubRef.current?.state !== HubConnectionState.Disconnected) {
         hubRef.current?.stop();

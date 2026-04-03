@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace Hqqq.Api.Modules.System.Contracts;
 
 /// <summary>
@@ -19,4 +21,30 @@ public sealed record SystemHealth
 
     /// <summary>Health of individual downstream dependencies.</summary>
     public required IReadOnlyList<DependencyHealth> Dependencies { get; init; }
+
+    public required RuntimeInfo Runtime { get; init; }
+}
+
+public sealed record RuntimeInfo
+{
+    public required long UptimeSeconds { get; init; }
+    public required long MemoryMb { get; init; }
+    public required int GcGen0 { get; init; }
+    public required int GcGen1 { get; init; }
+    public required int GcGen2 { get; init; }
+    public required int ThreadCount { get; init; }
+
+    public static RuntimeInfo Capture()
+    {
+        var proc = Process.GetCurrentProcess();
+        return new RuntimeInfo
+        {
+            UptimeSeconds = (long)(DateTimeOffset.UtcNow - proc.StartTime.ToUniversalTime()).TotalSeconds,
+            MemoryMb = proc.WorkingSet64 / (1024 * 1024),
+            GcGen0 = GC.CollectionCount(0),
+            GcGen1 = GC.CollectionCount(1),
+            GcGen2 = GC.CollectionCount(2),
+            ThreadCount = proc.Threads.Count,
+        };
+    }
 }

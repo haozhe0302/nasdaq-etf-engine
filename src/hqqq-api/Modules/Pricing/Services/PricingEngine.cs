@@ -537,6 +537,7 @@ public sealed class PricingEngine
             FreshPct = health.SymbolsTracked > 0
                 ? Math.Round((decimal)fresh / health.SymbolsTracked * 100m, 1) : 0m,
             LastTickUtc = health.LastUpstreamActivityUtc,
+            AvgTickIntervalMs = health.AverageTickIntervalMs,
         };
     }
 

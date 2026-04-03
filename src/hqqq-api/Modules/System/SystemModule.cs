@@ -39,6 +39,7 @@ public static class SystemModule
                 CheckedAtUtc = DateTimeOffset.UtcNow,
                 Version = typeof(SystemModule).Assembly
                     .GetName().Version?.ToString() ?? "0.0.0",
+                Runtime = RuntimeInfo.Capture(),
                 Dependencies =
                 [
                     new DependencyHealth

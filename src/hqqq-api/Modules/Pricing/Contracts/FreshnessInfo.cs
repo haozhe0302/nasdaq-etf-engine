@@ -10,4 +10,5 @@ public sealed record FreshnessInfo
     public required int SymbolsStale { get; init; }
     public required decimal FreshPct { get; init; }
     public DateTimeOffset? LastTickUtc { get; init; }
+    public double? AvgTickIntervalMs { get; init; }
 }

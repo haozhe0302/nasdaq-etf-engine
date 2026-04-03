@@ -258,3 +258,29 @@ export function useAppStatus(): AppStatus {
 
   return status;
 }
+
+export function useEstClock(): string {
+  const fmt = () => {
+    const p = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    const g = (t: string) => p.find((x) => x.type === t)!.value;
+    return `${g("year")}/${g("month")}/${g("day")} ${g("hour")}:${g("minute")}:${g("second")}`;
+  };
+
+  const [clock, setClock] = useState(fmt);
+
+  useEffect(() => {
+    const id = setInterval(() => setClock(fmt()), 1_000);
+    return () => clearInterval(id);
+  }, []);
+
+  return clock;
+}

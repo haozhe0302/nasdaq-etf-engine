@@ -1,8 +1,9 @@
-import { useAppStatus } from "@/lib/hooks";
+import { useAppStatus, useEstClock } from "@/lib/hooks";
 import { StatusBadge } from "@/components/StatusBadge";
 
 export function TopStatusBar() {
   const s = useAppStatus();
+  const estTime = useEstClock();
 
   return (
     <header className="flex h-9 shrink-0 items-center justify-between border-b border-edge bg-surface px-4 text-xs">
@@ -15,7 +16,7 @@ export function TopStatusBar() {
         <span className="text-muted">{s.symbolCount} symbols</span>
         <span className="text-edge">│</span>
         <span className="font-mono text-muted">
-          {s.lastUpdate.toISOString().slice(11, 19)} UTC
+          {estTime} ET
         </span>
       </div>
       <div className="flex items-center gap-4">

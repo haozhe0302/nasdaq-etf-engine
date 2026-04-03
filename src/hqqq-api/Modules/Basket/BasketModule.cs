@@ -43,11 +43,13 @@ public static class BasketModule
             {
                 active = new
                 {
+                    fingerprint = state.ActiveFingerprint,
                     summary = BasketSummary.FromSnapshot(state.Active),
                     constituents = state.Active.Constituents,
                 },
                 pending = state.Pending is not null ? new
                 {
+                    fingerprint = state.PendingFingerprint,
                     summary = BasketSummary.FromSnapshot(state.Pending),
                     effectiveAtUtc = state.PendingEffectiveAtUtc,
                 } : null,
@@ -59,13 +61,15 @@ public static class BasketModule
 
         group.MapPost("/refresh", async (BasketSnapshotProvider provider, CancellationToken ct) =>
         {
-            var hadPendingBefore = provider.GetState().Pending is not null;
+            var before = provider.GetState();
 
             await provider.RefreshAsync(ct);
 
             var after = provider.GetState();
             var outcomes = provider.GetLastFetchOutcomes();
-            var newPending = !hadPendingBefore && after.Pending is not null;
+            var newPending = before.Pending is null && after.Pending is not null;
+            var fingerprintUnchanged = after.ActiveFingerprint == before.ActiveFingerprint
+                && after.PendingFingerprint == before.PendingFingerprint;
 
             if (after.Active is null && after.Pending is null)
             {
@@ -75,6 +79,7 @@ public static class BasketModule
                     error = after.LastError,
                     sourceFetchOutcomes = outcomes,
                     newPendingCreated = false,
+                    fingerprintUnchanged = true,
                 }, statusCode: 503);
             }
 
@@ -82,11 +87,16 @@ public static class BasketModule
             {
                 status = "refreshed",
                 newPendingCreated = newPending,
+                fingerprintUnchanged,
                 sourceFetchOutcomes = outcomes,
-                active = after.Active is not null
-                    ? BasketSummary.FromSnapshot(after.Active) : null,
+                active = after.Active is not null ? new
+                {
+                    fingerprint = after.ActiveFingerprint,
+                    summary = BasketSummary.FromSnapshot(after.Active),
+                } : null,
                 pending = after.Pending is not null ? new
                 {
+                    fingerprint = after.PendingFingerprint,
                     summary = BasketSummary.FromSnapshot(after.Pending),
                     effectiveAtUtc = after.PendingEffectiveAtUtc,
                 } : null,

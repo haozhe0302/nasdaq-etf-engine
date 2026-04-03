@@ -8,23 +8,25 @@ using Microsoft.Extensions.Options;
 namespace Hqqq.Api.Modules.Basket.Services;
 
 /// <summary>
-/// Fetches Nasdaq-100 index constituents from the official Nasdaq API.
+/// Fetches Nasdaq-100 index constituents from the Nasdaq.com public API.
 ///
-/// Source selection rationale:
-///   The preferred source would be the Invesco QQQ holdings CSV download at
-///   invesco.com, but that endpoint serves an SPA HTML page requiring JavaScript
-///   execution and cannot be consumed with a simple HTTP GET (confirmed Apr 2026).
-///   Browser-automation tools (Puppeteer, Playwright, Selenium) are out of scope.
+/// Role in the basket pipeline:
+///   This source provides the Nasdaq-100 constituent universe (symbols and
+///   company names). It is used for two purposes:
+///     1. Universe guardrail — Alpha Vantage tail rows are filtered against
+///        the Nasdaq constituent set to discard non-index entries.
+///     2. Last-resort proxy fallback — when Alpha Vantage is unavailable,
+///        Nasdaq data provides constituent membership with market-cap-based
+///        proxy weight inputs.
 ///
-///   The Nasdaq.com public API at /api/quote/list-type/nasdaq100 returns a
-///   structured JSON response with all current Nasdaq-100 constituents, company
-///   names, and market-cap figures. Because QQQ tracks the Nasdaq-100 Index,
-///   this is the closest official machine-readable source that is programmatically
-///   accessible without authentication or browser automation.
-///
-///   Weights are computed from market-cap proportions, which is the correct
-///   methodology for a modified market-cap-weighted index. Shares held in the
-///   ETF basket are not available from this endpoint and are set to zero.
+/// Weight methodology caveat:
+///   The weights computed here are simple raw-market-cap proportions:
+///     weight_i = marketCap_i / sum(all marketCaps)
+///   This is NOT an exact replication of the Nasdaq-100 modified market-cap
+///   weighting methodology, which applies periodic rebalancing, share
+///   adjustment factors, and capping rules. These proxy weights are
+///   suitable only as rough inputs for tail-weight redistribution when
+///   no better source is available, and must be marked as proxy-derived.
 /// </summary>
 public sealed class NasdaqHoldingsAdapter
 {
@@ -42,7 +44,13 @@ public sealed class NasdaqHoldingsAdapter
         _options = options.Value;
     }
 
-    public async Task<IReadOnlyList<BasketConstituent>> FetchAsync(CancellationToken ct = default)
+    public sealed record NasdaqFetchResult
+    {
+        public required List<BasketConstituent> Constituents { get; init; }
+        public required DateOnly AsOfDate { get; init; }
+    }
+
+    public async Task<NasdaqFetchResult> FetchAsync(CancellationToken ct = default)
     {
         var url = _options.HoldingsSourceUrl;
         _logger.LogInformation("Fetching Nasdaq-100 constituents from {Url}", url);
@@ -64,7 +72,7 @@ public sealed class NasdaqHoldingsAdapter
 
         var totalMarketCap = rows.Sum(r => ParseMarketCap(r.MarketCap));
         if (totalMarketCap <= 0)
-            throw new InvalidOperationException("Total market cap is zero; cannot compute weights");
+            throw new InvalidOperationException("Total market cap is zero; cannot compute proxy weights");
 
         var constituents = rows
             .Where(r => !string.IsNullOrWhiteSpace(r.Symbol))
@@ -81,6 +89,9 @@ public sealed class NasdaqHoldingsAdapter
                     Weight = totalMarketCap > 0 ? Math.Round(mktCap / totalMarketCap, 8) : null,
                     Sector = string.IsNullOrWhiteSpace(r.Sector) ? "Unknown" : r.Sector.Trim(),
                     AsOfDate = asOfDate,
+                    WeightSource = "nasdaq-proxy",
+                    SharesSource = "unavailable",
+                    NameSource = "nasdaq",
                 };
             })
             .ToList();
@@ -88,7 +99,7 @@ public sealed class NasdaqHoldingsAdapter
         _logger.LogInformation(
             "Parsed {Count} constituents as of {AsOf}", constituents.Count, asOfDate);
 
-        return constituents;
+        return new NasdaqFetchResult { Constituents = constituents, AsOfDate = asOfDate };
     }
 
     private static DateOnly ParseAsOfDate(string? dateStr)
@@ -108,17 +119,14 @@ public sealed class NasdaqHoldingsAdapter
 
     private static decimal ParseMarketCap(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw))
-            return 0m;
-
+        if (string.IsNullOrWhiteSpace(raw)) return 0m;
         var cleaned = raw.Replace(",", "");
         return decimal.TryParse(cleaned, CultureInfo.InvariantCulture, out var v) ? v : 0m;
     }
 
     private static string CleanCompanyName(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw))
-            return "Unknown";
+        if (string.IsNullOrWhiteSpace(raw)) return "Unknown";
 
         ReadOnlySpan<string> suffixes =
         [
@@ -137,58 +145,40 @@ public sealed class NasdaqHoldingsAdapter
                 break;
             }
         }
-
         return name;
     }
 
-    #region Nasdaq API DTOs (internal)
+    #region Nasdaq API DTOs
 
     internal sealed record NasdaqApiResponse
     {
-        [JsonPropertyName("data")]
-        public NasdaqDataEnvelope? Data { get; init; }
-
-        [JsonPropertyName("status")]
-        public NasdaqStatusBlock? Status { get; init; }
+        [JsonPropertyName("data")]  public NasdaqDataEnvelope? Data { get; init; }
+        [JsonPropertyName("status")] public NasdaqStatusBlock? Status { get; init; }
     }
 
     internal sealed record NasdaqDataEnvelope
     {
-        [JsonPropertyName("totalrecords")]
-        public int TotalRecords { get; init; }
-
-        [JsonPropertyName("date")]
-        public string? Date { get; init; }
-
-        [JsonPropertyName("data")]
-        public NasdaqDataInner? Inner { get; init; }
+        [JsonPropertyName("totalrecords")] public int TotalRecords { get; init; }
+        [JsonPropertyName("date")]         public string? Date { get; init; }
+        [JsonPropertyName("data")]         public NasdaqDataInner? Inner { get; init; }
     }
 
     internal sealed record NasdaqDataInner
     {
-        [JsonPropertyName("rows")]
-        public List<NasdaqRow>? Rows { get; init; }
+        [JsonPropertyName("rows")] public List<NasdaqRow>? Rows { get; init; }
     }
 
     internal sealed record NasdaqRow
     {
-        [JsonPropertyName("symbol")]
-        public string Symbol { get; init; } = "";
-
-        [JsonPropertyName("companyName")]
-        public string CompanyName { get; init; } = "";
-
-        [JsonPropertyName("marketCap")]
-        public string MarketCap { get; init; } = "";
-
-        [JsonPropertyName("sector")]
-        public string Sector { get; init; } = "";
+        [JsonPropertyName("symbol")]      public string Symbol { get; init; } = "";
+        [JsonPropertyName("companyName")] public string CompanyName { get; init; } = "";
+        [JsonPropertyName("marketCap")]   public string MarketCap { get; init; } = "";
+        [JsonPropertyName("sector")]      public string Sector { get; init; } = "";
     }
 
     internal sealed record NasdaqStatusBlock
     {
-        [JsonPropertyName("rCode")]
-        public int RCode { get; init; }
+        [JsonPropertyName("rCode")] public int RCode { get; init; }
     }
 
     #endregion

@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Hqqq.Api.Modules.Basket.Contracts;
 
 namespace Hqqq.Api.Modules.Basket.Services;
@@ -9,7 +11,7 @@ namespace Hqqq.Api.Modules.Basket.Services;
 ///   Step A — Lock the anchor block (Stock Analysis top-25 or Schwab top-20).
 ///   Step B — Compute residual tail target: 1.0 - sum(anchor weights).
 ///   Step C — Choose tail source (Alpha Vantage filtered, or Nasdaq proxy).
-///   Step D — Remove dirty rows and symbols already in the anchor.
+///   Step D — Remove dirty rows, anchor-overlap, and universe mismatches.
 ///   Step E — Normalize the tail proportionally to equal the tail target.
 ///   Step F — Concatenate anchor + normalized tail.
 ///   Step G — Validate: symbol uniqueness, weight sum, no empty symbols.
@@ -32,9 +34,17 @@ public static class MergedBasketBuilder
     public sealed record MergeResult(
         IReadOnlyList<BasketConstituent> Constituents,
         BasketQualityReport QualityReport,
-        DateOnly AsOfDate);
+        DateOnly AsOfDate,
+        string Fingerprint);
 
-    public static MergeResult Build(AnchorBlock anchor, TailBlock tail)
+    /// <param name="universeSymbols">
+    /// If provided, tail entries not in this set (and not in the anchor) are dropped.
+    /// Pass the Nasdaq constituent symbols when available as a universe guardrail.
+    /// </param>
+    public static MergeResult Build(
+        AnchorBlock anchor,
+        TailBlock tail,
+        HashSet<string>? universeSymbols = null)
     {
         var anchorSymbols = new HashSet<string>(
             anchor.Constituents.Select(c => c.Symbol), StringComparer.OrdinalIgnoreCase);
@@ -42,15 +52,26 @@ public static class MergedBasketBuilder
         var anchorTotalWeight = anchor.Constituents.Sum(c => c.Weight ?? 0m);
         var tailTargetWeight = Math.Max(0m, 1m - anchorTotalWeight);
 
-        var cleanTail = tail.Entries
+        var afterDirtyFilter = tail.Entries
             .Where(e => !string.IsNullOrWhiteSpace(e.Symbol))
             .Where(e => !anchorSymbols.Contains(e.Symbol))
             .GroupBy(e => e.Symbol, StringComparer.OrdinalIgnoreCase)
             .Select(g => g.First())
             .ToList();
 
-        var dirtyDropped = tail.Entries.Count - cleanTail.Count -
-            tail.Entries.Count(e => anchorSymbols.Contains(e.Symbol));
+        var dirtyDropped = tail.Entries.Count
+            - afterDirtyFilter.Count
+            - tail.Entries.Count(e => anchorSymbols.Contains(e.Symbol));
+
+        int universeDropped = 0;
+        var cleanTail = afterDirtyFilter;
+        if (universeSymbols is { Count: > 0 })
+        {
+            cleanTail = afterDirtyFilter
+                .Where(e => universeSymbols.Contains(e.Symbol))
+                .ToList();
+            universeDropped = afterDirtyFilter.Count - cleanTail.Count;
+        }
 
         var tailRawTotal = cleanTail.Sum(e => e.RawWeight);
 
@@ -83,27 +104,45 @@ public static class MergedBasketBuilder
         merged.AddRange(normalizedTail);
 
         var totalWeight = merged.Sum(c => c.Weight ?? 0m);
-        var officialWeightCount = anchor.Constituents.Count;
         var officialSharesCount = anchor.Constituents.Count(c => c.SharesHeld > 0);
+        var officialSharesByWeight = anchor.Constituents
+            .Where(c => c.SharesHeld > 0)
+            .Sum(c => c.Weight ?? 0m);
 
         var report = new BasketQualityReport
         {
             OfficialWeightCoveragePct = Math.Round(anchorTotalWeight * 100m, 2),
-            OfficialSharesCoveragePct = merged.Count > 0
-                ? Math.Round(officialSharesCount / (decimal)merged.Count * 100m, 2) : 0m,
+            OfficialSharesByWeightPct = Math.Round(officialSharesByWeight * 100m, 2),
+            OfficialSharesCount = officialSharesCount,
             ProxyTailCoveragePct = Math.Round(tailTargetWeight * 100m, 2),
             FilteredRowCount = tail.Entries.Count,
             DroppedDirtySymbolCount = Math.Max(0, dirtyDropped),
+            UniverseDroppedCount = universeDropped,
             TotalSymbolCount = merged.Count,
             IsDegraded = tail.IsProxy,
             TotalWeightPct = Math.Round(totalWeight * 100m, 2),
-            BasketMode = tail.IsProxy ? "degraded" : "hybrid",
+            BasketMode = tail.IsProxy ? "degraded" : (normalizedTail.Count > 0 ? "hybrid" : "anchor-only"),
             AnchorSource = anchor.SourceName,
             TailSource = tail.SourceName,
             AnchorCount = anchor.Constituents.Count,
             TailCount = normalizedTail.Count,
         };
 
-        return new MergeResult(merged, report, anchor.AsOfDate);
+        var fingerprint = ComputeFingerprint(merged, anchor.AsOfDate);
+
+        return new MergeResult(merged, report, anchor.AsOfDate, fingerprint);
+    }
+
+    public static string ComputeFingerprint(
+        IReadOnlyList<BasketConstituent> constituents, DateOnly asOfDate)
+    {
+        var sb = new StringBuilder();
+        sb.Append(asOfDate.ToString("yyyy-MM-dd"));
+        foreach (var c in constituents.OrderBy(c => c.Symbol, StringComparer.OrdinalIgnoreCase))
+        {
+            sb.Append('|').Append(c.Symbol).Append(':').Append($"{c.Weight ?? 0m:F8}");
+        }
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(sb.ToString()));
+        return Convert.ToHexString(hash)[..16];
     }
 }

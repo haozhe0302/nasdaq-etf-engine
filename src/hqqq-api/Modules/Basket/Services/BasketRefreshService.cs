@@ -1,19 +1,22 @@
 using Hqqq.Api.Configuration;
-using Hqqq.Api.Modules.Basket.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace Hqqq.Api.Modules.Basket.Services;
 
 /// <summary>
-/// Background service that:
-///   1. Refreshes the basket immediately on startup.
-///   2. Refreshes daily at the configured local market time (default 08:00 ET).
-///   3. Promotes pending baskets to active at market open (09:30 ET).
+/// Background service with three distinct scheduled events:
+///   08:00 ET — Fetch raw sources (save to per-source caches).
+///   08:30 ET — Merge cached sources into a candidate basket (becomes pending).
+///   09:30 ET — Activate pending basket (promotion only, no fetch/merge).
+///
+/// On startup: full refresh (fetch + merge) immediately.
+/// Market-open wakeup is for activation ONLY — it does not trigger a new fetch.
 /// </summary>
 public sealed class BasketRefreshService : BackgroundService
 {
-    private readonly IBasketSnapshotProvider _provider;
-    private readonly TimeOnly _refreshTime;
+    private readonly BasketSnapshotProvider _provider;
+    private readonly TimeOnly _fetchTime;
+    private readonly TimeOnly _mergeTime;
     private readonly TimeZoneInfo _tz;
     private readonly MarketHoursHelper _market;
     private readonly ILogger<BasketRefreshService> _logger;
@@ -21,7 +24,7 @@ public sealed class BasketRefreshService : BackgroundService
     private static readonly TimeOnly MarketOpen = new(9, 30);
 
     public BasketRefreshService(
-        IBasketSnapshotProvider provider,
+        BasketSnapshotProvider provider,
         IOptions<BasketOptions> basketOpts,
         IOptions<PricingOptions> pricingOpts,
         ILogger<BasketRefreshService> logger)
@@ -29,9 +32,9 @@ public sealed class BasketRefreshService : BackgroundService
         _provider = provider;
         _logger = logger;
 
-        _refreshTime = TimeOnly.TryParse(basketOpts.Value.RefreshTimeLocal, out var t)
-            ? t
-            : new TimeOnly(8, 0);
+        _fetchTime = TimeOnly.TryParse(basketOpts.Value.RefreshTimeLocal, out var t)
+            ? t : new TimeOnly(8, 0);
+        _mergeTime = new TimeOnly(_fetchTime.Hour, 30);
 
         _tz = TimeZoneInfo.FindSystemTimeZoneById(pricingOpts.Value.MarketTimeZone);
         _market = new MarketHoursHelper(_tz);
@@ -39,70 +42,82 @@ public sealed class BasketRefreshService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("BasketRefreshService starting — initial refresh");
-        await SafeRefreshAsync(stoppingToken);
+        _logger.LogInformation("BasketRefreshService starting — initial full refresh");
+        await SafeAsync(() => _provider.RefreshAsync(stoppingToken));
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var delay = ComputeNextWakeup();
-            _logger.LogInformation("Basket service sleeping for {Delay}", delay);
+            var (delay, evt) = ComputeNextEvent();
+            _logger.LogInformation("Basket scheduler: next event={Event} in {Delay}", evt, delay);
 
             try { await Task.Delay(delay, stoppingToken); }
             catch (OperationCanceledException) { break; }
 
-            TryActivatePending();
-            await SafeRefreshAsync(stoppingToken);
+            switch (evt)
+            {
+                case ScheduleEvent.Fetch:
+                    _logger.LogInformation("Scheduled raw-source fetch");
+                    await SafeAsync(() => _provider.FetchRawSourcesAsync(stoppingToken));
+                    break;
+
+                case ScheduleEvent.Merge:
+                    _logger.LogInformation("Scheduled merge from cached sources");
+                    await SafeAsync(() => _provider.MergeAndApplyAsync(stoppingToken));
+                    break;
+
+                case ScheduleEvent.Activate:
+                    if (_provider.GetState().Pending is not null && _market.IsMarketOpen())
+                    {
+                        _logger.LogInformation("Market open — activating pending basket");
+                        _provider.ActivatePendingIfReady();
+                    }
+                    break;
+            }
         }
     }
 
-    private void TryActivatePending()
+    private async Task SafeAsync(Func<Task> action)
     {
-        var state = _provider.GetState();
-        if (state.Pending is not null && _market.IsMarketOpen())
-        {
-            _logger.LogInformation("Market open — activating pending basket");
-            _provider.ActivatePendingIfReady();
-        }
+        try { await action(); }
+        catch (Exception ex) { _logger.LogError(ex, "Basket scheduled action failed"); }
     }
 
-    private async Task SafeRefreshAsync(CancellationToken ct)
-    {
-        try { await _provider.RefreshAsync(ct); }
-        catch (Exception ex) { _logger.LogError(ex, "Scheduled basket refresh failed"); }
-    }
+    private enum ScheduleEvent { Fetch, Merge, Activate }
 
-    /// <summary>
-    /// Wakes at whichever comes first: the daily refresh time or market open
-    /// (if there is a pending basket).
-    /// </summary>
-    private TimeSpan ComputeNextWakeup()
+    private (TimeSpan Delay, ScheduleEvent Event) ComputeNextEvent()
     {
         var nowUtc = DateTimeOffset.UtcNow;
         var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, _tz);
         var today = nowLocal.Date;
 
-        var refreshCandidate = today + _refreshTime.ToTimeSpan();
-        if (nowLocal.DateTime >= refreshCandidate)
-            refreshCandidate = refreshCandidate.AddDays(1);
+        var candidates = new List<(DateTime Local, ScheduleEvent Event)>
+        {
+            (today + _fetchTime.ToTimeSpan(), ScheduleEvent.Fetch),
+            (today + _mergeTime.ToTimeSpan(), ScheduleEvent.Merge),
+        };
 
-        var nextRefreshUtc = ToUtc(refreshCandidate);
-
-        var state = _provider.GetState();
-        if (state.Pending is not null)
+        if (_provider.GetState().Pending is not null)
         {
             var openCandidate = today + MarketOpen.ToTimeSpan();
-            if (nowLocal.DateTime >= openCandidate)
-                openCandidate = openCandidate.AddDays(1);
-            while (openCandidate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
-                openCandidate = openCandidate.AddDays(1);
-
-            var nextOpenUtc = ToUtc(openCandidate);
-            if (nextOpenUtc < nextRefreshUtc)
-                nextRefreshUtc = nextOpenUtc;
+            candidates.Add((openCandidate, ScheduleEvent.Activate));
         }
 
-        var delay = nextRefreshUtc - nowUtc;
-        return delay > TimeSpan.Zero ? delay : TimeSpan.FromMinutes(1);
+        var futureOnly = candidates
+            .Select(c =>
+            {
+                var local = c.Local;
+                if (nowLocal.DateTime >= local)
+                    local = local.AddDays(1);
+                while (local.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday)
+                    local = local.AddDays(1);
+                return (Local: local, c.Event);
+            })
+            .OrderBy(c => c.Local)
+            .First();
+
+        var nextUtc = ToUtc(futureOnly.Local);
+        var delay = nextUtc - nowUtc;
+        return (delay > TimeSpan.Zero ? delay : TimeSpan.FromMinutes(1), futureOnly.Event);
     }
 
     private DateTimeOffset ToUtc(DateTime localUnspecified)

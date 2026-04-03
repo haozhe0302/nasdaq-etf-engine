@@ -15,6 +15,7 @@ import {
   toHealthStatus,
 } from "./adapters";
 import { getHistorySnapshot } from "./mock";
+import { recordUpdate, unregisterFeed, getMinIntervalMs } from "./updateTracker";
 import type {
   MarketSnapshot,
   ConstituentSnapshot,
@@ -89,6 +90,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       .then((raw) => {
         if (cancelled) return;
         setData(adaptQuote(raw));
+        recordUpdate("market");
         setConnectionState("live");
         setError(undefined);
       })
@@ -105,6 +107,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       if (cancelled) return;
       try {
         setData(adaptQuote(raw));
+        recordUpdate("market");
         setConnectionState("live");
         setError(undefined);
       } catch (e) {
@@ -142,6 +145,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
 
     return () => {
       cancelled = true;
+      unregisterFeed("market");
       if (hubRef.current?.state !== HubConnectionState.Disconnected) {
         hubRef.current?.stop();
       }
@@ -163,6 +167,7 @@ export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
     try {
       const raw = await fetchConstituents();
       setData(adaptConstituents(raw));
+      recordUpdate("constituents");
       setConnectionState("live");
       setError(undefined);
     } catch (err: unknown) {
@@ -175,7 +180,10 @@ export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
   useEffect(() => {
     poll();
     const id = setInterval(poll, 5_000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      unregisterFeed("constituents");
+    };
   }, [poll]);
 
   return { data, connectionState, error };
@@ -193,6 +201,7 @@ export function useSystemData(): LiveDataResult<SystemSnapshot> {
     try {
       const raw = await fetchSystemHealth();
       setData(adaptSystemHealth(raw));
+      recordUpdate("system");
       setConnectionState("live");
       setError(undefined);
     } catch (err: unknown) {
@@ -205,7 +214,10 @@ export function useSystemData(): LiveDataResult<SystemSnapshot> {
   useEffect(() => {
     poll();
     const id = setInterval(poll, 5_000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      unregisterFeed("system");
+    };
   }, [poll]);
 
   return { data, connectionState, error };
@@ -222,7 +234,7 @@ export function useHistoryData() {
 export function useAppStatus(): AppStatus {
   const [status, setStatus] = useState<AppStatus>({
     mode: "live",
-    refreshMs: 5_000,
+    updateIntervalMs: 0,
     lastUpdate: new Date(),
     symbolCount: 0,
     overallHealth: "unknown",
@@ -235,13 +247,14 @@ export function useAppStatus(): AppStatus {
         (raw as { status: string }).status,
       );
       const symbolCount = deriveSymbolCount(raw);
-      setStatus({
+      setStatus((prev) => ({
+        ...prev,
         mode: "live",
-        refreshMs: 5_000,
         lastUpdate: new Date(),
         symbolCount,
         overallHealth: health,
-      });
+        updateIntervalMs: getMinIntervalMs(),
+      }));
     } catch {
       setStatus((prev) => ({
         ...prev,
@@ -253,8 +266,16 @@ export function useAppStatus(): AppStatus {
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, 5_000);
-    return () => clearInterval(id);
+    const healthId = setInterval(poll, 5_000);
+
+    const tickId = setInterval(() => {
+      setStatus((prev) => ({ ...prev, updateIntervalMs: getMinIntervalMs() }));
+    }, 1_000);
+
+    return () => {
+      clearInterval(healthId);
+      clearInterval(tickId);
+    };
   }, [poll]);
 
   return status;

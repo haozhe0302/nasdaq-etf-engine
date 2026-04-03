@@ -19,4 +19,27 @@
   body {
     @apply bg-canvas text-content font-sans antialiased;
   }
+
+  * {
+    scrollbar-color: #2a3444 transparent;
+    scrollbar-width: thin;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #2a3444;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3b4a5c;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
 }

@@ -170,7 +170,7 @@ export interface SystemEvent {
 
 export interface AppStatus {
   mode: "mock" | "live";
-  refreshMs: number;
+  updateIntervalMs: number;
   lastUpdate: Date;
   symbolCount: number;
   overallHealth: HealthStatus;

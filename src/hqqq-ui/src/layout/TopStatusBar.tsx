@@ -1,4 +1,5 @@
 import { useAppStatus, useEstClock } from "@/lib/hooks";
+import { formatInterval } from "@/lib/updateTracker";
 import { StatusBadge } from "@/components/StatusBadge";
 
 export function TopStatusBar() {
@@ -16,14 +17,14 @@ export function TopStatusBar() {
         <span className="text-muted">{s.symbolCount} symbols</span>
         <span className="text-edge">│</span>
         <span className="font-mono text-muted">
-          {estTime} ET
+          {estTime} EST
         </span>
       </div>
       <div className="flex items-center gap-4">
         <span className="rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[11px] text-accent">
           {s.mode.toUpperCase()}
         </span>
-        <span className="text-muted">↻ {s.refreshMs / 1000}s</span>
+        <span className="font-mono text-muted">↻ {formatInterval(s.updateIntervalMs)}</span>
         <StatusBadge status={s.overallHealth} label="System" />
       </div>
     </header>

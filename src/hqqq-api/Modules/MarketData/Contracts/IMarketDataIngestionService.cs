@@ -1,11 +1,13 @@
 namespace Hqqq.Api.Modules.MarketData.Contracts;
 
 /// <summary>
-/// Manages the lifecycle of market-data ingestion (WebSocket + REST fallback).
+/// Exposes the runtime state of the market-data ingestion pipeline.
+/// Lifecycle is managed by the hosted-service infrastructure.
 /// </summary>
 public interface IMarketDataIngestionService
 {
-    Task StartAsync(IEnumerable<string> symbols, CancellationToken ct = default);
-    Task StopAsync(CancellationToken ct = default);
     bool IsRunning { get; }
+    bool IsWebSocketConnected { get; }
+    bool IsFallbackActive { get; }
+    DateTimeOffset? LastActivityUtc { get; }
 }

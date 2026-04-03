@@ -14,9 +14,14 @@ public sealed record PriceTick
     /// <summary>ISO 4217 currency code (e.g. "USD").</summary>
     public required string Currency { get; init; }
 
-    /// <summary>Data source identifier (e.g. "finnhub", "polygon").</summary>
+    /// <summary>"ws" or "rest".</summary>
     public required string Source { get; init; }
 
     /// <summary>UTC timestamp of the market event.</summary>
     public required DateTimeOffset EventTimeUtc { get; init; }
+
+    public decimal? BidPrice { get; init; }
+    public decimal? AskPrice { get; init; }
+    public decimal? PreviousClose { get; init; }
+    public DateTimeOffset? LastTradeTimestampUtc { get; init; }
 }

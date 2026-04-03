@@ -103,14 +103,6 @@ interface BSystemHealth {
 
 // ── Helpers ──────────────────────────────────────────
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  const h = d.getHours();
-  const m = d.getMinutes().toString().padStart(2, "0");
-  return `${h}:${m}`;
-}
-
 export function toHealthStatus(s: string): HealthStatus {
   if (s === "healthy" || s === "degraded" || s === "unhealthy" || s === "unknown")
     return s;
@@ -129,7 +121,7 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     : 0;
 
   const series: TimeSeriesPoint[] = q.series.map((p) => ({
-    time: formatTime(p.time),
+    time: p.time,
     nav: p.nav,
     market: p.market,
   }));

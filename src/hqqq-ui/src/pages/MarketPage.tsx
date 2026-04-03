@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useMarketData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { StatCard } from "@/components/StatCard";
@@ -7,6 +8,34 @@ import { StatusBadge } from "@/components/StatusBadge";
 import type { EChartsOption } from "echarts";
 
 const AX = { text: "#8b949e", grid: "#1e293b" };
+
+function getMarketBoundsUtc(): { open: number; close: number } {
+  const now = new Date();
+  const todayEt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
+  const utcParsed = new Date(now.toLocaleString("en-US", { timeZone: "UTC" }));
+  const nyParsed = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const offsetMs = utcParsed.getTime() - nyParsed.getTime();
+
+  return {
+    open: new Date(`${todayEt}T09:30:00Z`).getTime() + offsetMs,
+    close: new Date(`${todayEt}T16:00:00Z`).getTime() + offsetMs,
+  };
+}
+
+function formatEtTime(utcMs: number): string {
+  return new Date(utcMs).toLocaleTimeString("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
 
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
   if (connectionState === "live") return null;
@@ -23,35 +52,93 @@ function ConnectionBanner({ connectionState, error }: { connectionState: string;
 
 export function MarketPage() {
   const { data: d, connectionState, error } = useMarketData();
+  const bounds = useMemo(() => getMarketBoundsUtc(), []);
+  const hasSeries = d.series.length > 0;
 
-  const times = d.series.map((p) => p.time);
-  const pdBps = d.series.map((p) => +(((p.market - p.nav) / p.nav) * 10000).toFixed(1));
+  const navData = d.series.map((p) => [p.time, p.nav]);
+  const marketData = d.series.map((p) => [p.time, p.market]);
+
+  const pdData = d.series.map((p) => {
+    const bps = p.nav > 0 ? +(((p.market - p.nav) / p.nav) * 10000).toFixed(1) : 0;
+    return { time: p.time, value: bps };
+  });
 
   const mainChart: EChartsOption = {
     backgroundColor: "transparent",
     animation: false,
-    tooltip: { trigger: "axis" },
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => {
+        const items = params as { value: [string, number]; seriesName: string; color: string }[];
+        if (!items?.length) return "";
+        const time = formatEtTime(new Date(items[0].value[0]).getTime());
+        const lines = items.map(
+          (i) => `<span style="color:${i.color}">\u25CF</span> ${i.seriesName}: $${i.value[1].toFixed(2)}`,
+        );
+        return `${time} ET<br/>${lines.join("<br/>")}`;
+      },
+    },
     legend: { right: 0, textStyle: { color: AX.text, fontSize: 11 } },
     grid: { left: 50, right: 12, top: 30, bottom: 24 },
-    xAxis: { data: times, axisLabel: { color: AX.text, fontSize: 10 }, axisLine: { lineStyle: { color: AX.grid } }, splitLine: { show: false } },
-    yAxis: { scale: true, axisLabel: { color: AX.text, fontSize: 10 }, splitLine: { lineStyle: { color: AX.grid } } },
-    series: [
-      { name: "iNAV", type: "line", data: d.series.map((p) => p.nav), symbol: "none", lineStyle: { width: 2, color: "#3b82f6" } },
-      { name: "Market", type: "line", data: d.series.map((p) => p.market), symbol: "none", lineStyle: { width: 1.5, color: "#22c55e" } },
-    ],
+    xAxis: {
+      type: "time",
+      min: bounds.open,
+      max: bounds.close,
+      axisLabel: {
+        color: AX.text,
+        fontSize: 10,
+        formatter: (value: number) => formatEtTime(value),
+      },
+      axisLine: { lineStyle: { color: AX.grid } },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      scale: true,
+      axisLabel: { color: AX.text, fontSize: 10 },
+      splitLine: { lineStyle: { color: AX.grid } },
+    },
+    series: hasSeries
+      ? [
+          { name: "iNAV", type: "line", data: navData, symbol: "none", lineStyle: { width: 2, color: "#3b82f6" } },
+          { name: "Market", type: "line", data: marketData, symbol: "none", lineStyle: { width: 1.5, color: "#22c55e" } },
+        ]
+      : [],
   };
 
   const pdChart: EChartsOption = {
     backgroundColor: "transparent",
     animation: false,
-    tooltip: { trigger: "axis" },
+    tooltip: {
+      trigger: "axis",
+      formatter: (params: unknown) => {
+        const items = params as { value: [string, number] }[];
+        if (!items?.length) return "";
+        const time = formatEtTime(new Date(items[0].value[0]).getTime());
+        return `${time} ET<br/>${items[0].value[1].toFixed(1)} bps`;
+      },
+    },
     grid: { left: 45, right: 12, top: 8, bottom: 20 },
-    xAxis: { data: times, axisLabel: { show: false }, axisLine: { lineStyle: { color: AX.grid } }, splitLine: { show: false } },
-    yAxis: { axisLabel: { color: AX.text, fontSize: 10 }, splitLine: { lineStyle: { color: AX.grid } } },
-    series: [{
-      type: "bar",
-      data: pdBps.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? "#22c55e44" : "#ef444444" } })),
-    }],
+    xAxis: {
+      type: "time",
+      min: bounds.open,
+      max: bounds.close,
+      axisLabel: { show: false },
+      axisLine: { lineStyle: { color: AX.grid } },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      axisLabel: { color: AX.text, fontSize: 10 },
+      splitLine: { lineStyle: { color: AX.grid } },
+    },
+    series: hasSeries
+      ? [{
+          type: "bar",
+          data: pdData.map((p) => ({
+            value: [p.time, p.value],
+            itemStyle: { color: p.value >= 0 ? "#22c55e44" : "#ef444444" },
+          })),
+        }]
+      : [],
   };
 
   const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(3)}%`;

@@ -8,6 +8,7 @@ public static class PricingModule
     public static IServiceCollection AddPricingModule(this IServiceCollection services)
     {
         services.AddSingleton<IScaleStateStore, JsonScaleStateStore>();
+        services.AddSingleton<ISeriesStore, JsonSeriesStore>();
         services.AddSingleton<BasketPricingBasisBuilder>();
         services.AddSingleton<PricingEngine>();
         services.AddHostedService<QuoteBroadcastService>();

@@ -2,27 +2,37 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
+using Hqqq.Api.Modules.Pricing.Contracts;
 
 namespace Hqqq.Api.Modules.Pricing.Services;
 
 /// <summary>
 /// Background service that runs a 1-second broadcast loop:
-/// bootstrap → activate pending → compute quote → record series → SignalR push.
+/// bootstrap -> activate pending -> compute quote -> record series -> SignalR push.
+/// Series recording is throttled to <see cref="PricingOptions.SeriesRecordIntervalMs"/>
+/// and gated to US market hours (9:30-16:00 ET).
 /// </summary>
 public sealed class QuoteBroadcastService : BackgroundService
 {
     private readonly PricingEngine _engine;
+    private readonly ISeriesStore _seriesStore;
     private readonly IHubContext<MarketHub> _hubContext;
     private readonly PricingOptions _options;
     private readonly ILogger<QuoteBroadcastService> _logger;
 
+    private DateTimeOffset _nextRecordAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextFlushAt = DateTimeOffset.MinValue;
+    private DateOnly _lastSeriesDate;
+
     public QuoteBroadcastService(
         PricingEngine engine,
+        ISeriesStore seriesStore,
         IHubContext<MarketHub> hubContext,
         IOptions<PricingOptions> options,
         ILogger<QuoteBroadcastService> logger)
     {
         _engine = engine;
+        _seriesStore = seriesStore;
         _hubContext = hubContext;
         _options = options.Value;
         _logger = logger;
@@ -32,10 +42,9 @@ public sealed class QuoteBroadcastService : BackgroundService
     {
         _logger.LogInformation("Quote broadcast service starting");
 
-        // Allow basket + market-data services time to initialize
         await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
 
-        await _engine.InitializeAsync(stoppingToken);
+        await InitializeSeriesAsync(stoppingToken);
 
         var interval = TimeSpan.FromMilliseconds(_options.QuoteBroadcastIntervalMs);
 
@@ -57,10 +66,13 @@ public sealed class QuoteBroadcastService : BackgroundService
                 var quote = _engine.ComputeQuote();
                 if (quote is not null)
                 {
-                    _engine.RecordSeriesPoint(quote);
+                    MaybeRecordSeriesPoint(quote);
+
                     await _hubContext.Clients.All
                         .SendAsync("QuoteUpdate", quote, stoppingToken);
                 }
+
+                await MaybeFlushSeriesAsync(stoppingToken);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -70,6 +82,81 @@ public sealed class QuoteBroadcastService : BackgroundService
             await Task.Delay(interval, stoppingToken);
         }
 
+        await FlushSeriesAsync(stoppingToken);
         _logger.LogInformation("Quote broadcast service stopped");
+    }
+
+    private async Task InitializeSeriesAsync(CancellationToken ct)
+    {
+        await _engine.InitializeAsync(ct);
+
+        var persisted = await _seriesStore.LoadAsync(ct);
+        if (persisted.Count > 0)
+        {
+            var today = GetMarketDate();
+            var latestPoint = persisted[^1];
+            var pointDate = DateOnly.FromDateTime(
+                TimeZoneInfo.ConvertTime(latestPoint.Time, _engine.MarketTimeZone).DateTime);
+
+            if (pointDate == today)
+            {
+                _engine.LoadSeries(persisted);
+                _lastSeriesDate = today;
+                _logger.LogInformation(
+                    "Restored {Count} series points for today ({Date})",
+                    persisted.Count, today);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Persisted series date {PersistedDate} != today {Today}; starting fresh",
+                    pointDate, today);
+            }
+        }
+    }
+
+    private void MaybeRecordSeriesPoint(Contracts.QuoteSnapshot quote)
+    {
+        if (!_engine.IsWithinMarketHours()) return;
+
+        var now = DateTimeOffset.UtcNow;
+        var today = GetMarketDate();
+
+        if (_lastSeriesDate != default && _lastSeriesDate != today)
+        {
+            _engine.ClearSeries();
+            _logger.LogInformation("New trading day {Date} — series buffer cleared", today);
+        }
+        _lastSeriesDate = today;
+
+        if (now < _nextRecordAt) return;
+
+        _engine.RecordSeriesPoint(quote);
+        _nextRecordAt = now.AddMilliseconds(_options.SeriesRecordIntervalMs);
+    }
+
+    private async Task MaybeFlushSeriesAsync(CancellationToken ct)
+    {
+        if (!_engine.IsWithinMarketHours()) return;
+
+        var now = DateTimeOffset.UtcNow;
+        if (now < _nextFlushAt) return;
+
+        await FlushSeriesAsync(ct);
+        _nextFlushAt = now.AddSeconds(60);
+    }
+
+    private async Task FlushSeriesAsync(CancellationToken ct)
+    {
+        var series = _engine.GetSeries();
+        if (series.Count == 0) return;
+
+        await _seriesStore.SaveAsync(series, ct);
+    }
+
+    private DateOnly GetMarketDate()
+    {
+        var local = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _engine.MarketTimeZone);
+        return DateOnly.FromDateTime(local);
     }
 }

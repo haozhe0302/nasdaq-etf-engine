@@ -40,6 +40,7 @@ public sealed class PricingEngine
     public ScaleState CurrentScaleState => _scaleState;
     public PricingBasis? CurrentBasis => _currentBasis;
     public string? PendingBlockedReason => _pendingBlockedReason;
+    public TimeZoneInfo MarketTimeZone => _marketTz;
 
     public PricingEngine(
         IBasketSnapshotProvider basketProvider,
@@ -409,6 +410,38 @@ public sealed class PricingEngine
         }
     }
 
+    public void ClearSeries()
+    {
+        lock (_seriesLock)
+        {
+            Array.Clear(_seriesBuffer);
+            _seriesHead = 0;
+            _seriesCount = 0;
+        }
+    }
+
+    public void LoadSeries(IReadOnlyList<SeriesPoint> points)
+    {
+        lock (_seriesLock)
+        {
+            Array.Clear(_seriesBuffer);
+            _seriesHead = 0;
+            _seriesCount = 0;
+
+            var count = Math.Min(points.Count, _seriesBuffer.Length);
+            var start = points.Count > _seriesBuffer.Length
+                ? points.Count - _seriesBuffer.Length
+                : 0;
+
+            for (int i = 0; i < count; i++)
+            {
+                _seriesBuffer[i] = points[start + i];
+            }
+            _seriesHead = count % _seriesBuffer.Length;
+            _seriesCount = count;
+        }
+    }
+
     // ── Movers ──────────────────────────────────────────────────
 
     private IReadOnlyList<Mover> ComputeMovers(
@@ -527,7 +560,7 @@ public sealed class PricingEngine
         };
     }
 
-    private bool IsWithinMarketHours()
+    public bool IsWithinMarketHours()
     {
         var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _marketTz);
         var time = TimeOnly.FromDateTime(now);

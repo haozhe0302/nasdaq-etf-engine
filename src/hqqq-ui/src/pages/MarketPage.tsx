@@ -8,8 +8,21 @@ import type { EChartsOption } from "echarts";
 
 const AX = { text: "#8b949e", grid: "#1e293b" };
 
+function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
+  if (connectionState === "live") return null;
+  const isConnecting = connectionState === "connecting";
+  const cls = isConnecting
+    ? "border-accent/30 bg-accent/10 text-accent"
+    : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400";
+  return (
+    <div className={`rounded border px-3 py-1.5 text-xs ${cls}`}>
+      {isConnecting ? "Connecting to backend\u2026" : error ?? "Connection lost \u2014 showing last known data"}
+    </div>
+  );
+}
+
 export function MarketPage() {
-  const d = useMarketData();
+  const { data: d, connectionState, error } = useMarketData();
 
   const times = d.series.map((p) => p.time);
   const pdBps = d.series.map((p) => +(((p.market - p.nav) / p.nav) * 10000).toFixed(1));
@@ -45,6 +58,7 @@ export function MarketPage() {
 
   return (
     <div className="space-y-3">
+      <ConnectionBanner connectionState={connectionState} error={error} />
       <div className="grid grid-cols-5 gap-3">
         <StatCard label="Indicative NAV" value={`$${d.nav.toFixed(2)}`} sub={fmtPct(d.navChangePct)} status={d.navChangePct >= 0 ? "positive" : "negative"} />
         <StatCard label="Market Price" value={`$${d.marketPrice.toFixed(2)}`} sub={`$${(d.marketPrice - d.nav).toFixed(2)} vs NAV`} />

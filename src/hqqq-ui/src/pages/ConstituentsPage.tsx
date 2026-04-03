@@ -2,11 +2,25 @@ import { useConstituentData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { MetricRow } from "@/components/MetricRow";
 
+function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
+  if (connectionState === "live") return null;
+  const isConnecting = connectionState === "connecting";
+  const cls = isConnecting
+    ? "border-accent/30 bg-accent/10 text-accent"
+    : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400";
+  return (
+    <div className={`rounded border px-3 py-1.5 text-xs ${cls}`}>
+      {isConnecting ? "Connecting to backend\u2026" : error ?? "Connection lost \u2014 showing last known data"}
+    </div>
+  );
+}
+
 export function ConstituentsPage() {
-  const d = useConstituentData();
+  const { data: d, connectionState, error } = useConstituentData();
 
   return (
     <div className="space-y-3">
+      <ConnectionBanner connectionState={connectionState} error={error} />
       <div className="flex items-center gap-3 rounded border border-edge bg-surface px-3 py-2 text-xs">
         <input
           readOnly

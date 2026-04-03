@@ -10,12 +10,26 @@ function fmtUptime(s: number): string {
   return `${h}h ${m}m ${sec}s`;
 }
 
+function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
+  if (connectionState === "live") return null;
+  const isConnecting = connectionState === "connecting";
+  const cls = isConnecting
+    ? "border-accent/30 bg-accent/10 text-accent"
+    : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400";
+  return (
+    <div className={`rounded border px-3 py-1.5 text-xs ${cls}`}>
+      {isConnecting ? "Connecting to backend\u2026" : error ?? "Connection lost \u2014 showing last known data"}
+    </div>
+  );
+}
+
 export function SystemPage() {
-  const d = useSystemData();
+  const { data: d, connectionState, error } = useSystemData();
   const rt = d.runtime;
 
   return (
     <div className="space-y-3">
+      <ConnectionBanner connectionState={connectionState} error={error} />
       <div className="grid grid-cols-5 gap-3">
         {d.services.map((s) => (
           <Panel key={s.name}>

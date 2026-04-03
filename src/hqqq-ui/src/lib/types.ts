@@ -2,6 +2,14 @@
 
 export type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
 
+export type ConnectionState = "connecting" | "live" | "error" | "stale";
+
+export interface LiveDataResult<T> {
+  data: T;
+  connectionState: ConnectionState;
+  error?: string;
+}
+
 // ── market ──────────────────────────────────────────
 
 export interface MarketSnapshot {

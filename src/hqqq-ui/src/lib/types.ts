@@ -61,12 +61,12 @@ export interface ConstituentSnapshot {
   holdings: Constituent[];
   concentration: ConcentrationMetrics;
   quality: DataQualityMetrics;
+  lastRefreshAt: number;
 }
 
 export interface Constituent {
   symbol: string;
   name: string;
-  sector: string;
   weight: number;
   shares: number;
   price: number;
@@ -77,7 +77,6 @@ export interface ConcentrationMetrics {
   top5: number;
   top10: number;
   top20: number;
-  sectors: number;
   hhi: number;
 }
 

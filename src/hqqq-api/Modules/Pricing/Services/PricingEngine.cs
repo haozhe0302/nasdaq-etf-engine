@@ -335,6 +335,7 @@ public sealed class PricingEngine
         {
             Top5Pct = Math.Round(rows.Take(5).Sum(r => r.Weight), 2),
             Top10Pct = Math.Round(rows.Take(10).Sum(r => r.Weight), 2),
+            Top20Pct = Math.Round(rows.Take(20).Sum(r => r.Weight), 2),
             SectorCount = rows.Select(r => r.Sector)
                 .Where(s => s != "Unknown").Distinct().Count(),
             HerfindahlIndex = Math.Round(rows.Sum(r => r.Weight * r.Weight), 2),

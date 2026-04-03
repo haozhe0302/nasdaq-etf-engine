@@ -64,6 +64,7 @@ interface BConstituentSnapshot {
   concentration: {
     top5Pct: number;
     top10Pct: number;
+    top20Pct: number;
     sectorCount: number;
     herfindahlIndex: number;
   };
@@ -191,7 +192,6 @@ export function adaptConstituents(raw: unknown): ConstituentSnapshot {
   const holdings: Constituent[] = c.holdings.map((h) => ({
     symbol: h.symbol,
     name: h.name,
-    sector: h.sector,
     weight: h.weight,
     shares: h.shares,
     price: h.price ?? 0,
@@ -201,8 +201,7 @@ export function adaptConstituents(raw: unknown): ConstituentSnapshot {
   const concentration: ConcentrationMetrics = {
     top5: c.concentration.top5Pct,
     top10: c.concentration.top10Pct,
-    top20: 0,
-    sectors: c.concentration.sectorCount,
+    top20: c.concentration.top20Pct,
     hhi: c.concentration.herfindahlIndex,
   };
 
@@ -219,6 +218,7 @@ export function adaptConstituents(raw: unknown): ConstituentSnapshot {
     holdings,
     concentration,
     quality,
+    lastRefreshAt: Date.now(),
   };
 }
 

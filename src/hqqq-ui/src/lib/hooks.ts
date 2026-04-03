@@ -51,8 +51,9 @@ const EMPTY_CONSTITUENTS: ConstituentSnapshot = {
   asOfDate: "",
   totalCount: 0,
   holdings: [],
-  concentration: { top5: 0, top10: 0, top20: 0, sectors: 0, hhi: 0 },
+  concentration: { top5: 0, top10: 0, top20: 0, hhi: 0 },
   quality: { stalePrices: 0, missingSymbols: 0, coverage: 0, totalSymbols: 0 },
+  lastRefreshAt: 0,
 };
 
 const EMPTY_SYSTEM: SystemSnapshot = {

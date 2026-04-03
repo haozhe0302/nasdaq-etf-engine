@@ -31,6 +31,7 @@ public sealed record ConcentrationMetrics
 {
     public required decimal Top5Pct { get; init; }
     public required decimal Top10Pct { get; init; }
+    public required decimal Top20Pct { get; init; }
     public required int SectorCount { get; init; }
     public required decimal HerfindahlIndex { get; init; }
 }

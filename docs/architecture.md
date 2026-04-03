@@ -10,8 +10,8 @@ HQQQ is a full-stack ETF analytics engine with two main components:
   iNAV, constituent holdings, historical analytics, and system health.
 
 The backend is a single deployable unit with clear internal module boundaries.
-The frontend communicates with the backend over HTTP (REST) and will evolve to
-include WebSocket streaming for high-frequency quote snapshots.
+The frontend communicates with the backend over HTTP (REST) and WebSocket
+(SignalR) for real-time quote streaming.
 
 This is an intentional starting point. A single-process backend keeps
 development and debugging simple for a solo/small-team project. Modules can
@@ -38,9 +38,10 @@ primitives. It does not exist yet — avoid creating it until a real need arises
 
 ### Basket
 
-Owns the daily basket composition: which securities are in the ETF, how many
-shares are held, and the reference date of the snapshot. This is the
-authoritative source of "what the ETF contains."
+Owns the hybrid basket composition: which securities are in the ETF, their
+weights and shares held, and the reference date. Constructs baskets from
+multiple public scraped sources (Stock Analysis, Schwab, Alpha Vantage, Nasdaq)
+using an anchor + tail merge strategy.
 
 Key contract: `BasketConstituent`
 
@@ -139,19 +140,23 @@ Thin, reusable UI primitives shared across pages:
 
 ```
 lib/
-├── types.ts    # View model interfaces (MarketSnapshot, Constituent, etc.)
-├── mock.ts     # Data source implementation
-└── hooks.ts    # Page-level React hooks (useMarketData, useSystemData, etc.)
+├── types.ts           # View model interfaces (MarketSnapshot, Constituent, etc.)
+├── api.ts             # REST fetch helpers, SignalR hub connection
+├── adapters.ts        # Backend DTO → UI view model mapping
+├── hooks.ts           # Page-level React hooks (useMarketData, useSystemData, etc.)
+├── mock.ts            # Static mock data (used only by History page)
+└── updateTracker.ts   # EMA-smoothed update interval tracking for status bar
 ```
 
 Pages consume data exclusively through hooks (`useMarketData()`,
 `useConstituentData()`, `useHistoryData()`, `useSystemData()`). The hook
-return types are the stable API contract. The underlying data source can be
-swapped from mock to REST or WebSocket without changing any page code.
+return types are the stable API contract.
 
-**Refresh model**: Market, Constituents, and System pages poll at a 1-second
-cadence. History data is static (historical series do not change in real-time).
-Only the active page's hook runs; hooks clean up their intervals on unmount.
+**Refresh model**: Market page uses SignalR `QuoteUpdate` events (~1s) with
+REST `/api/quote` as initial load. Constituents and System pages poll their
+respective REST endpoints every 5 seconds. History data is static mock
+(pending persisted series storage). Only the active page's hook runs; hooks
+clean up their connections/intervals on unmount.
 
 ### Design system
 
@@ -185,31 +190,41 @@ layer or other components.
 
 ---
 
-## Infrastructure (local dev)
+## Infrastructure
 
-| Service       | Purpose                        | Port  |
-|---------------|--------------------------------|-------|
-| TimescaleDB   | Historical iNAV time-series    | 5432  |
-| Redis         | Price cache, calculation cache | 6379  |
-| Kafka (KRaft) | Event streaming                | 9092  |
-| Kafka UI      | Topic/consumer inspection      | 8080  |
-| Prometheus    | Metrics scraping               | 9090  |
-| Grafana       | Dashboards                     | 3000  |
+### MVP (current)
 
-All infrastructure runs via `docker compose up -d`. The API runs on the
-host for fast iteration (`dotnet watch run`).
+No external infrastructure is required. The backend runs standalone with:
+- In-memory price store (replaces Redis)
+- Local JSON file persistence for basket cache, scale state, and series
+- Tiingo WebSocket + REST for live market data
+
+### Future phases (docker-compose.yml)
+
+| Service       | Purpose                        | Port  | MVP status |
+|---------------|--------------------------------|-------|----------------|
+| TimescaleDB   | Historical iNAV time-series    | 5432  | Not connected  |
+| Redis         | Price cache, calculation cache  | 6379  | Not connected  |
+| Kafka (KRaft) | Event streaming                | 9092  | Not connected  |
+| Kafka UI      | Topic/consumer inspection      | 8080  | Not connected  |
+| Prometheus    | Metrics scraping               | 9090  | Not connected  |
+| Grafana       | Dashboards                     | 3000  | Not connected  |
+
+`docker compose up -d` provisions these for experimentation, but the
+MVP codebase does not use them.
 
 ---
 
 ## Future evolution
 
-| Concern                        | Current                  | Planned                                  |
-|--------------------------------|--------------------------|------------------------------------------|
-| Market data transport          | Polling (1s)             | WebSocket streaming for sub-second quotes |
-| Backend calculation            | Contract stubs           | Full iNAV engine with parallel pricing    |
-| Data persistence               | —                        | TimescaleDB for historical snapshots      |
-| Caching                        | —                        | Redis for latest prices and calc cache    |
-| Event streaming                | —                        | Kafka for tick ingestion and quote pub    |
-| Primary chart library          | ECharts                  | Lightweight Charts for Market chart       |
-| Authentication                 | —                        | TBD                                       |
-| CI/CD                          | —                        | TBD                                       |
+| Concern                        | Current (MVP)                    | Planned                                  |
+|--------------------------------|--------------------------------------|------------------------------------------|
+| Market data transport          | Tiingo WS + 5s REST fallback         | Additional data providers                |
+| iNAV calculation               | Live hybrid basket pricing engine    | Parallel pricing, more sources           |
+| Data persistence               | Local JSON files                     | TimescaleDB for historical snapshots     |
+| Caching                        | In-memory ConcurrentDictionary       | Redis for distributed price cache        |
+| Event streaming                | —                                    | Kafka for tick ingestion and quote pub   |
+| History page                   | Static mock data                     | Live replay from persisted series        |
+| Primary chart library          | ECharts                              | Lightweight Charts for Market chart      |
+| Authentication                 | —                                    | TBD                                      |
+| CI/CD                          | —                                    | GitHub Actions                           |

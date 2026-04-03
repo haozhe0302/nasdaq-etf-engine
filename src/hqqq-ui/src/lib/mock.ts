@@ -109,16 +109,16 @@ export function getMarketSnapshot(): MarketSnapshot {
 // ── constituents ────────────────────────────────────
 
 const BASE_HOLDINGS: Constituent[] = [
-  { symbol: "AAPL", name: "Apple Inc.", weight: 8.92, shares: 7_710_000, price: 213.07, changePct: 1.24, sector: "Technology" },
-  { symbol: "MSFT", name: "Microsoft Corp.", weight: 8.43, shares: 3_320_000, price: 467.56, changePct: -0.31, sector: "Technology" },
-  { symbol: "NVDA", name: "NVIDIA Corp.", weight: 7.81, shares: 1_615_000, price: 891.12, changePct: 2.87, sector: "Technology" },
-  { symbol: "AMZN", name: "Amazon.com Inc.", weight: 5.47, shares: 4_478_000, price: 225.01, changePct: 0.45, sector: "Consumer Disc." },
-  { symbol: "META", name: "Meta Platforms", weight: 4.89, shares: 1_441_000, price: 624.91, changePct: -1.12, sector: "Technology" },
-  { symbol: "GOOG", name: "Alphabet Inc. A", weight: 3.21, shares: 3_262_000, price: 181.23, changePct: 0.65, sector: "Technology" },
-  { symbol: "GOOGL", name: "Alphabet Inc. C", weight: 2.98, shares: 3_053_000, price: 179.84, changePct: 0.62, sector: "Technology" },
-  { symbol: "AVGO", name: "Broadcom Inc.", weight: 2.74, shares: 289_000, price: 1748.92, changePct: -0.85, sector: "Technology" },
-  { symbol: "COST", name: "Costco Wholesale", weight: 2.48, shares: 485_000, price: 942.31, changePct: 0.18, sector: "Consumer Staples" },
-  { symbol: "TSLA", name: "Tesla Inc.", weight: 2.31, shares: 1_712_000, price: 248.42, changePct: -2.14, sector: "Consumer Disc." },
+  { symbol: "AAPL", name: "Apple Inc.", weight: 8.92, shares: 7_710_000, price: 213.07, changePct: 1.24 },
+  { symbol: "MSFT", name: "Microsoft Corp.", weight: 8.43, shares: 3_320_000, price: 467.56, changePct: -0.31 },
+  { symbol: "NVDA", name: "NVIDIA Corp.", weight: 7.81, shares: 1_615_000, price: 891.12, changePct: 2.87 },
+  { symbol: "AMZN", name: "Amazon.com Inc.", weight: 5.47, shares: 4_478_000, price: 225.01, changePct: 0.45 },
+  { symbol: "META", name: "Meta Platforms", weight: 4.89, shares: 1_441_000, price: 624.91, changePct: -1.12 },
+  { symbol: "GOOG", name: "Alphabet Inc. A", weight: 3.21, shares: 3_262_000, price: 181.23, changePct: 0.65 },
+  { symbol: "GOOGL", name: "Alphabet Inc. C", weight: 2.98, shares: 3_053_000, price: 179.84, changePct: 0.62 },
+  { symbol: "AVGO", name: "Broadcom Inc.", weight: 2.74, shares: 289_000, price: 1748.92, changePct: -0.85 },
+  { symbol: "COST", name: "Costco Wholesale", weight: 2.48, shares: 485_000, price: 942.31, changePct: 0.18 },
+  { symbol: "TSLA", name: "Tesla Inc.", weight: 2.31, shares: 1_712_000, price: 248.42, changePct: -2.14 },
 ];
 
 export function getConstituentSnapshot(): ConstituentSnapshot {
@@ -130,8 +130,9 @@ export function getConstituentSnapshot(): ConstituentSnapshot {
       price: jitter(h.price, 0.002),
       changePct: +(h.changePct + (Math.random() - 0.5) * 0.04).toFixed(2),
     })),
-    concentration: { top5: 35.52, top10: 49.24, top20: 68.91, sectors: 7, hhi: 0.041 },
+    concentration: { top5: 35.52, top10: 49.24, top20: 68.91, hhi: 0.041 },
     quality: { stalePrices: 0, missingSymbols: 0, coverage: 101, totalSymbols: 101 },
+    lastRefreshAt: Date.now(),
   };
 }
 
@@ -220,7 +221,7 @@ export function getSystemSnapshot(): SystemSnapshot {
 export function getAppStatus(): AppStatus {
   return {
     mode: "mock",
-    refreshMs: 1000,
+    updateIntervalMs: 1000,
     lastUpdate: new Date(),
     symbolCount: 101,
     overallHealth: "healthy",

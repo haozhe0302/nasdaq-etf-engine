@@ -63,8 +63,8 @@ export function SystemPage() {
 
         <Panel title="Notes">
           <div className="space-y-2 p-3 text-xs text-muted">
-            <p>CPU, request throughput, error rates, and pipeline metrics require instrumentation middleware (post-MVP).</p>
-            <p>Planned: Kafka + Redis + TimescaleDB will provide pipeline throughput, lag, and event streams.</p>
+            <p>CPU, request throughput, error rates, and pipeline metrics require instrumentation middleware (future phase).</p>
+            <p>Future: Redis, Kafka, TimescaleDB, Prometheus, and Grafana are planned for caching, event streaming, persistence, and dashboards.</p>
           </div>
         </Panel>
       </div>

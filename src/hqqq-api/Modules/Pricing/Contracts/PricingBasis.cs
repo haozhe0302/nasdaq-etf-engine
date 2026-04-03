@@ -24,7 +24,7 @@ public sealed record PricingBasisEntry
     public required int Shares { get; init; }
     public required decimal ReferencePrice { get; init; }
 
-    /// <summary>"official" (from ETF filing) or "derived" (inferred from target weight).</summary>
+    /// <summary>"official" (disclosed shares from public source) or "derived" (inferred from target weight).</summary>
     public required string SharesOrigin { get; init; }
 
     /// <summary>Target weight as a fraction (e.g. 0.125 for 12.5%).</summary>

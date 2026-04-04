@@ -31,11 +31,16 @@ builder.Services
     .AddPricingModule()
     .AddSystemModule();
 
+var allowedOrigins =
+    builder.Configuration["HQQQ_ALLOWED_ORIGINS"]?
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    ?? new[] { "http://localhost:5173", "http://localhost:3000" };
+
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(policy =>
         policy
-            .WithOrigins("http://localhost:5173", "http://localhost:3000")
+            .WithOrigins(allowedOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials());

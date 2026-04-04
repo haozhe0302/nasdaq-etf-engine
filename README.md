@@ -131,7 +131,7 @@ All other values have working defaults.
 Start infrastructure
 
 ```bash
-docker compose up -d
+docker compose ps
 docker compose up -d
 ```
 
@@ -222,73 +222,6 @@ See [`.env.example`](.env.example) for the full list with comments.
 | `HQQQ_SERIES_FILE` | No | `data/series.json` | Intraday iNAV series persistence path |
 | `HQQQ_QUOTE_BROADCAST_INTERVAL_MS` | No | `1000` | SignalR broadcast interval |
 | `HQQQ_SERIES_CAPACITY` | No | `5000` | In-memory series ring buffer size |
-
----
-
-## Azure MVP deployment (recommended)
-
-### Target topology
-
-- Frontend: **Azure Static Web Apps** (`src/hqqq-ui`).
-- Backend: **Azure App Service (Linux, custom container)** (`src/hqqq-api/Dockerfile`).
-- Registry: **Azure Container Registry (ACR)**.
-
-This matches the current MVP architecture: static React frontend + single ASP.NET
-Core backend container with in-memory hot path and JSON persistence.
-
-### Azure MVP deployment guardrails
-
-1. **Single instance only (no scale-out in v1).**
-   Keep App Service instance count at `1`. Current pricing and market-data state
-   are single-node in-memory semantics, so scale-out can cause cross-instance
-   drift.
-
-2. **Use explicit CORS origin allowlist.**
-   Set `HQQQ_ALLOWED_ORIGINS` to your deployed frontend origin, for example:
-   `https://<your-swa-app>.azurestaticapps.net`.
-
-3. **Persist JSON state under `/home` on App Service.**
-   For Linux App Service, use persistent storage paths and explicitly set:
-   `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`.
-
-4. **SPA deep-link refresh must use fallback rewrite.**
-   The repo includes `src/hqqq-ui/public/staticwebapp.config.json` so routes like
-   `/market` and `/system` can refresh without 404 in Static Web Apps.
-
-### Minimal runbook (SWA + App Service + ACR)
-
-1. **Build and push backend image to ACR**
-
-   ```bash
-   az acr login --name <acr-name>
-   docker build -t <acr-name>.azurecr.io/hqqq-api:<tag> ./src/hqqq-api
-   docker push <acr-name>.azurecr.io/hqqq-api:<tag>
-   ```
-
-2. **Create/update App Service (Linux, custom container)**
-   - Image: `<acr-name>.azurecr.io/hqqq-api:<tag>`
-   - Startup port: `8080`
-   - App settings (minimum):
-     - `TIINGO_API_KEY=<your-tiingo-key>`
-     - `ALPHA_VANTAGE_API_KEY=<your-alpha-vantage-key>`
-     - `HQQQ_ALLOWED_ORIGINS=https://<your-swa-app>.azurestaticapps.net`
-     - `HQQQ_BASKET_CACHE_FILE=/home/hqqq/data/basket-cache.json`
-     - `HQQQ_BASKET_RAW_CACHE_DIR=/home/hqqq/data/raw`
-     - `HQQQ_BASKET_MERGED_HISTORY_DIR=/home/hqqq/data/merged`
-     - `HQQQ_SCALE_STATE_FILE=/home/hqqq/data/scale-state.json`
-     - `HQQQ_SERIES_FILE=/home/hqqq/data/series.json`
-     - `WEBSITES_ENABLE_APP_SERVICE_STORAGE=true`
-   - Scale out: keep instance count at `1`.
-
-3. **Deploy frontend to Static Web Apps**
-   - Build source: `src/hqqq-ui`
-   - Set frontend env var:
-     - `VITE_API_BASE_URL=https://<your-app-service>.azurewebsites.net`
-
-4. **Post-deploy smoke checks**
-   - Backend quote API: `GET https://<your-app-service>.azurewebsites.net/api/quote`
-   - SignalR hub negotiate path reachable: `https://<your-app-service>.azurewebsites.net/hubs/market`
-   - Frontend deep-link refresh works (no 404): `/market`, `/constituents`, `/system`.
 
 ---
 

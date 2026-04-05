@@ -3,6 +3,7 @@ using Hqqq.Api.Configuration;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.Pricing.Contracts;
+using Hqqq.Api.Modules.System.Services;
 
 namespace Hqqq.Api.Modules.Pricing.Services;
 
@@ -20,6 +21,7 @@ public sealed class PricingEngine
     private readonly IMarketDataIngestionService _marketData;
     private readonly IScaleStateStore _stateStore;
     private readonly BasketPricingBasisBuilder _basisBuilder;
+    private readonly MetricsService _metrics;
     private readonly PricingOptions _options;
     private readonly TimeZoneInfo _marketTz;
     private readonly ILogger<PricingEngine> _logger;
@@ -48,6 +50,7 @@ public sealed class PricingEngine
         IMarketDataIngestionService marketData,
         IScaleStateStore stateStore,
         BasketPricingBasisBuilder basisBuilder,
+        MetricsService metrics,
         IOptions<PricingOptions> options,
         ILogger<PricingEngine> logger)
     {
@@ -56,6 +59,7 @@ public sealed class PricingEngine
         _marketData = marketData;
         _stateStore = stateStore;
         _basisBuilder = basisBuilder;
+        _metrics = metrics;
         _options = options.Value;
         _logger = logger;
         _seriesBuffer = new SeriesPoint?[_options.SeriesCapacity];
@@ -211,6 +215,11 @@ public sealed class PricingEngine
 
             var newScaleFactor = oldNav / newRawValue;
 
+            // Measure NAV discontinuity before continuity-preserving recalibration
+            var preRecalibrationNav = _scaleState.ScaleFactor * newRawValue;
+            var jumpBps = (double)Math.Abs((preRecalibrationNav - oldNav) / oldNav * 10000m);
+            _metrics.RecordActivationJump(jumpBps);
+
             _basketProvider.ActivatePendingIfReady();
 
             var afterState = _basketProvider.GetState();
@@ -238,9 +247,10 @@ public sealed class PricingEngine
             _lastActivationDate = today;
             _pendingBlockedReason = null;
 
+            _metrics.IncrementBasketActivations();
             _logger.LogInformation(
-                "Pending basket activated: old NAV={OldNav:F2}, new scale={Scale:E6}, continuity preserved",
-                oldNav, newScaleFactor);
+                "Pending basket activated: old NAV={OldNav:F2}, new scale={Scale:E6}, jump={Jump:F2}bps, continuity preserved",
+                oldNav, newScaleFactor, jumpBps);
             return true;
         }
         finally { _calibrationLock.Release(); }
@@ -373,6 +383,28 @@ public sealed class PricingEngine
             Source = source,
             AsOf = DateTimeOffset.UtcNow,
         };
+    }
+
+    // ── Observability helpers ─────────────────────────────────
+
+    /// <summary>
+    /// Fraction (0–1) of total basket weight covered by symbols that currently
+    /// have a non-zero live price in the store.
+    /// </summary>
+    public double GetPricedWeightCoverage()
+    {
+        var basis = _currentBasis;
+        if (basis is null || basis.Entries.Count == 0) return 0;
+
+        decimal pricedWeight = 0m, totalWeight = 0m;
+        foreach (var e in basis.Entries)
+        {
+            var w = e.TargetWeight ?? 0m;
+            totalWeight += w;
+            var ps = _priceStore.Get(e.Symbol);
+            if (ps is not null && ps.Price > 0) pricedWeight += w;
+        }
+        return totalWeight > 0 ? (double)(pricedWeight / totalWeight) : 0;
     }
 
     // ── Series ring buffer ──────────────────────────────────────

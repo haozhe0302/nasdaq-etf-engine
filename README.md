@@ -179,9 +179,57 @@ arrive.
 | GET | `/api/marketdata/status` | Ingestion health, coverage, WebSocket state |
 | GET | `/api/marketdata/latest` | Latest prices for all or specific symbols |
 | GET | `/api/system/health` | Service health, runtime metrics, dependency status |
+| GET | `/metrics` | Prometheus-compatible metrics scrape endpoint |
 | WS | `/hubs/market` | SignalR hub — `QuoteUpdate` event every ~1 second |
 
 Swagger UI: **http://localhost:5015/swagger**
+
+---
+
+## Metrics exposed by MVP
+
+The engine exposes Prometheus-compatible metrics at **`/metrics`** and includes
+a runtime metrics snapshot in the `/api/system/health` response.
+
+### Gauges
+
+| Metric | Description |
+|--------|-------------|
+| `hqqq_snapshot_age_ms` | Age of the most recent computed quote snapshot (ms) |
+| `hqqq_priced_weight_coverage` | Ratio (0–1) of basket weight with live prices |
+| `hqqq_stale_symbol_ratio` | Ratio (0–1) of stale symbols to total tracked |
+
+### Histograms
+
+| Metric | Description |
+|--------|-------------|
+| `hqqq_tick_to_quote_ms` | Approximate tick-ingestion-to-quote-broadcast latency (ms) |
+| `hqqq_quote_broadcast_ms` | Time spent in the SignalR broadcast path per cycle (ms) |
+| `hqqq_failover_recovery_seconds` | Duration from REST fallback activation to WebSocket recovery (s) |
+| `hqqq_activation_jump_bps` | NAV discontinuity from basket activation before recalibration (bps) |
+
+### Counters
+
+| Metric | Description |
+|--------|-------------|
+| `hqqq_ticks_ingested_total` | Total market data ticks ingested |
+| `hqqq_quote_broadcasts_total` | Total quote snapshots broadcast via SignalR |
+| `hqqq_fallback_activations_total` | Total REST fallback activations |
+| `hqqq_basket_activations_total` | Total pending-basket activations |
+
+### Inspecting metrics
+
+```bash
+# Prometheus text format
+curl http://localhost:5015/metrics
+
+# Runtime snapshot via health API
+curl http://localhost:5015/api/system/health | jq .metrics
+```
+
+**Tick-to-quote approximation:** measured as `broadcast_time - latest_tick_timestamp`.
+This is the exact tick-to-quote latency for the most recent tick in each cycle.
+For earlier ticks, the true latency is up to one broadcast interval (~1 s) longer.
 
 ---
 

@@ -7,8 +7,7 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
-  # Uncomment when the API exposes a /metrics endpoint:
-  # - job_name: "hqqq-api"
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: ["host.docker.internal:5015"]
+  - job_name: "hqqq-api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:5015"]

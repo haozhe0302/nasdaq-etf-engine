@@ -11,6 +11,7 @@ import type {
   DataQualityMetrics,
   ServiceHealth,
   HealthStatus,
+  RuntimeMetricsData,
 } from "./types";
 
 // ── Backend DTO shapes (camelCase as serialized by ASP.NET Core) ──
@@ -89,6 +90,27 @@ interface BConstituentSnapshot {
   asOf: string;
 }
 
+interface BLatencyStats {
+  p50: number;
+  p95: number;
+  p99: number;
+  sampleCount: number;
+}
+
+interface BRuntimeMetrics {
+  snapshotAgeMs: number;
+  pricedWeightCoverage: number;
+  staleSymbolRatio: number;
+  tickToQuoteMs: BLatencyStats;
+  quoteBroadcastMs: BLatencyStats;
+  lastFailoverRecoverySeconds: number | null;
+  lastActivationJumpBps: number | null;
+  totalTicksIngested: number;
+  totalQuoteBroadcasts: number;
+  totalFallbackActivations: number;
+  totalBasketActivations: number;
+}
+
 interface BSystemHealth {
   serviceName: string;
   status: string;
@@ -102,6 +124,7 @@ interface BSystemHealth {
     gcGen2: number;
     threadCount: number;
   };
+  metrics?: BRuntimeMetrics | null;
   dependencies: {
     name: string;
     status: string;
@@ -247,6 +270,22 @@ export function adaptSystemHealth(raw: unknown): SystemSnapshot {
 
   const rt = h.runtime;
 
+  const metrics: RuntimeMetricsData | undefined = h.metrics
+    ? {
+        snapshotAgeMs: h.metrics.snapshotAgeMs,
+        pricedWeightCoverage: h.metrics.pricedWeightCoverage,
+        staleSymbolRatio: h.metrics.staleSymbolRatio,
+        tickToQuoteMs: h.metrics.tickToQuoteMs,
+        quoteBroadcastMs: h.metrics.quoteBroadcastMs,
+        lastFailoverRecoverySeconds: h.metrics.lastFailoverRecoverySeconds,
+        lastActivationJumpBps: h.metrics.lastActivationJumpBps,
+        totalTicksIngested: h.metrics.totalTicksIngested,
+        totalQuoteBroadcasts: h.metrics.totalQuoteBroadcasts,
+        totalFallbackActivations: h.metrics.totalFallbackActivations,
+        totalBasketActivations: h.metrics.totalBasketActivations,
+      }
+    : undefined;
+
   return {
     services,
     runtime: {
@@ -260,6 +299,7 @@ export function adaptSystemHealth(raw: unknown): SystemSnapshot {
       avgResponseMs: 0,
       errorRatePct: 0,
     },
+    metrics,
     pipelines: [],
     events: [],
   };

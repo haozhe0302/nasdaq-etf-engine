@@ -1,4 +1,5 @@
 using Hqqq.Api.Modules.System.Contracts;
+using Hqqq.Api.Modules.System.Services;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.Pricing.Services;
@@ -9,6 +10,7 @@ public static class SystemModule
 {
     public static IServiceCollection AddSystemModule(this IServiceCollection services)
     {
+        services.AddSingleton<MetricsService>();
         return services;
     }
 
@@ -18,7 +20,8 @@ public static class SystemModule
             IBasketSnapshotProvider basketProvider,
             ILatestPriceStore priceStore,
             IMarketDataIngestionService marketData,
-            PricingEngine pricingEngine) =>
+            PricingEngine pricingEngine,
+            MetricsService metrics) =>
         {
             var bs = basketProvider.GetState();
             var fh = priceStore.GetHealthSnapshot();
@@ -40,6 +43,7 @@ public static class SystemModule
                 Version = typeof(SystemModule).Assembly
                     .GetName().Version?.ToString() ?? "0.0.0",
                 Runtime = RuntimeInfo.Capture(),
+                Metrics = metrics.GetSnapshot(),
                 Dependencies =
                 [
                     new DependencyHealth

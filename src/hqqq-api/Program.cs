@@ -1,4 +1,5 @@
 using dotenv.net;
+using Prometheus;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Basket;
@@ -61,6 +62,7 @@ app.MapBasketEndpoints();
 app.MapMarketDataEndpoints();
 app.MapPricingEndpoints();
 app.MapSystemEndpoints();
+app.MapMetrics();
 
 app.MapHub<MarketHub>("/hubs/market");
 

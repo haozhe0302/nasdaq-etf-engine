@@ -23,6 +23,9 @@ public sealed record SystemHealth
     public required IReadOnlyList<DependencyHealth> Dependencies { get; init; }
 
     public required RuntimeInfo Runtime { get; init; }
+
+    /// <summary>Live observability metrics snapshot (gauges, percentiles, counters).</summary>
+    public RuntimeMetricsSnapshot? Metrics { get; init; }
 }
 
 public sealed record RuntimeInfo

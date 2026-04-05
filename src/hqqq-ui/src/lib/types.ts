@@ -130,6 +130,28 @@ export interface SystemSnapshot {
   runtime: RuntimeMetrics;
   pipelines: PipelineStatus[];
   events: SystemEvent[];
+  metrics?: RuntimeMetricsData;
+}
+
+export interface RuntimeMetricsData {
+  snapshotAgeMs: number;
+  pricedWeightCoverage: number;
+  staleSymbolRatio: number;
+  tickToQuoteMs: LatencyStatsData;
+  quoteBroadcastMs: LatencyStatsData;
+  lastFailoverRecoverySeconds: number | null;
+  lastActivationJumpBps: number | null;
+  totalTicksIngested: number;
+  totalQuoteBroadcasts: number;
+  totalFallbackActivations: number;
+  totalBasketActivations: number;
+}
+
+export interface LatencyStatsData {
+  p50: number;
+  p95: number;
+  p99: number;
+  sampleCount: number;
 }
 
 export interface ServiceHealth {

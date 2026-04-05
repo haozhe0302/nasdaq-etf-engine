@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Pricing.Contracts;
+using Hqqq.Api.Modules.System.Services;
 
 namespace Hqqq.Api.Modules.Pricing.Services;
 
@@ -17,6 +19,7 @@ public sealed class QuoteBroadcastService : BackgroundService
     private readonly PricingEngine _engine;
     private readonly ISeriesStore _seriesStore;
     private readonly IHubContext<MarketHub> _hubContext;
+    private readonly MetricsService _metrics;
     private readonly PricingOptions _options;
     private readonly ILogger<QuoteBroadcastService> _logger;
 
@@ -28,12 +31,14 @@ public sealed class QuoteBroadcastService : BackgroundService
         PricingEngine engine,
         ISeriesStore seriesStore,
         IHubContext<MarketHub> hubContext,
+        MetricsService metrics,
         IOptions<PricingOptions> options,
         ILogger<QuoteBroadcastService> logger)
     {
         _engine = engine;
         _seriesStore = seriesStore;
         _hubContext = hubContext;
+        _metrics = metrics;
         _options = options.Value;
         _logger = logger;
     }
@@ -68,8 +73,33 @@ public sealed class QuoteBroadcastService : BackgroundService
                 {
                     MaybeRecordSeriesPoint(quote);
 
+                    var broadcastSw = Stopwatch.StartNew();
                     await _hubContext.Clients.All
                         .SendAsync("QuoteUpdate", quote, stoppingToken);
+                    broadcastSw.Stop();
+
+                    _metrics.RecordQuoteBroadcast(broadcastSw.Elapsed.TotalMilliseconds);
+                    _metrics.IncrementQuoteBroadcasts();
+
+                    _metrics.SetSnapshotAge(
+                        (DateTimeOffset.UtcNow - quote.AsOf).TotalMilliseconds);
+                    _metrics.SetPricedWeightCoverage(_engine.GetPricedWeightCoverage());
+
+                    var staleRatio = quote.Freshness.SymbolsTotal > 0
+                        ? (double)quote.Freshness.SymbolsStale / quote.Freshness.SymbolsTotal
+                        : 0;
+                    _metrics.SetStaleSymbolRatio(staleRatio);
+
+                    // Tick-to-quote: time from most recent tick ingestion to broadcast.
+                    // This is a lower bound for the latest tick; for ticks earlier in the
+                    // same cycle the true latency is up to one broadcast interval longer.
+                    if (quote.Freshness.LastTickUtc is not null)
+                    {
+                        var tickToQuoteMs = (DateTimeOffset.UtcNow - quote.Freshness.LastTickUtc.Value)
+                            .TotalMilliseconds;
+                        if (tickToQuoteMs >= 0)
+                            _metrics.RecordTickToQuote(tickToQuoteMs);
+                    }
                 }
 
                 await MaybeFlushSeriesAsync(stoppingToken);

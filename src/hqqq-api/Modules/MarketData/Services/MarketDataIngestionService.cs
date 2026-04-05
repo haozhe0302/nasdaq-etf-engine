@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
+using Hqqq.Api.Modules.System.Services;
 
 namespace Hqqq.Api.Modules.MarketData.Services;
 
@@ -17,6 +18,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
     private readonly ILatestPriceStore _priceStore;
     private readonly TiingoWebSocketClient _wsClient;
     private readonly TiingoRestClient _restClient;
+    private readonly MetricsService _metrics;
     private readonly TiingoOptions _options;
     private readonly ILogger<MarketDataIngestionService> _logger;
 
@@ -50,6 +52,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         ILatestPriceStore priceStore,
         TiingoWebSocketClient wsClient,
         TiingoRestClient restClient,
+        MetricsService metrics,
         IOptions<TiingoOptions> options,
         ILogger<MarketDataIngestionService> logger)
     {
@@ -58,6 +61,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         _priceStore = priceStore;
         _wsClient = wsClient;
         _restClient = restClient;
+        _metrics = metrics;
         _options = options.Value;
         _logger = logger;
     }
@@ -213,6 +217,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                             "WebSocket not connected, activating REST fallback (every {Sec}s)",
                             _options.RestPollingIntervalSeconds);
                         _fallbackActive = true;
+                        _metrics.OnFallbackActivated();
                     }
 
                     var symbols = _subscriptions.GetAllSymbols();
@@ -233,6 +238,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                 {
                     _logger.LogInformation("WebSocket recovered, deactivating REST fallback");
                     _fallbackActive = false;
+                    _metrics.OnFallbackDeactivated();
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

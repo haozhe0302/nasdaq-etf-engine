@@ -2,6 +2,7 @@ import { useSystemData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MetricRow } from "@/components/MetricRow";
+import type { RuntimeMetricsData, LatencyStatsData } from "@/lib/types";
 
 function fmtUptime(s: number): string {
   if (s <= 0) return "—";
@@ -11,6 +12,26 @@ function fmtUptime(s: number): string {
   if (h > 0) return `${h}h ${m}m ${sec}s`;
   if (m > 0) return `${m}m ${sec}s`;
   return `${sec}s`;
+}
+
+function fmtMs(v: number): string {
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}s`;
+  return `${v.toFixed(1)}ms`;
+}
+
+function fmtPct(v: number): string {
+  return `${(v * 100).toFixed(1)}%`;
+}
+
+function fmtCount(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return String(v);
+}
+
+function fmtLatency(stats: LatencyStatsData | undefined, percentile: "p50" | "p95"): string {
+  if (!stats || stats.sampleCount === 0) return "—";
+  return fmtMs(stats[percentile]);
 }
 
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
@@ -23,6 +44,101 @@ function ConnectionBanner({ connectionState, error }: { connectionState: string;
     <div className={`rounded border px-3 py-1.5 text-xs ${cls}`}>
       {isConnecting ? "Connecting to backend\u2026" : error ?? "Connection lost \u2014 showing last known data"}
     </div>
+  );
+}
+
+function RuntimeMetricsPanel({ metrics }: { metrics?: RuntimeMetricsData }) {
+  if (!metrics) {
+    return (
+      <Panel title="Runtime Metrics" className="col-span-3">
+        <div className="p-3 text-xs text-muted">
+          Waiting for metrics data\u2026
+        </div>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel title="Runtime Metrics" className="col-span-3">
+      <div className="grid grid-cols-4 gap-x-8 p-3">
+        <div className="space-y-0.5">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted/70">
+            Freshness
+          </div>
+          <MetricRow label="Snapshot age" value={fmtMs(metrics.snapshotAgeMs)} />
+          <MetricRow
+            label="Weight coverage"
+            value={
+              <span className={metrics.pricedWeightCoverage >= 0.95 ? "text-positive" : "text-negative"}>
+                {fmtPct(metrics.pricedWeightCoverage)}
+              </span>
+            }
+          />
+          <MetricRow
+            label="Stale ratio"
+            value={
+              <span className={metrics.staleSymbolRatio <= 0.05 ? "text-positive" : "text-negative"}>
+                {fmtPct(metrics.staleSymbolRatio)}
+              </span>
+            }
+          />
+        </div>
+
+        <div className="space-y-0.5">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted/70">
+            Latency
+          </div>
+          <MetricRow
+            label="Tick→Quote (p50)"
+            value={fmtLatency(metrics.tickToQuoteMs, "p50")}
+          />
+          <MetricRow
+            label="Tick→Quote (p95)"
+            value={fmtLatency(metrics.tickToQuoteMs, "p95")}
+          />
+          <MetricRow
+            label="Broadcast (p50)"
+            value={fmtLatency(metrics.quoteBroadcastMs, "p50")}
+          />
+          <MetricRow
+            label="Broadcast (p95)"
+            value={fmtLatency(metrics.quoteBroadcastMs, "p95")}
+          />
+        </div>
+
+        <div className="space-y-0.5">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted/70">
+            Counters
+          </div>
+          <MetricRow label="Ticks ingested" value={fmtCount(metrics.totalTicksIngested)} />
+          <MetricRow label="Broadcasts" value={fmtCount(metrics.totalQuoteBroadcasts)} />
+          <MetricRow label="Fallback acts." value={String(metrics.totalFallbackActivations)} />
+          <MetricRow label="Basket acts." value={String(metrics.totalBasketActivations)} />
+        </div>
+
+        <div className="space-y-0.5">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-muted/70">
+            Events
+          </div>
+          <MetricRow
+            label="Failover recovery"
+            value={
+              metrics.lastFailoverRecoverySeconds != null
+                ? `${metrics.lastFailoverRecoverySeconds.toFixed(1)}s`
+                : "—"
+            }
+          />
+          <MetricRow
+            label="Activation jump"
+            value={
+              metrics.lastActivationJumpBps != null
+                ? `${metrics.lastActivationJumpBps.toFixed(1)} bps`
+                : "—"
+            }
+          />
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -45,6 +161,8 @@ export function SystemPage() {
         ))}
       </div>
 
+      <RuntimeMetricsPanel metrics={d.metrics} />
+
       <div className="grid grid-cols-3 gap-3">
         <Panel title="Runtime" className="col-span-2">
           <div className="grid grid-cols-2 gap-x-8 p-3">
@@ -63,8 +181,8 @@ export function SystemPage() {
 
         <Panel title="Notes">
           <div className="space-y-2 p-3 text-xs text-muted">
-            <p>CPU, request throughput, error rates, and pipeline metrics require instrumentation middleware (future phase).</p>
-            <p>Future: Redis, Kafka, TimescaleDB, Prometheus, and Grafana are planned for caching, event streaming, persistence, and dashboards.</p>
+            <p>Prometheus metrics available at <code className="text-accent">/metrics</code> for scraping.</p>
+            <p>CPU, request throughput, and error rates require additional middleware (future phase).</p>
           </div>
         </Panel>
       </div>

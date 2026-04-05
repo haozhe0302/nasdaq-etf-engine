@@ -179,6 +179,7 @@ arrive.
 | GET | `/api/marketdata/status` | Ingestion health, coverage, WebSocket state |
 | GET | `/api/marketdata/latest` | Latest prices for all or specific symbols |
 | GET | `/api/system/health` | Service health, runtime metrics, dependency status |
+| GET | `/api/history?range=` | Persisted quote history with tracking stats (1D/5D/1M/3M/YTD/1Y) |
 | GET | `/metrics` | Prometheus-compatible metrics scrape endpoint |
 | WS | `/hubs/market` | SignalR hub — `QuoteUpdate` event every ~1 second |
 
@@ -239,7 +240,7 @@ For earlier ticks, the true latency is up to one broadcast interval (~1 s) longe
 |-------|------|-------------|
 | `/market` | Market | Live — SignalR `QuoteUpdate` + REST `/api/quote` |
 | `/constituents` | Constituents | Live — REST polling `/api/constituents` every 5s |
-| `/history` | History | **Static mock data** (not yet backed by live replay) |
+| `/history` | History | Live — REST `/api/history?range=` with range selector |
 | `/system` | System | Live — REST polling `/api/system/health` every 5s |
 
 `/` redirects to `/market`.
@@ -270,6 +271,7 @@ See [`.env.example`](.env.example) for the full list with comments.
 | `HQQQ_SERIES_FILE` | No | `data/series.json` | Intraday iNAV series persistence path |
 | `HQQQ_QUOTE_BROADCAST_INTERVAL_MS` | No | `1000` | SignalR broadcast interval |
 | `HQQQ_SERIES_CAPACITY` | No | `5000` | In-memory series ring buffer size |
+| `HQQQ_HISTORY_DIR` | No | `data/history` | Quote history persistence directory |
 | `HQQQ_RECORDING_ENABLED` | No | `false` | Enable live event recording to JSONL |
 | `HQQQ_RECORDING_DIR` | No | `data/recordings` | Recording output directory |
 
@@ -308,7 +310,7 @@ Recording is append-only JSONL with four event types:
 ### 2. Generate a benchmark report (offline)
 
 ```bash
-dotnet run --project src/hqqq-bench -- --input data/recordings/2026-04-04
+dotnet run --project src/hqqq-bench -- --input data/recordings/YYYY-MM-DD
 ```
 
 Options:
@@ -363,15 +365,16 @@ validation checklist.
    exchange, `marketPrice` in the quote snapshot is the live QQQ price used as
    a reference for premium/discount calculation.
 
-3. **History page is static mock data.**
-   The History page renders charts and metrics from hardcoded mock data. It is
-   not yet backed by persisted live replay or historical storage. This requires
-   TimescaleDB or equivalent time-series storage (future phase).
+3. **History is filesystem-backed, not database-backed.**
+   The History page now uses real persisted data from JSONL files under
+   `data/history/`. This is sufficient for MVP but does not scale to
+   multi-month retention or complex queries. TimescaleDB is planned
+   for future phases.
 
 4. **No database persistence.**
-   All runtime state is in-memory or in local JSON files under `data/`.
-   Process restarts lose the in-memory series buffer (scale state and basket
-   cache are persisted to disk).
+   All runtime state is in-memory or in local JSON/JSONL files under `data/`.
+   Process restarts lose the in-memory series buffer (scale state, basket
+   cache, and quote history are persisted to disk).
 
 5. **Single-instance only.**
    The in-memory price store and pricing engine are singletons. There is no

@@ -33,6 +33,10 @@ export function fetchSystemHealth(): Promise<unknown> {
   return get("/api/system/health");
 }
 
+export function fetchHistory(range: string): Promise<unknown> {
+  return get(`/api/history?range=${encodeURIComponent(range)}`);
+}
+
 export function createMarketHubConnection(): signalR.HubConnection {
   return new signalR.HubConnectionBuilder()
     .withUrl(`${BASE_URL}/hubs/market`)

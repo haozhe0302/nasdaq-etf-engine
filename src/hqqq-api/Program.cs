@@ -4,6 +4,7 @@ using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Basket;
 using Hqqq.Api.Modules.Benchmark;
+using Hqqq.Api.Modules.History;
 using Hqqq.Api.Modules.MarketData;
 using Hqqq.Api.Modules.Pricing;
 using Hqqq.Api.Modules.System;
@@ -34,7 +35,8 @@ builder.Services
     .AddMarketDataModule()
     .AddPricingModule()
     .AddSystemModule()
-    .AddBenchmarkModule();
+    .AddBenchmarkModule()
+    .AddHistoryModule();
 
 var allowedOrigins =
     builder.Configuration["HQQQ_ALLOWED_ORIGINS"]?
@@ -66,6 +68,7 @@ app.MapBasketEndpoints();
 app.MapMarketDataEndpoints();
 app.MapPricingEndpoints();
 app.MapSystemEndpoints();
+app.MapHistoryEndpoints();
 app.MapMetrics();
 
 app.MapHub<MarketHub>("/hubs/market");

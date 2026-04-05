@@ -90,10 +90,16 @@ export interface DataQualityMetrics {
 // ── history ─────────────────────────────────────────
 
 export interface HistorySnapshot {
+  range: string;
+  startDate: string;
+  endDate: string;
+  pointCount: number;
+  totalPoints: number;
+  isPartial: boolean;
   series: HistoryPoint[];
   trackingError: TrackingErrorMetrics;
   distribution: DistributionBucket[];
-  diagnostics: ReplayDiagnostics;
+  diagnostics: HistoryDiagnostics;
 }
 
 export interface HistoryPoint {
@@ -103,10 +109,10 @@ export interface HistoryPoint {
 }
 
 export interface TrackingErrorMetrics {
-  te1dPct: number;
-  te5dPct: number;
+  rmseBps: number;
+  maxAbsBasisBps: number;
+  avgAbsBasisBps: number;
   maxDeviationPct: number;
-  meanAbsPdBps: number;
   correlation: number;
 }
 
@@ -115,12 +121,11 @@ export interface DistributionBucket {
   count: number;
 }
 
-export interface ReplayDiagnostics {
+export interface HistoryDiagnostics {
   snapshots: number;
   gaps: number;
-  maxLatencyMs: number;
-  avgLatencyMs: number;
   completenessPct: number;
+  daysLoaded: number;
 }
 
 // ── system ──────────────────────────────────────────

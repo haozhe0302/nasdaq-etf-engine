@@ -2,6 +2,7 @@ import type {
   MarketSnapshot,
   ConstituentSnapshot,
   SystemSnapshot,
+  HistorySnapshot,
   TimeSeriesPoint,
   Mover,
   FreshnessMetrics,
@@ -12,6 +13,7 @@ import type {
   ServiceHealth,
   HealthStatus,
   RuntimeMetricsData,
+  HistoryPoint,
 } from "./types";
 
 // ── Backend DTO shapes (camelCase as serialized by ASP.NET Core) ──
@@ -302,6 +304,67 @@ export function adaptSystemHealth(raw: unknown): SystemSnapshot {
     metrics,
     pipelines: [],
     events: [],
+  };
+}
+
+// ── History ─────────────────────────────────────────
+
+interface BHistoryResponse {
+  range: string;
+  startDate: string;
+  endDate: string;
+  pointCount: number;
+  totalPoints: number;
+  isPartial: boolean;
+  series: { time: string; nav: number; marketPrice: number }[];
+  trackingError: {
+    rmseBps: number;
+    maxAbsBasisBps: number;
+    avgAbsBasisBps: number;
+    maxDeviationPct: number;
+    correlation: number;
+  };
+  distribution: { label: string; count: number }[];
+  diagnostics: {
+    snapshots: number;
+    gaps: number;
+    completenessPct: number;
+    daysLoaded: number;
+  };
+}
+
+export function adaptHistory(raw: unknown): HistorySnapshot {
+  const h = raw as BHistoryResponse;
+
+  const series: HistoryPoint[] = (h.series ?? []).map((p) => {
+    const d = new Date(p.time);
+    const label = d.toLocaleString("en-US", {
+      timeZone: "America/New_York",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return { time: label, nav: p.nav, reference: p.marketPrice };
+  });
+
+  return {
+    range: h.range ?? "1D",
+    startDate: h.startDate ?? "",
+    endDate: h.endDate ?? "",
+    pointCount: h.pointCount ?? 0,
+    totalPoints: h.totalPoints ?? 0,
+    isPartial: h.isPartial ?? true,
+    series,
+    trackingError: h.trackingError ?? {
+      rmseBps: 0, maxAbsBasisBps: 0, avgAbsBasisBps: 0,
+      maxDeviationPct: 0, correlation: 0,
+    },
+    distribution: h.distribution ?? [],
+    diagnostics: h.diagnostics ?? {
+      snapshots: 0, gaps: 0, completenessPct: 0, daysLoaded: 0,
+    },
   };
 }
 

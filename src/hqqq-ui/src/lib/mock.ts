@@ -158,10 +158,16 @@ const HIST_DIST: DistributionBucket[] = Array.from({ length: 11 }, (_, i) => ({
 
 export function getHistorySnapshot(): HistorySnapshot {
   return {
+    range: "5D",
+    startDate: "2026-03-24",
+    endDate: "2026-03-28",
+    pointCount: HIST_SERIES.length,
+    totalPoints: HIST_SERIES.length,
+    isPartial: false,
     series: HIST_SERIES,
-    trackingError: { te1dPct: 0.012, te5dPct: 0.018, maxDeviationPct: 0.041, meanAbsPdBps: 0.8, correlation: 0.99997 },
+    trackingError: { rmseBps: 0.8, maxAbsBasisBps: 4.1, avgAbsBasisBps: 0.8, maxDeviationPct: 0.041, correlation: 0.99997 },
     distribution: HIST_DIST,
-    diagnostics: { snapshots: 1847, gaps: 0, maxLatencyMs: 8.4, avgLatencyMs: 1.9, completenessPct: 100 },
+    diagnostics: { snapshots: 1847, gaps: 0, completenessPct: 100, daysLoaded: 5 },
   };
 }
 

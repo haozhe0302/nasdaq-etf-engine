@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useHistoryData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { Chart } from "@/components/Chart";
@@ -5,13 +6,30 @@ import { MetricRow } from "@/components/MetricRow";
 import type { EChartsOption } from "echarts";
 
 const AX = { text: "#8b949e", grid: "#1e293b" };
-const RANGES = ["1D", "5D", "1M", "3M", "YTD", "1Y"];
+const RANGES = ["1D", "5D", "1M", "3M", "YTD", "1Y"] as const;
+
+function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
+  if (connectionState === "live") return null;
+  const isConnecting = connectionState === "connecting";
+  const cls = isConnecting
+    ? "border-accent/30 bg-accent/10 text-accent"
+    : "border-yellow-500/30 bg-yellow-500/10 text-yellow-400";
+  return (
+    <div className={`rounded border px-3 py-1.5 text-xs ${cls}`}>
+      {isConnecting ? "Loading history\u2026" : error ?? "Connection lost \u2014 showing last known data"}
+    </div>
+  );
+}
 
 export function HistoryPage() {
-  const d = useHistoryData();
+  const [range, setRange] = useState<string>("1D");
+  const { data: d, connectionState, error } = useHistoryData(range);
+  const hasSeries = d.series.length > 0;
 
   const times = d.series.map((p) => p.time);
-  const pdPct = d.series.map((p) => +(((p.reference - p.nav) / p.nav) * 100).toFixed(3));
+  const pdPct = d.series.map((p) =>
+    p.nav > 0 ? +(((p.reference - p.nav) / p.nav) * 100).toFixed(3) : 0,
+  );
 
   const compChart: EChartsOption = {
     backgroundColor: "transparent",
@@ -21,10 +39,12 @@ export function HistoryPage() {
     grid: { left: 50, right: 12, top: 30, bottom: 24 },
     xAxis: { data: times, axisLabel: { color: AX.text, fontSize: 10 }, axisLine: { lineStyle: { color: AX.grid } }, splitLine: { show: false } },
     yAxis: { scale: true, axisLabel: { color: AX.text, fontSize: 10 }, splitLine: { lineStyle: { color: AX.grid } } },
-    series: [
-      { name: "HQQQ iNAV", type: "line", data: d.series.map((p) => p.nav), symbol: "none", lineStyle: { width: 2, color: "#3b82f6" } },
-      { name: "QQQ", type: "line", data: d.series.map((p) => p.reference), symbol: "none", lineStyle: { width: 1.5, color: "#8b949e" } },
-    ],
+    series: hasSeries
+      ? [
+          { name: "HQQQ iNAV", type: "line", data: d.series.map((p) => p.nav), symbol: "none", lineStyle: { width: 2, color: "#3b82f6" } },
+          { name: "QQQ", type: "line", data: d.series.map((p) => p.reference), symbol: "none", lineStyle: { width: 1.5, color: "#8b949e" } },
+        ]
+      : [],
   };
 
   const pdHistChart: EChartsOption = {
@@ -34,7 +54,9 @@ export function HistoryPage() {
     grid: { left: 50, right: 12, top: 8, bottom: 24 },
     xAxis: { data: times, axisLabel: { color: AX.text, fontSize: 10 }, axisLine: { lineStyle: { color: AX.grid } }, splitLine: { show: false } },
     yAxis: { axisLabel: { color: AX.text, fontSize: 10 }, splitLine: { lineStyle: { color: AX.grid } } },
-    series: [{ type: "line", data: pdPct, symbol: "none", lineStyle: { width: 1.5, color: "#3b82f6" }, areaStyle: { color: "rgba(59,130,246,0.08)" } }],
+    series: hasSeries
+      ? [{ type: "line", data: pdPct, symbol: "none", lineStyle: { width: 1.5, color: "#3b82f6" }, areaStyle: { color: "rgba(59,130,246,0.08)" } }]
+      : [],
   };
 
   const distChart: EChartsOption = {
@@ -44,7 +66,9 @@ export function HistoryPage() {
     grid: { left: 45, right: 12, top: 8, bottom: 28 },
     xAxis: { type: "category", data: d.distribution.map((b) => b.label), axisLabel: { color: AX.text, fontSize: 9 }, axisLine: { lineStyle: { color: AX.grid } } },
     yAxis: { axisLabel: { color: AX.text, fontSize: 10 }, splitLine: { lineStyle: { color: AX.grid } } },
-    series: [{ type: "bar", data: d.distribution.map((b) => b.count), itemStyle: { color: "#3b82f633" } }],
+    series: d.distribution.length > 0
+      ? [{ type: "bar", data: d.distribution.map((b) => b.count), itemStyle: { color: "#3b82f633" } }]
+      : [],
   };
 
   const te = d.trackingError;
@@ -52,13 +76,16 @@ export function HistoryPage() {
 
   return (
     <div className="space-y-3">
+      <ConnectionBanner connectionState={connectionState} error={error} />
+
       <div className="flex items-center gap-3 rounded border border-edge bg-surface px-3 py-2 text-xs">
         <span className="font-medium text-content">Range</span>
         {RANGES.map((r) => (
           <button
             key={r}
+            onClick={() => setRange(r)}
             className={`rounded px-2.5 py-1 text-xs font-medium ${
-              r === "5D"
+              r === range
                 ? "border border-accent/30 bg-accent/15 text-accent"
                 : "border border-edge text-muted hover:text-content"
             }`}
@@ -67,42 +94,62 @@ export function HistoryPage() {
           </button>
         ))}
         <span className="text-edge">│</span>
-        <span className="text-muted">Interval:</span>
-        <span className="rounded bg-accent/10 px-2 py-0.5 text-accent">15m</span>
+        {d.pointCount > 0 && (
+          <>
+            <span className="text-muted">{d.pointCount} pts</span>
+            {d.isPartial && <span className="text-yellow-400">(partial)</span>}
+          </>
+        )}
         <span className="ml-auto font-mono text-muted">
-          {d.series[0]?.time} – {d.series[d.series.length - 1]?.time}
+          {d.startDate && d.endDate ? `${d.startDate} – ${d.endDate}` : "—"}
         </span>
       </div>
 
-      <Panel title="HQQQ iNAV vs QQQ Reference">
-        <Chart option={compChart} className="h-56 p-1" />
-      </Panel>
+      {!hasSeries && connectionState === "live" ? (
+        <Panel>
+          <div className="flex h-48 items-center justify-center text-sm text-muted">
+            No history data available for the selected range.
+            {range === "1D" && " Data is recorded during market hours (9:30–16:00 ET)."}
+          </div>
+        </Panel>
+      ) : (
+        <>
+          <Panel title="HQQQ iNAV vs QQQ Reference">
+            <Chart option={compChart} className="h-56 p-1" />
+          </Panel>
 
-      <Panel title="Premium / Discount History (%)">
-        <Chart option={pdHistChart} className="h-40 p-1" />
-      </Panel>
+          <Panel title="Premium / Discount History (%)">
+            <Chart option={pdHistChart} className="h-40 p-1" />
+          </Panel>
+        </>
+      )}
 
       <div className="grid grid-cols-3 gap-3">
         <Panel title="Tracking Error">
           <div className="space-y-0.5 p-3">
-            <MetricRow label="TE (1D annualized)" value={`${te.te1dPct}%`} />
-            <MetricRow label="TE (5D annualized)" value={`${te.te5dPct}%`} />
-            <MetricRow label="Max daily deviation" value={`${te.maxDeviationPct}%`} />
-            <MetricRow label="Mean absolute P/D" value={`${te.meanAbsPdBps} bps`} />
-            <MetricRow label="Correlation (r²)" value={String(te.correlation)} />
+            <MetricRow label="Basis RMSE" value={hasSeries ? `${te.rmseBps.toFixed(2)} bps` : "—"} />
+            <MetricRow label="Max abs basis" value={hasSeries ? `${te.maxAbsBasisBps.toFixed(2)} bps` : "—"} />
+            <MetricRow label="Avg abs basis" value={hasSeries ? `${te.avgAbsBasisBps.toFixed(2)} bps` : "—"} />
+            <MetricRow label="Max deviation" value={hasSeries ? `${te.maxDeviationPct.toFixed(4)}%` : "—"} />
+            <MetricRow label="Correlation (r)" value={hasSeries ? te.correlation.toFixed(5) : "—"} />
           </div>
         </Panel>
 
-        <Panel title="P/D Distribution (5D)">
-          <Chart option={distChart} className="h-[140px] p-1" />
+        <Panel title={`P/D Distribution (${range})`}>
+          {d.distribution.length > 0 ? (
+            <Chart option={distChart} className="h-[140px] p-1" />
+          ) : (
+            <div className="flex h-[140px] items-center justify-center text-xs text-muted">No data</div>
+          )}
         </Panel>
 
-        <Panel title="Replay Diagnostics">
+        <Panel title="Diagnostics">
           <div className="space-y-0.5 p-3">
             <MetricRow label="Snapshots recorded" value={diag.snapshots.toLocaleString()} />
-            <MetricRow label="Gaps detected" value={<span className="text-positive">{diag.gaps}</span>} />
-            <MetricRow label="Max calc latency" value={`${diag.maxLatencyMs}ms`} />
-            <MetricRow label="Avg calc latency" value={`${diag.avgLatencyMs}ms`} />
+            <MetricRow label="Days loaded" value={String(diag.daysLoaded)} />
+            <MetricRow label="Gaps detected" value={
+              <span className={diag.gaps === 0 ? "text-positive" : "text-negative"}>{diag.gaps}</span>
+            } />
             <MetricRow label="Data completeness" value={`${diag.completenessPct}%`} />
           </div>
         </Panel>

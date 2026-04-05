@@ -5,21 +5,23 @@ import {
   fetchQuote,
   fetchConstituents,
   fetchSystemHealth,
+  fetchHistory,
   createMarketHubConnection,
 } from "./api";
 import {
   adaptQuote,
   adaptConstituents,
   adaptSystemHealth,
+  adaptHistory,
   deriveSymbolCount,
   toHealthStatus,
 } from "./adapters";
-import { getHistorySnapshot } from "./mock";
 import { recordUpdate, unregisterFeed, getMinIntervalMs } from "./updateTracker";
 import type {
   MarketSnapshot,
   ConstituentSnapshot,
   SystemSnapshot,
+  HistorySnapshot,
   AppStatus,
   ConnectionState,
   LiveDataResult,
@@ -262,10 +264,52 @@ export function useSystemData(): LiveDataResult<SystemSnapshot> {
   return { data, connectionState, error };
 }
 
-// ── History (static/mock — unchanged) ───────────────
+// ── History (real backend API with range selection) ──
 
-export function useHistoryData() {
-  return useState(getHistorySnapshot)[0];
+const EMPTY_HISTORY: HistorySnapshot = {
+  range: "1D",
+  startDate: "",
+  endDate: "",
+  pointCount: 0,
+  totalPoints: 0,
+  isPartial: true,
+  series: [],
+  trackingError: { rmseBps: 0, maxAbsBasisBps: 0, avgAbsBasisBps: 0, maxDeviationPct: 0, correlation: 0 },
+  distribution: [],
+  diagnostics: { snapshots: 0, gaps: 0, completenessPct: 0, daysLoaded: 0 },
+};
+
+export function useHistoryData(range: string): LiveDataResult<HistorySnapshot> {
+  const [data, setData] = useState<HistorySnapshot>(EMPTY_HISTORY);
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>("connecting");
+  const [error, setError] = useState<string>();
+
+  const poll = useCallback(async () => {
+    try {
+      const raw = await fetchHistory(range);
+      setData(adaptHistory(raw));
+      recordUpdate("history");
+      setConnectionState("live");
+      setError(undefined);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setConnectionState((prev) => (prev === "live" ? "stale" : "error"));
+      setError(msg);
+    }
+  }, [range]);
+
+  useEffect(() => {
+    setConnectionState("connecting");
+    poll();
+    const id = setInterval(poll, 30_000);
+    return () => {
+      clearInterval(id);
+      unregisterFeed("history");
+    };
+  }, [poll]);
+
+  return { data, connectionState, error };
 }
 
 // ── App status (derived from live health endpoint) ──

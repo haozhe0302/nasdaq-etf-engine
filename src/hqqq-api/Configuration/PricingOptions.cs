@@ -10,4 +10,5 @@ public sealed class PricingOptions
     public int SeriesCapacity { get; set; } = 5_000;
     public int SeriesRecordIntervalMs { get; set; } = 5_000;
     public string MarketTimeZone { get; set; } = "America/New_York";
+    public string HistoryDir { get; set; } = "data/history";
 }

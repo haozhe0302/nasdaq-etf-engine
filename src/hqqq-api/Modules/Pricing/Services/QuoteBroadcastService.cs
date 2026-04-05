@@ -4,6 +4,8 @@ using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Benchmark.Services;
+using Hqqq.Api.Modules.History.Contracts;
+using Hqqq.Api.Modules.History.Services;
 using Hqqq.Api.Modules.Pricing.Contracts;
 using Hqqq.Api.Modules.System.Services;
 
@@ -22,11 +24,13 @@ public sealed class QuoteBroadcastService : BackgroundService
     private readonly IHubContext<MarketHub> _hubContext;
     private readonly MetricsService _metrics;
     private readonly EventRecorderService _recorder;
+    private readonly HistoryFileStore _historyStore;
     private readonly PricingOptions _options;
     private readonly ILogger<QuoteBroadcastService> _logger;
 
     private DateTimeOffset _nextRecordAt = DateTimeOffset.MinValue;
     private DateTimeOffset _nextFlushAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextHistoryAt = DateTimeOffset.MinValue;
     private DateOnly _lastSeriesDate;
 
     public QuoteBroadcastService(
@@ -35,6 +39,7 @@ public sealed class QuoteBroadcastService : BackgroundService
         IHubContext<MarketHub> hubContext,
         MetricsService metrics,
         EventRecorderService recorder,
+        HistoryFileStore historyStore,
         IOptions<PricingOptions> options,
         ILogger<QuoteBroadcastService> logger)
     {
@@ -43,6 +48,7 @@ public sealed class QuoteBroadcastService : BackgroundService
         _hubContext = hubContext;
         _metrics = metrics;
         _recorder = recorder;
+        _historyStore = historyStore;
         _options = options.Value;
         _logger = logger;
     }
@@ -76,6 +82,7 @@ public sealed class QuoteBroadcastService : BackgroundService
                 if (quote is not null)
                 {
                     MaybeRecordSeriesPoint(quote);
+                    MaybeRecordHistoryPoint(quote);
 
                     var broadcastSw = Stopwatch.StartNew();
                     await _hubContext.Clients.All
@@ -160,6 +167,23 @@ public sealed class QuoteBroadcastService : BackgroundService
                     pointDate, today);
             }
         }
+    }
+
+    private void MaybeRecordHistoryPoint(Contracts.QuoteSnapshot quote)
+    {
+        if (!_engine.IsWithinMarketHours()) return;
+        var now = DateTimeOffset.UtcNow;
+        if (now < _nextHistoryAt) return;
+
+        _historyStore.Append(new HistoryRow
+        {
+            Time = quote.AsOf,
+            Nav = quote.Nav,
+            MarketPrice = quote.MarketPrice,
+            SymbolsTotal = quote.Freshness.SymbolsTotal,
+            SymbolsStale = quote.Freshness.SymbolsStale,
+        });
+        _nextHistoryAt = now.AddMilliseconds(_options.SeriesRecordIntervalMs);
     }
 
     private void MaybeRecordSeriesPoint(Contracts.QuoteSnapshot quote)

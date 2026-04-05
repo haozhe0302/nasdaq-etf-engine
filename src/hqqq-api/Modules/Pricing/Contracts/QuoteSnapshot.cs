@@ -2,7 +2,9 @@ namespace Hqqq.Api.Modules.Pricing.Contracts;
 
 /// <summary>
 /// Frontend-ready aggregated quote snapshot for the Market page.
-/// Broadcast via SignalR every second and served from GET /api/quote.
+/// Served as a full snapshot via GET /api/quote for initial page load
+/// and reconnect resync. NOT broadcast directly over SignalR — the
+/// realtime channel sends the slim <see cref="QuoteRealtimeUpdate"/> instead.
 /// </summary>
 public sealed record QuoteSnapshot
 {

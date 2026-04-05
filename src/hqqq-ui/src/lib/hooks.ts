@@ -222,6 +222,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       if (!cancelled) {
         setConnectionState("error");
         setError(err.message);
+        startRetryLoop();
       }
     });
 

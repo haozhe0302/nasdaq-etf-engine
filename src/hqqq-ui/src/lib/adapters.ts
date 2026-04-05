@@ -330,7 +330,12 @@ export function adaptQuoteDelta(raw: unknown): QuoteDelta {
 
 // ── Merge a slim delta into a full MarketSnapshot ───
 
-export const MAX_SERIES_POINTS = 1_000;
+const REGULAR_SESSION_MS = 6.5 * 60 * 60 * 1_000; // 9:30–16:00 ET
+const SERIES_RECORD_INTERVAL_MS = 5_000; // matches backend PricingOptions.SeriesRecordIntervalMs default
+
+/** Client-side cap: covers a full regular trading day plus a small buffer. */
+export const MAX_SERIES_POINTS =
+  Math.ceil(REGULAR_SESSION_MS / SERIES_RECORD_INTERVAL_MS) + 120;
 
 export function mergeQuoteDelta(
   prev: MarketSnapshot,
@@ -339,13 +344,20 @@ export function mergeQuoteDelta(
   let series = prev.series;
 
   if (delta.latestSeriesPoint) {
-    const ts = delta.latestSeriesPoint.time;
-    const isDuplicate = series.length > 0 && series[series.length - 1].time === ts;
-    if (!isDuplicate) {
-      series = [...series, delta.latestSeriesPoint];
-      if (series.length > MAX_SERIES_POINTS) {
-        series = series.slice(series.length - MAX_SERIES_POINTS);
+    const incoming = delta.latestSeriesPoint;
+    if (series.length === 0) {
+      series = [incoming];
+    } else {
+      const lastTs = series[series.length - 1].time;
+      if (incoming.time > lastTs) {
+        series = [...series, incoming];
+      } else if (incoming.time === lastTs) {
+        series = [...series.slice(0, -1), incoming];
       }
+      // incoming.time < lastTs → stale/out-of-order, ignore
+    }
+    if (series.length > MAX_SERIES_POINTS) {
+      series = series.slice(series.length - MAX_SERIES_POINTS);
     }
   }
 

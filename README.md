@@ -193,12 +193,17 @@ delivery path uses a two-tier design:
 | Channel | Payload | When |
 |---------|---------|------|
 | `GET /api/quote` | **Full `QuoteSnapshot`** — includes the complete intraday `series` array, movers, freshness, feeds | Initial page load, reconnect resync, manual refresh |
-| SignalR `QuoteUpdate` | **Slim `QuoteRealtimeUpdate`** — scalar fields + latest series point (nullable) + movers + freshness + feeds. **No `series` array.** | Every 500ms second broadcast cycle |
+| SignalR `QuoteUpdate` | **Slim `QuoteRealtimeUpdate`** — scalar fields + latest series point (nullable) + movers + freshness + feeds. **No `series` array.** | Every ~1 s broadcast cycle |
 
 The frontend bootstraps from the REST endpoint, then merges each incoming
-SignalR delta into local state, appending the latest series point and capping
-the client-side series to 1 000 points. On reconnect the full snapshot is
-re-fetched to resync.
+SignalR delta into local state:
+- **Newer** timestamp → append to local series
+- **Equal** timestamp → replace last point (corrected value)
+- **Older** timestamp → ignore (stale / out-of-order)
+
+The client-side series is capped to cover a full regular trading session
+(derived from `SeriesRecordIntervalMs`, currently ~4 800 points at the
+default 5 s cadence). On reconnect the full snapshot is re-fetched to resync.
 
 ---
 

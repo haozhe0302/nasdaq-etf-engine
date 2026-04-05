@@ -74,6 +74,14 @@ function makeSnapshot(seriesOverride?: TimeSeriesPoint[]): MarketSnapshot {
   };
 }
 
+function makeDeltaWith(time: string, nav: number, market: number) {
+  return adaptQuoteDelta(
+    makeBackendDelta({
+      latestSeriesPoint: { time, nav, market },
+    }),
+  );
+}
+
 // ── adaptQuoteDelta ─────────────────────────────────
 
 describe("adaptQuoteDelta", () => {
@@ -143,6 +151,19 @@ describe("adaptQuoteDelta", () => {
   });
 });
 
+// ── MAX_SERIES_POINTS derivation ────────────────────
+
+describe("MAX_SERIES_POINTS", () => {
+  it("covers a full 6.5-hour trading session at 5s cadence", () => {
+    const pointsInSession = Math.ceil((6.5 * 60 * 60 * 1_000) / 5_000);
+    expect(MAX_SERIES_POINTS).toBeGreaterThanOrEqual(pointsInSession);
+  });
+
+  it("is not excessively large", () => {
+    expect(MAX_SERIES_POINTS).toBeLessThan(6_000);
+  });
+});
+
 // ── mergeQuoteDelta ─────────────────────────────────
 
 describe("mergeQuoteDelta", () => {
@@ -165,17 +186,9 @@ describe("mergeQuoteDelta", () => {
     expect(merged.series).toEqual(prev.series);
   });
 
-  it("appends new series point from delta", () => {
+  it("appends point when timestamp is newer than last", () => {
     const prev = makeSnapshot();
-    const delta = adaptQuoteDelta(
-      makeBackendDelta({
-        latestSeriesPoint: {
-          time: "2026-04-05T14:02:00Z",
-          nav: 101,
-          market: 401,
-        },
-      }),
-    );
+    const delta = makeDeltaWith("2026-04-05T14:02:00Z", 101, 401);
     const merged = mergeQuoteDelta(prev, delta);
 
     expect(merged.series).toHaveLength(3);
@@ -186,21 +199,42 @@ describe("mergeQuoteDelta", () => {
     });
   });
 
-  it("does not create duplicate when timestamp matches last point", () => {
+  it("replaces last point when timestamp equals last", () => {
     const prev = makeSnapshot([
+      { time: "2026-04-05T14:00:00Z", nav: 100, market: 400 },
       { time: "2026-04-05T14:01:00Z", nav: 100.5, market: 400.2 },
     ]);
-    const delta = adaptQuoteDelta(
-      makeBackendDelta({
-        latestSeriesPoint: {
-          time: "2026-04-05T14:01:00Z",
-          nav: 100.6,
-          market: 400.3,
-        },
-      }),
-    );
+    const delta = makeDeltaWith("2026-04-05T14:01:00Z", 100.9, 400.5);
     const merged = mergeQuoteDelta(prev, delta);
+
+    expect(merged.series).toHaveLength(2);
+    expect(merged.series[1]).toEqual({
+      time: "2026-04-05T14:01:00Z",
+      nav: 100.9,
+      market: 400.5,
+    });
+    expect(merged.series[0]).toEqual(prev.series[0]);
+  });
+
+  it("ignores point when timestamp is older than last", () => {
+    const prev = makeSnapshot([
+      { time: "2026-04-05T14:00:00Z", nav: 100, market: 400 },
+      { time: "2026-04-05T14:01:00Z", nav: 100.5, market: 400.2 },
+    ]);
+    const delta = makeDeltaWith("2026-04-05T13:59:00Z", 99, 399);
+    const merged = mergeQuoteDelta(prev, delta);
+
+    expect(merged.series).toHaveLength(2);
+    expect(merged.series).toEqual(prev.series);
+  });
+
+  it("appends into empty series", () => {
+    const prev = makeSnapshot([]);
+    const delta = makeDeltaWith("2026-04-05T14:00:00Z", 100, 400);
+    const merged = mergeQuoteDelta(prev, delta);
+
     expect(merged.series).toHaveLength(1);
+    expect(merged.series[0].time).toBe("2026-04-05T14:00:00Z");
   });
 
   it("caps series at MAX_SERIES_POINTS", () => {
@@ -213,15 +247,7 @@ describe("mergeQuoteDelta", () => {
       }),
     );
     const prev = makeSnapshot(bigSeries);
-    const delta = adaptQuoteDelta(
-      makeBackendDelta({
-        latestSeriesPoint: {
-          time: "2026-04-05T20:00:00Z",
-          nav: 200,
-          market: 500,
-        },
-      }),
-    );
+    const delta = makeDeltaWith("2026-04-05T20:00:00Z", 200, 500);
     const merged = mergeQuoteDelta(prev, delta);
 
     expect(merged.series).toHaveLength(MAX_SERIES_POINTS);
@@ -240,8 +266,12 @@ describe("mergeQuoteDelta", () => {
     expect(merged.movers[0].symbol).toBe("AAPL");
     expect(merged.freshness.totalSymbols).toBe(100);
   });
+});
 
-  it("full snapshot replace on reconnect works", () => {
+// ── Reconnect full snapshot replace ─────────────────
+
+describe("reconnect full snapshot replace", () => {
+  it("adaptQuote produces complete MarketSnapshot from REST response", () => {
     const fullBackend = {
       nav: 200,
       navChangePct: 0.5,
@@ -252,6 +282,7 @@ describe("mergeQuoteDelta", () => {
       asOf: "2026-04-05T15:00:00Z",
       series: [
         { time: "2026-04-05T15:00:00Z", nav: 200, market: 500 },
+        { time: "2026-04-05T15:01:00Z", nav: 201, market: 501 },
       ],
       movers: [],
       freshness: {
@@ -272,8 +303,53 @@ describe("mergeQuoteDelta", () => {
       },
     };
     const snapshot = adaptQuote(fullBackend);
-    expect(snapshot.series).toHaveLength(1);
+
+    expect(snapshot.series).toHaveLength(2);
     expect(snapshot.nav).toBe(200);
     expect(snapshot.asOf).toBeInstanceOf(Date);
+  });
+
+  it("full snapshot completely replaces stale local state", () => {
+    const staleLocal = makeSnapshot([
+      { time: "2026-04-05T12:00:00Z", nav: 90, market: 380 },
+    ]);
+
+    const freshBackend = {
+      nav: 200,
+      navChangePct: 0.5,
+      marketPrice: 500,
+      premiumDiscountPct: 0.1,
+      qqq: 500,
+      basketValueB: 2,
+      asOf: "2026-04-05T15:00:00Z",
+      series: [
+        { time: "2026-04-05T14:00:00Z", nav: 195, market: 495 },
+        { time: "2026-04-05T15:00:00Z", nav: 200, market: 500 },
+      ],
+      movers: [],
+      freshness: {
+        symbolsTotal: 50,
+        symbolsFresh: 48,
+        symbolsStale: 2,
+        freshPct: 96,
+        lastTickUtc: null,
+        avgTickIntervalMs: null,
+      },
+      feeds: {
+        webSocketConnected: true,
+        fallbackActive: false,
+        pricingActive: true,
+        basketState: "active",
+        pendingActivationBlocked: false,
+        pendingBlockedReason: null,
+      },
+    };
+    const freshSnapshot = adaptQuote(freshBackend);
+
+    expect(freshSnapshot.series).toHaveLength(2);
+    expect(freshSnapshot.nav).toBe(200);
+    expect(freshSnapshot.series[0].time).toBe("2026-04-05T14:00:00Z");
+    expect(staleLocal.series[0].time).toBe("2026-04-05T12:00:00Z");
+    expect(freshSnapshot.series).not.toEqual(staleLocal.series);
   });
 });

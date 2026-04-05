@@ -33,6 +33,10 @@ export function fetchSystemHealth(): Promise<unknown> {
   return get("/api/system/health");
 }
 
+export function fetchPing(): Promise<unknown> {
+  return get("/api/system/ping");
+}
+
 export function fetchHistory(range: string): Promise<unknown> {
   return get(`/api/history?range=${encodeURIComponent(range)}`);
 }

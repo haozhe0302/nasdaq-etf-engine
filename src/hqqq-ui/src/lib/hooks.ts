@@ -6,6 +6,7 @@ import {
   fetchConstituents,
   fetchSystemHealth,
   fetchHistory,
+  fetchPing,
   createMarketHubConnection,
 } from "./api";
 import {
@@ -50,6 +51,17 @@ const EMPTY_MARKET: MarketSnapshot = {
     totalSymbols: 0,
   },
   feeds: [],
+  quoteState: "initializing",
+  isLive: false,
+  isFrozen: false,
+  pauseReason: null,
+  marketSession: {
+    state: "unknown",
+    label: "",
+    isRegularSessionOpen: false,
+    isTradingDay: false,
+    nextOpenUtc: null,
+  },
 };
 
 const EMPTY_CONSTITUENTS: ConstituentSnapshot = {
@@ -88,33 +100,34 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   const [error, setError] = useState<string>();
   const hubRef = useRef<HubConnection | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const latencyEmaRef = useRef<number | null>(null);
-  const latencySampleAtRef = useRef<number | null>(null);
+  const rttEmaRef = useRef<number>(0);
+  const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    const updateLatencyEma = (asOf: Date): number => {
-      const receivedAt = Date.now();
-      const sampleMs = Math.max(0, receivedAt - asOf.getTime());
-
-      const previousSampleAt = latencySampleAtRef.current;
-      const dtMs = previousSampleAt === null ? 0 : Math.max(0, receivedAt - previousSampleAt);
-      const tauMs = 1_000;
-      const alpha = dtMs <= 0 ? 1 : 1 - Math.exp(-dtMs / tauMs);
-      const previousEma = latencyEmaRef.current;
-      const ema = previousEma === null ? sampleMs : previousEma + alpha * (sampleMs - previousEma);
-
-      latencySampleAtRef.current = receivedAt;
-      latencyEmaRef.current = ema;
-      return Number.isFinite(ema) ? Math.round(ema) : 0;
+    // Ping probe for real browser↔backend RTT
+    const runPing = async () => {
+      const start = performance.now();
+      try {
+        await fetchPing();
+        if (cancelled) return;
+        const rtt = performance.now() - start;
+        const prev = rttEmaRef.current;
+        const alpha = 0.3;
+        rttEmaRef.current = prev === 0 ? rtt : prev + alpha * (rtt - prev);
+      } catch {
+        // ignore ping failures
+      }
     };
+    runPing();
+    pingTimerRef.current = setInterval(runPing, 5_000);
 
     const applyFullSnapshot = (raw: unknown) => {
       if (cancelled) return;
       try {
         const snapshot = adaptQuote(raw);
-        const networkLatencyMs = updateLatencyEma(snapshot.asOf);
+        const networkLatencyMs = Math.round(rttEmaRef.current);
         setData({
           ...snapshot,
           freshness: { ...snapshot.freshness, networkLatencyMs },
@@ -131,7 +144,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       if (cancelled) return;
       try {
         const delta = adaptQuoteDelta(raw);
-        const networkLatencyMs = updateLatencyEma(delta.asOf);
+        const networkLatencyMs = Math.round(rttEmaRef.current);
         setData((prev) => {
           const merged = mergeQuoteDelta(prev, delta);
           return {
@@ -229,6 +242,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     return () => {
       cancelled = true;
       stopRetryTimer();
+      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
       unregisterFeed("market");
       if (hubRef.current?.state !== HubConnectionState.Disconnected) {
         hubRef.current?.stop();

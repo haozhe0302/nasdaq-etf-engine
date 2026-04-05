@@ -9,6 +9,7 @@ public static class MarketDataModule
     {
         services.AddHttpClient();
 
+        services.AddSingleton<MarketSessionService>();
         services.AddSingleton<SubscriptionManager>();
 
         services.AddSingleton<InMemoryLatestPriceStore>();

@@ -13,8 +13,8 @@ const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "name", label: "Name" },
   { value: "shares", label: "Shares" },
   { value: "price", label: "Price" },
-  { value: "changePct", label: "Chg %" },
-  { value: "mktValue", label: "Mkt Value" },
+  { value: "changePct", label: "Change %" },
+  { value: "mktValue", label: "Market Value" },
 ];
 
 function formatElapsed(ms: number): string {

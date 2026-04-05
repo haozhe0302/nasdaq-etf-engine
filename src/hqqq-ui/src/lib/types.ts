@@ -24,6 +24,19 @@ export interface MarketSnapshot {
   movers: Mover[];
   freshness: FreshnessMetrics;
   feeds: FeedStatus[];
+  quoteState: string;
+  isLive: boolean;
+  isFrozen: boolean;
+  pauseReason: string | null;
+  marketSession: MarketSessionInfo;
+}
+
+export interface MarketSessionInfo {
+  state: string;
+  label: string;
+  isRegularSessionOpen: boolean;
+  isTradingDay: boolean;
+  nextOpenUtc: string | null;
 }
 
 export interface TimeSeriesPoint {

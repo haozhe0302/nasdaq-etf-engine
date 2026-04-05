@@ -19,4 +19,9 @@ public sealed record QuoteSnapshot
     public required IReadOnlyList<Mover> Movers { get; init; }
     public required FreshnessInfo Freshness { get; init; }
     public required FeedInfo Feeds { get; init; }
+
+    public string QuoteState { get; init; } = "live";
+    public bool IsLive { get; init; } = true;
+    public bool IsFrozen { get; init; }
+    public string? PauseReason { get; init; }
 }

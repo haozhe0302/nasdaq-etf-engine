@@ -19,6 +19,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
     private readonly ILatestPriceStore _priceStore;
     private readonly TiingoWebSocketClient _wsClient;
     private readonly TiingoRestClient _restClient;
+    private readonly MarketSessionService _sessionService;
     private readonly MetricsService _metrics;
     private readonly EventRecorderService _recorder;
     private readonly TiingoOptions _options;
@@ -54,6 +55,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         ILatestPriceStore priceStore,
         TiingoWebSocketClient wsClient,
         TiingoRestClient restClient,
+        MarketSessionService sessionService,
         MetricsService metrics,
         EventRecorderService recorder,
         IOptions<TiingoOptions> options,
@@ -64,6 +66,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         _priceStore = priceStore;
         _wsClient = wsClient;
         _restClient = restClient;
+        _sessionService = sessionService;
         _metrics = metrics;
         _recorder = recorder;
         _options = options.Value;
@@ -89,6 +92,8 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
 
         RefreshSubscriptionsFromBasket();
         _lastFingerprint = _subscriptions.GetFingerprint();
+
+        await SeedInitialPricesAsync(stoppingToken);
 
         try
         {
@@ -130,6 +135,35 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
 
         _logger.LogWarning(
             "Basket not available after 60 s, starting with reference-only subscription (QQQ)");
+    }
+
+    /// <summary>
+    /// One-time REST fetch to populate the price store on startup,
+    /// regardless of market session. Without this, the engine cannot
+    /// bootstrap outside regular trading hours.
+    /// </summary>
+    private async Task SeedInitialPricesAsync(CancellationToken ct)
+    {
+        var symbols = _subscriptions.GetAllSymbols();
+        if (symbols.Count == 0) return;
+
+        try
+        {
+            _logger.LogInformation("Seeding initial prices for {Count} symbols via REST", symbols.Count);
+            var ticks = await _restClient.FetchLatestPricesAsync(symbols, ct);
+
+            foreach (var tick in ticks)
+                _priceStore.Update(tick);
+
+            if (ticks.Count > 0)
+                Interlocked.Exchange(ref _lastRestActivityTicks, DateTimeOffset.UtcNow.UtcTicks);
+
+            _logger.LogInformation("Seeded {Count} initial prices", ticks.Count);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Failed to seed initial prices via REST");
+        }
     }
 
     // ── WebSocket loop ──────────────────────────────────────────
@@ -185,9 +219,11 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
 
             if (attempt > 0)
             {
+                var isRegularSession = _sessionService.GetCurrentSession().IsRegularSessionOpen;
+                var maxDelaySec = isRegularSession ? 60 : 300;
                 var delaySec = Math.Min(
                     _options.ReconnectBaseDelaySeconds * Math.Pow(2, Math.Min(attempt - 1, 5)),
-                    60);
+                    maxDelaySec);
                 _logger.LogInformation("Reconnecting WebSocket in {Delay:F1}s", delaySec);
 
                 try
@@ -213,6 +249,22 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         {
             try
             {
+                var session = _sessionService.GetCurrentSession();
+
+                if (!session.IsRegularSessionOpen)
+                {
+                    if (_fallbackActive)
+                    {
+                        _logger.LogInformation(
+                            "Market session is {State}, deactivating REST fallback",
+                            session.State);
+                        _fallbackActive = false;
+                        _metrics.OnFallbackDeactivated();
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    continue;
+                }
+
                 if (!_wsClient.IsConnected)
                 {
                     if (!_fallbackActive)

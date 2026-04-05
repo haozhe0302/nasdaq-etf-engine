@@ -1,5 +1,6 @@
 import type {
   MarketSnapshot,
+  MarketSessionInfo,
   ConstituentSnapshot,
   SystemSnapshot,
   HistorySnapshot,
@@ -49,7 +50,16 @@ interface BQuoteSnapshot {
     basketState: string;
     pendingActivationBlocked: boolean;
     pendingBlockedReason: string | null;
+    marketSessionState?: string;
+    isRegularSessionOpen?: boolean;
+    isTradingDay?: boolean;
+    nextOpenUtc?: string | null;
+    sessionLabel?: string;
   };
+  quoteState?: string;
+  isLive?: boolean;
+  isFrozen?: boolean;
+  pauseReason?: string | null;
 }
 
 interface BConstituentSnapshot {
@@ -170,7 +180,7 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
   const freshness: FreshnessMetrics = {
     lastNavCalcMs: asOfAgeMs,
     lastTickMs: Math.max(0, Math.round(lastTickMs)),
-    networkLatencyMs: asOfAgeMs,
+    networkLatencyMs: 0,
     avgTickIntervalMs: q.freshness.avgTickIntervalMs
       ? Math.round(q.freshness.avgTickIntervalMs)
       : 0,
@@ -178,25 +188,15 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     totalSymbols: q.freshness.symbolsTotal,
   };
 
-  const feeds: FeedStatus[] = [
-    {
-      name: "Market Data",
-      status: q.feeds.webSocketConnected ? "healthy" : "unhealthy",
-    },
-    {
-      name: "Pricing Engine",
-      status: q.feeds.pricingActive ? "healthy" : "unhealthy",
-    },
-    {
-      name: "Basket",
-      status: q.feeds.basketState === "active" ? "healthy" : "degraded",
-      label: q.feeds.basketState,
-    },
-  ];
+  const feeds = buildFeeds(q.feeds);
 
-  if (q.feeds.fallbackActive) {
-    feeds.push({ name: "REST Fallback", status: "degraded", label: "active" });
-  }
+  const marketSession: MarketSessionInfo = {
+    state: q.feeds.marketSessionState ?? "unknown",
+    label: q.feeds.sessionLabel ?? "",
+    isRegularSessionOpen: q.feeds.isRegularSessionOpen ?? false,
+    isTradingDay: q.feeds.isTradingDay ?? false,
+    nextOpenUtc: q.feeds.nextOpenUtc ?? null,
+  };
 
   return {
     nav: q.nav,
@@ -210,6 +210,11 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     movers,
     freshness,
     feeds,
+    quoteState: q.quoteState ?? "live",
+    isLive: q.isLive ?? true,
+    isFrozen: q.isFrozen ?? false,
+    pauseReason: q.pauseReason ?? null,
+    marketSession,
   };
 }
 
@@ -246,7 +251,16 @@ interface BQuoteRealtimeUpdate {
     basketState: string;
     pendingActivationBlocked: boolean;
     pendingBlockedReason: string | null;
+    marketSessionState?: string;
+    isRegularSessionOpen?: boolean;
+    isTradingDay?: boolean;
+    nextOpenUtc?: string | null;
+    sessionLabel?: string;
   };
+  quoteState?: string;
+  isLive?: boolean;
+  isFrozen?: boolean;
+  pauseReason?: string | null;
 }
 
 export interface QuoteDelta {
@@ -261,6 +275,11 @@ export interface QuoteDelta {
   movers: Mover[];
   freshness: FreshnessMetrics;
   feeds: FeedStatus[];
+  quoteState: string;
+  isLive: boolean;
+  isFrozen: boolean;
+  pauseReason: string | null;
+  marketSession: MarketSessionInfo;
 }
 
 export function adaptQuoteDelta(raw: unknown): QuoteDelta {
@@ -285,7 +304,7 @@ export function adaptQuoteDelta(raw: unknown): QuoteDelta {
   const freshness: FreshnessMetrics = {
     lastNavCalcMs: asOfAgeMs,
     lastTickMs: Math.max(0, Math.round(lastTickMs)),
-    networkLatencyMs: asOfAgeMs,
+    networkLatencyMs: 0,
     avgTickIntervalMs: q.freshness.avgTickIntervalMs
       ? Math.round(q.freshness.avgTickIntervalMs)
       : 0,
@@ -293,25 +312,15 @@ export function adaptQuoteDelta(raw: unknown): QuoteDelta {
     totalSymbols: q.freshness.symbolsTotal,
   };
 
-  const feeds: FeedStatus[] = [
-    {
-      name: "Market Data",
-      status: q.feeds.webSocketConnected ? "healthy" : "unhealthy",
-    },
-    {
-      name: "Pricing Engine",
-      status: q.feeds.pricingActive ? "healthy" : "unhealthy",
-    },
-    {
-      name: "Basket",
-      status: q.feeds.basketState === "active" ? "healthy" : "degraded",
-      label: q.feeds.basketState,
-    },
-  ];
+  const feeds = buildFeeds(q.feeds);
 
-  if (q.feeds.fallbackActive) {
-    feeds.push({ name: "REST Fallback", status: "degraded", label: "active" });
-  }
+  const marketSession: MarketSessionInfo = {
+    state: q.feeds.marketSessionState ?? "unknown",
+    label: q.feeds.sessionLabel ?? "",
+    isRegularSessionOpen: q.feeds.isRegularSessionOpen ?? false,
+    isTradingDay: q.feeds.isTradingDay ?? false,
+    nextOpenUtc: q.feeds.nextOpenUtc ?? null,
+  };
 
   return {
     nav: q.nav,
@@ -325,7 +334,56 @@ export function adaptQuoteDelta(raw: unknown): QuoteDelta {
     movers,
     freshness,
     feeds,
+    quoteState: q.quoteState ?? "live",
+    isLive: q.isLive ?? true,
+    isFrozen: q.isFrozen ?? false,
+    pauseReason: q.pauseReason ?? null,
+    marketSession,
   };
+}
+
+// ── Shared feed-status builder (session-aware) ──────
+
+interface FeedFields {
+  webSocketConnected: boolean;
+  fallbackActive: boolean;
+  pricingActive: boolean;
+  basketState: string;
+  marketSessionState?: string;
+  sessionLabel?: string;
+}
+
+function buildFeeds(f: FeedFields): FeedStatus[] {
+  const feeds: FeedStatus[] = [];
+
+  if (f.marketSessionState && f.marketSessionState !== "regular_open") {
+    feeds.push({
+      name: "Market Data",
+      status: "healthy",
+      label: f.sessionLabel ?? f.marketSessionState,
+    });
+  } else if (f.webSocketConnected) {
+    feeds.push({ name: "Market Data", status: "healthy" });
+  } else if (f.fallbackActive) {
+    feeds.push({ name: "Market Data", status: "degraded", label: "REST fallback" });
+  } else {
+    feeds.push({ name: "Market Data", status: "unhealthy" });
+  }
+
+  feeds.push(
+    { name: "Pricing Engine", status: f.pricingActive ? "healthy" : "unhealthy" },
+    {
+      name: "Basket",
+      status: f.basketState === "active" ? "healthy" : "degraded",
+      label: f.basketState,
+    },
+  );
+
+  if (f.fallbackActive) {
+    feeds.push({ name: "REST Fallback", status: "degraded", label: "active" });
+  }
+
+  return feeds;
 }
 
 // ── Merge a slim delta into a full MarketSnapshot ───
@@ -373,6 +431,11 @@ export function mergeQuoteDelta(
     movers: delta.movers,
     freshness: delta.freshness,
     feeds: delta.feeds,
+    quoteState: delta.quoteState,
+    isLive: delta.isLive,
+    isFrozen: delta.isFrozen,
+    pauseReason: delta.pauseReason,
+    marketSession: delta.marketSession,
   };
 }
 

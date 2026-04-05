@@ -26,6 +26,11 @@ public sealed record QuoteRealtimeUpdate
     public required FreshnessInfo Freshness { get; init; }
     public required FeedInfo Feeds { get; init; }
 
+    public string QuoteState { get; init; } = "live";
+    public bool IsLive { get; init; } = true;
+    public bool IsFrozen { get; init; }
+    public string? PauseReason { get; init; }
+
     /// <summary>
     /// Build a slim realtime update from a full <see cref="QuoteSnapshot"/>
     /// (whose <see cref="QuoteSnapshot.Series"/> is ignored) and an optional
@@ -48,6 +53,10 @@ public sealed record QuoteRealtimeUpdate
             Movers = quote.Movers,
             Freshness = quote.Freshness,
             Feeds = quote.Feeds,
+            QuoteState = quote.QuoteState,
+            IsLive = quote.IsLive,
+            IsFrozen = quote.IsFrozen,
+            PauseReason = quote.PauseReason,
         };
     }
 }

@@ -103,6 +103,17 @@ export function getMarketSnapshot(): MarketSnapshot {
       { name: "Polygon", status: "healthy" },
       { name: "Backup feed", status: "unknown", label: "standby" },
     ],
+    quoteState: "live",
+    isLive: true,
+    isFrozen: false,
+    pauseReason: null,
+    marketSession: {
+      state: "regular_open",
+      label: "Regular Session",
+      isRegularSessionOpen: true,
+      isTradingDay: true,
+      nextOpenUtc: null,
+    },
   };
 }
 

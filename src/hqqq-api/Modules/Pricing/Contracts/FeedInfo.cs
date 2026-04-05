@@ -11,4 +11,10 @@ public sealed record FeedInfo
     public required string BasketState { get; init; }
     public required bool PendingActivationBlocked { get; init; }
     public string? PendingBlockedReason { get; init; }
+
+    public string? MarketSessionState { get; init; }
+    public bool? IsRegularSessionOpen { get; init; }
+    public bool? IsTradingDay { get; init; }
+    public DateTimeOffset? NextOpenUtc { get; init; }
+    public string? SessionLabel { get; init; }
 }

@@ -79,7 +79,7 @@ public sealed class QuoteBroadcastService : BackgroundService
                 }
 
                 var quote = _engine.ComputeQuote(includeSeries: false);
-                if (quote is not null)
+                if (quote is not null && !quote.IsFrozen)
                 {
                     var latestPoint = MaybeRecordSeriesPoint(quote);
                     MaybeRecordHistoryPoint(quote);
@@ -103,9 +103,6 @@ public sealed class QuoteBroadcastService : BackgroundService
                         : 0;
                     _metrics.SetStaleSymbolRatio(staleRatio);
 
-                    // Tick-to-quote: time from most recent tick ingestion to broadcast.
-                    // This is a lower bound for the latest tick; for ticks earlier in the
-                    // same cycle the true latency is up to one broadcast interval longer.
                     double? tickToQuoteMsValue = null;
                     if (quote.Freshness.LastTickUtc is not null)
                     {

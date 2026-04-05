@@ -37,6 +37,14 @@ function formatEtTime(utcMs: number): string {
   });
 }
 
+function toTitleCase(text: string): string {
+  return text
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
   if (connectionState === "live") return null;
   const isConnecting = connectionState === "connecting";
@@ -50,6 +58,39 @@ function ConnectionBanner({ connectionState, error }: { connectionState: string;
   );
 }
 
+function SessionBanner({ snapshot }: { snapshot: ReturnType<typeof useMarketData>["data"] }) {
+  if (snapshot.isLive) return null;
+
+  if (!snapshot.marketSession.isRegularSessionOpen && snapshot.marketSession.state !== "unknown") {
+    const nextOpen = snapshot.marketSession.nextOpenUtc
+      ? new Date(snapshot.marketSession.nextOpenUtc).toLocaleString("en-US", {
+          timeZone: "America/New_York",
+          weekday: "short",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        })
+      : null;
+
+    return (
+      <div className="rounded border border-blue-500/30 bg-blue-500/10 text-blue-400 px-3 py-1.5 text-xs">
+        {snapshot.marketSession.label || "Market Closed"} / Market Closed
+        {nextOpen && <span className="ml-1 text-blue-500/60">(Opens {nextOpen} ET)</span>}
+      </div>
+    );
+  }
+
+  if (snapshot.isFrozen) {
+    return (
+      <div className="rounded border border-yellow-500/30 bg-yellow-500/10 text-yellow-400 px-3 py-1.5 text-xs">
+        Quote frozen \u2014 {snapshot.pauseReason || "all data sources stale"}
+      </div>
+    );
+  }
+
+  return null;
+}
+
 export function MarketPage() {
   const { data: d, connectionState, error } = useMarketData();
   const bounds = useMemo(() => getMarketBoundsUtc(), []);
@@ -57,6 +98,9 @@ export function MarketPage() {
   const networkLatencyMs = Number.isFinite(d.freshness.networkLatencyMs)
     ? d.freshness.networkLatencyMs
     : 0;
+  const lastMarketTickText = d.marketSession.isRegularSessionOpen
+    ? `${d.freshness.lastTickMs}ms ago`
+    : "Market Closed";
 
   const navData = d.series.map((p) => [p.time, p.nav]);
   const marketData = d.series.map((p) => [p.time, p.market]);
@@ -151,6 +195,7 @@ export function MarketPage() {
   return (
     <div className="space-y-3">
       <ConnectionBanner connectionState={connectionState} error={error} />
+      <SessionBanner snapshot={d} />
       <div className="grid grid-cols-5 gap-3">
         <StatCard label="Indicative NAV" value={`$${d.nav.toFixed(2)}`} sub={fmtPct(d.navChangePct)} status={d.navChangePct >= 0 ? "positive" : "negative"} />
         <StatCard label="Market Price" value={`$${d.marketPrice.toFixed(2)}`} sub={`$${(d.marketPrice - d.nav).toFixed(2)} vs NAV`} />
@@ -170,7 +215,7 @@ export function MarketPage() {
           <Panel title="Quote Freshness" className="flex-1">
             <div className="space-y-0.5 p-3">
               <MetricRow label="Last iNAV Calc" value={`${d.freshness.lastNavCalcMs}ms ago`} />
-              <MetricRow label="Last Tick Received" value={`${d.freshness.lastTickMs}ms ago`} />
+              <MetricRow label="Last Market Tick" value={lastMarketTickText} />
               <MetricRow label="Network Latency" value={`${networkLatencyMs}ms`} />
               <MetricRow label="Stale Symbols" value={`${d.freshness.staleSymbols} / ${d.freshness.totalSymbols}`} />
             </div>
@@ -206,7 +251,11 @@ export function MarketPage() {
         <Panel title="Feed Status">
           <div className="space-y-0.5 p-3">
             {d.feeds.map((f) => (
-              <MetricRow key={f.name} label={f.name} value={<StatusBadge status={f.status} label={f.label} />} />
+              <MetricRow
+                key={f.name}
+                label={f.name}
+                value={<StatusBadge status={f.status} label={toTitleCase(f.label ?? f.status)} />}
+              />
             ))}
             <MetricRow label="Symbols Active" value={`${d.freshness.totalSymbols - d.freshness.staleSymbols} / ${d.freshness.totalSymbols}`} />
           </div>

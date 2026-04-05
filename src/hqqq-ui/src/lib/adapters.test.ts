@@ -71,6 +71,17 @@ function makeSnapshot(seriesOverride?: TimeSeriesPoint[]): MarketSnapshot {
       totalSymbols: 0,
     },
     feeds: [],
+    quoteState: "live",
+    isLive: true,
+    isFrozen: false,
+    pauseReason: null,
+    marketSession: {
+      state: "regular_open",
+      label: "Regular Session",
+      isRegularSessionOpen: true,
+      isTradingDay: true,
+      nextOpenUtc: null,
+    },
   };
 }
 

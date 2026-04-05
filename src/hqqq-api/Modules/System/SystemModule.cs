@@ -41,7 +41,11 @@ public static class SystemModule
                 Status = status,
                 CheckedAtUtc = DateTimeOffset.UtcNow,
                 Version = typeof(SystemModule).Assembly
-                    .GetName().Version?.ToString() ?? "0.0.0",
+                    .GetCustomAttributes(typeof(global::System.Reflection.AssemblyInformationalVersionAttribute), false)
+                    .OfType<global::System.Reflection.AssemblyInformationalVersionAttribute>()
+                    .FirstOrDefault()?.InformationalVersion
+                    ?? typeof(SystemModule).Assembly.GetName().Version?.ToString()
+                    ?? "0.0.0",
                 Runtime = RuntimeInfo.Capture(),
                 Metrics = metrics.GetSnapshot(),
                 Dependencies =
@@ -96,6 +100,12 @@ public static class SystemModule
             return Results.Ok(health);
         })
         .WithName("GetSystemHealth")
+        .WithTags("System")
+        .WithOpenApi();
+
+        app.MapGet("/api/system/ping", () =>
+            Results.Ok(new { serverUtc = DateTimeOffset.UtcNow }))
+        .WithName("Ping")
         .WithTags("System")
         .WithOpenApi();
 

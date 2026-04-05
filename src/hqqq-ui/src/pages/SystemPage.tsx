@@ -1,4 +1,4 @@
-import { useSystemData } from "@/lib/hooks";
+import { useMarketData, useSystemData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MetricRow } from "@/components/MetricRow";
@@ -34,6 +34,14 @@ function fmtLatency(stats: LatencyStatsData | undefined, percentile: "p50" | "p9
   return fmtMs(stats[percentile]);
 }
 
+function toTitleCase(text: string): string {
+  return text
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
   if (connectionState === "live") return null;
   const isConnecting = connectionState === "connecting";
@@ -47,7 +55,13 @@ function ConnectionBanner({ connectionState, error }: { connectionState: string;
   );
 }
 
-function RuntimeMetricsPanel({ metrics }: { metrics?: RuntimeMetricsData }) {
+function RuntimeMetricsPanel({
+  metrics,
+  isRegularSessionOpen,
+}: {
+  metrics?: RuntimeMetricsData;
+  isRegularSessionOpen: boolean;
+}) {
   if (!metrics) {
     return (
       <Panel title="Runtime Metrics" className="col-span-3">
@@ -90,11 +104,11 @@ function RuntimeMetricsPanel({ metrics }: { metrics?: RuntimeMetricsData }) {
           </div>
           <MetricRow
             label="Tick→Quote (p50)"
-            value={fmtLatency(metrics.tickToQuoteMs, "p50")}
+            value={isRegularSessionOpen ? fmtLatency(metrics.tickToQuoteMs, "p50") : "Market Closed"}
           />
           <MetricRow
             label="Tick→Quote (p95)"
-            value={fmtLatency(metrics.tickToQuoteMs, "p95")}
+            value={isRegularSessionOpen ? fmtLatency(metrics.tickToQuoteMs, "p95") : "Market Closed"}
           />
           <MetricRow
             label="Broadcast (p50)"
@@ -144,6 +158,7 @@ function RuntimeMetricsPanel({ metrics }: { metrics?: RuntimeMetricsData }) {
 
 export function SystemPage() {
   const { data: d, connectionState, error } = useSystemData();
+  const { data: marketData } = useMarketData();
   const rt = d.runtime;
 
   return (
@@ -153,7 +168,7 @@ export function SystemPage() {
         {d.services.map((s) => (
           <Panel key={s.name}>
             <div className="p-3">
-              <StatusBadge status={s.status} />
+              <StatusBadge status={s.status} label={toTitleCase(s.status)} />
               <div className="mt-2 text-sm font-medium">{s.name}</div>
               <div className="mt-0.5 text-xs text-muted">{s.detail}</div>
             </div>
@@ -161,7 +176,10 @@ export function SystemPage() {
         ))}
       </div>
 
-      <RuntimeMetricsPanel metrics={d.metrics} />
+      <RuntimeMetricsPanel
+        metrics={d.metrics}
+        isRegularSessionOpen={marketData.marketSession.isRegularSessionOpen}
+      />
 
       <div className="grid grid-cols-3 gap-3">
         <Panel title="Runtime" className="col-span-2">

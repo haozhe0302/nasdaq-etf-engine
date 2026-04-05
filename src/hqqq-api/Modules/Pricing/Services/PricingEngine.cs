@@ -3,6 +3,7 @@ using Hqqq.Api.Configuration;
 using Hqqq.Api.Modules.Benchmark.Services;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
+using Hqqq.Api.Modules.MarketData.Services;
 using Hqqq.Api.Modules.Pricing.Contracts;
 using Hqqq.Api.Modules.System.Services;
 
@@ -20,6 +21,7 @@ public sealed class PricingEngine
     private readonly IBasketSnapshotProvider _basketProvider;
     private readonly ILatestPriceStore _priceStore;
     private readonly IMarketDataIngestionService _marketData;
+    private readonly MarketSessionService _sessionService;
     private readonly IScaleStateStore _stateStore;
     private readonly BasketPricingBasisBuilder _basisBuilder;
     private readonly MetricsService _metrics;
@@ -37,6 +39,7 @@ public sealed class PricingEngine
     private int _seriesCount;
     private readonly object _seriesLock = new();
 
+    private volatile QuoteSnapshot? _lastGoodQuote;
     private DateOnly _lastActivationDate;
     private string? _pendingBlockedReason;
 
@@ -50,6 +53,7 @@ public sealed class PricingEngine
         IBasketSnapshotProvider basketProvider,
         ILatestPriceStore priceStore,
         IMarketDataIngestionService marketData,
+        MarketSessionService sessionService,
         IScaleStateStore stateStore,
         BasketPricingBasisBuilder basisBuilder,
         MetricsService metrics,
@@ -60,6 +64,7 @@ public sealed class PricingEngine
         _basketProvider = basketProvider;
         _priceStore = priceStore;
         _marketData = marketData;
+        _sessionService = sessionService;
         _stateStore = stateStore;
         _basisBuilder = basisBuilder;
         _metrics = metrics;
@@ -128,7 +133,10 @@ public sealed class PricingEngine
             if (basketState.Active is null) return false;
 
             var qqq = _priceStore.Get("QQQ");
-            if (qqq is null || qqq.IsStale || qqq.Price <= 0) return false;
+            if (qqq is null || qqq.Price <= 0) return false;
+
+            var session = _sessionService.GetCurrentSession();
+            if (session.IsRegularSessionOpen && qqq.IsStale) return false;
 
             var health = _priceStore.GetHealthSnapshot();
             if (health.ActiveCoveragePct < 50) return false;
@@ -274,6 +282,30 @@ public sealed class PricingEngine
         var state = _scaleState;
         if (basis is null || !state.IsInitialized) return null;
 
+        var feedHealth = _priceStore.GetHealthSnapshot();
+        var session = _sessionService.GetCurrentSession();
+        bool allStale = feedHealth.SymbolsTracked > 0
+            && feedHealth.StaleSymbolCount >= feedHealth.SymbolsTracked;
+
+        // Only freeze on all-stale during regular session (= data feed failure).
+        // Outside regular session, stale prices from the last session are expected.
+        if (allStale && session.IsRegularSessionOpen)
+        {
+            var cached = _lastGoodQuote;
+            if (cached is null) return null;
+
+            return cached with
+            {
+                Series = includeSeries ? GetSeries() : [],
+                QuoteState = "frozen_all_stale",
+                IsLive = false,
+                IsFrozen = true,
+                PauseReason = "All tracked symbols are stale",
+                Freshness = BuildFreshness(feedHealth),
+                Feeds = BuildFeeds(feedHealth),
+            };
+        }
+
         var symbols = basis.Entries.Select(e => e.Symbol);
         var prices = BuildPriceMap(symbols);
         var rawValue = ComputeRawValue(basis.Entries, prices);
@@ -292,9 +324,9 @@ public sealed class PricingEngine
 
         var basketValueB = rawValue / 1_000_000_000m;
 
-        var feedHealth = _priceStore.GetHealthSnapshot();
+        bool isRegular = session.IsRegularSessionOpen;
 
-        return new QuoteSnapshot
+        var quote = new QuoteSnapshot
         {
             Nav = Math.Round(nav, 4),
             NavChangePct = Math.Round(navChangePct, 4),
@@ -307,7 +339,13 @@ public sealed class PricingEngine
             Movers = ComputeMovers(basis, prices, rawValue),
             Freshness = BuildFreshness(feedHealth),
             Feeds = BuildFeeds(feedHealth),
+            QuoteState = isRegular ? "live" : "closed",
+            IsLive = isRegular,
+            IsFrozen = false,
         };
+
+        _lastGoodQuote = quote;
+        return quote;
     }
 
     // ── Constituents ────────────────────────────────────────────
@@ -591,6 +629,7 @@ public sealed class PricingEngine
             : "unavailable";
 
         var pendingBlocked = bs.Pending is not null && !health.IsPendingBasketReady;
+        var session = _sessionService.GetCurrentSession();
 
         return new FeedInfo
         {
@@ -600,14 +639,17 @@ public sealed class PricingEngine
             BasketState = bState,
             PendingActivationBlocked = pendingBlocked,
             PendingBlockedReason = _pendingBlockedReason,
+            MarketSessionState = session.State,
+            IsRegularSessionOpen = session.IsRegularSessionOpen,
+            IsTradingDay = session.IsTradingDay,
+            NextOpenUtc = session.NextOpenUtc,
+            SessionLabel = session.Label,
         };
     }
 
     public bool IsWithinMarketHours()
     {
-        var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _marketTz);
-        var time = TimeOnly.FromDateTime(now);
-        return time >= new TimeOnly(9, 30) && time < new TimeOnly(16, 0);
+        return _sessionService.GetCurrentSession().IsRegularSessionOpen;
     }
 
     private static TimeZoneInfo ResolveTimeZone(string id)

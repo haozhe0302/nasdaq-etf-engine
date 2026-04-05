@@ -181,9 +181,24 @@ arrive.
 | GET | `/api/system/health` | Service health, runtime metrics, dependency status |
 | GET | `/api/history?range=` | Persisted quote history with tracking stats (1D/5D/1M/3M/YTD/1Y) |
 | GET | `/metrics` | Prometheus-compatible metrics scrape endpoint |
-| WS | `/hubs/market` | SignalR hub — `QuoteUpdate` event every ~1 second |
+| WS | `/hubs/market` | SignalR hub — `QuoteUpdate` slim delta every 500ms (see below) |
 
 Swagger UI: **http://localhost:5015/swagger**
+
+### Quote delivery: full snapshot vs slim delta
+
+To keep SignalR bandwidth low on a single-instance deployment, the quote
+delivery path uses a two-tier design:
+
+| Channel | Payload | When |
+|---------|---------|------|
+| `GET /api/quote` | **Full `QuoteSnapshot`** — includes the complete intraday `series` array, movers, freshness, feeds | Initial page load, reconnect resync, manual refresh |
+| SignalR `QuoteUpdate` | **Slim `QuoteRealtimeUpdate`** — scalar fields + latest series point (nullable) + movers + freshness + feeds. **No `series` array.** | Every 500ms second broadcast cycle |
+
+The frontend bootstraps from the REST endpoint, then merges each incoming
+SignalR delta into local state, appending the latest series point and capping
+the client-side series to 1 000 points. On reconnect the full snapshot is
+re-fetched to resync.
 
 ---
 

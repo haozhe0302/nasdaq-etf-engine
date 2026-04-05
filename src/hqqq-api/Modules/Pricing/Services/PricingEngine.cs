@@ -264,7 +264,11 @@ public sealed class PricingEngine
 
     // ── Quote computation ───────────────────────────────────────
 
-    public QuoteSnapshot? ComputeQuote()
+    /// <param name="includeSeries">
+    /// Pass false from the broadcast path to skip the <see cref="GetSeries"/>
+    /// allocation; the REST endpoint uses the default (true).
+    /// </param>
+    public QuoteSnapshot? ComputeQuote(bool includeSeries = true)
     {
         var basis = _currentBasis;
         var state = _scaleState;
@@ -299,7 +303,7 @@ public sealed class PricingEngine
             Qqq = Math.Round(qqqPrice, 2),
             BasketValueB = Math.Round(basketValueB, 4),
             AsOf = DateTimeOffset.UtcNow,
-            Series = GetSeries(),
+            Series = includeSeries ? GetSeries() : [],
             Movers = ComputeMovers(basis, prices, rawValue),
             Freshness = BuildFreshness(feedHealth),
             Feeds = BuildFeeds(feedHealth),

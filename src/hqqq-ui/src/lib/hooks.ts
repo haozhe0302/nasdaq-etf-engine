@@ -10,6 +10,8 @@ import {
 } from "./api";
 import {
   adaptQuote,
+  adaptQuoteDelta,
+  mergeQuoteDelta,
   adaptConstituents,
   adaptSystemHealth,
   adaptHistory,
@@ -77,7 +79,7 @@ const EMPTY_SYSTEM: SystemSnapshot = {
   events: [],
 };
 
-// ── Market (initial REST fetch + SignalR real-time push) ─────
+// ── Market (full REST snapshot + slim SignalR deltas) ─────
 
 export function useMarketData(): LiveDataResult<MarketSnapshot> {
   const [data, setData] = useState<MarketSnapshot>(EMPTY_MARKET);
@@ -92,35 +94,56 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   useEffect(() => {
     let cancelled = false;
 
-    const onQuoteUpdate = (raw: unknown) => {
+    const updateLatencyEma = (asOf: Date): number => {
+      const receivedAt = Date.now();
+      const sampleMs = Math.max(0, receivedAt - asOf.getTime());
+
+      const previousSampleAt = latencySampleAtRef.current;
+      const dtMs = previousSampleAt === null ? 0 : Math.max(0, receivedAt - previousSampleAt);
+      const tauMs = 1_000;
+      const alpha = dtMs <= 0 ? 1 : 1 - Math.exp(-dtMs / tauMs);
+      const previousEma = latencyEmaRef.current;
+      const ema = previousEma === null ? sampleMs : previousEma + alpha * (sampleMs - previousEma);
+
+      latencySampleAtRef.current = receivedAt;
+      latencyEmaRef.current = ema;
+      return Number.isFinite(ema) ? Math.round(ema) : 0;
+    };
+
+    const applyFullSnapshot = (raw: unknown) => {
       if (cancelled) return;
       try {
         const snapshot = adaptQuote(raw);
-        const receivedAt = Date.now();
-        const sampleMs = Math.max(0, receivedAt - snapshot.asOf.getTime());
-
-        const previousSampleAt = latencySampleAtRef.current;
-        const dtMs = previousSampleAt === null ? 0 : Math.max(0, receivedAt - previousSampleAt);
-        const tauMs = 1_000;
-        const alpha = dtMs <= 0 ? 1 : 1 - Math.exp(-dtMs / tauMs);
-        const previousEma = latencyEmaRef.current;
-        const ema = previousEma === null ? sampleMs : previousEma + alpha * (sampleMs - previousEma);
-
-        latencySampleAtRef.current = receivedAt;
-        latencyEmaRef.current = ema;
-
+        const networkLatencyMs = updateLatencyEma(snapshot.asOf);
         setData({
           ...snapshot,
-          freshness: {
-            ...snapshot.freshness,
-            networkLatencyMs: Number.isFinite(ema) ? Math.round(ema) : 0,
-          },
+          freshness: { ...snapshot.freshness, networkLatencyMs },
         });
         recordUpdate("market");
         setConnectionState("live");
         setError(undefined);
       } catch (e) {
-        console.error("Failed to process QuoteUpdate", e);
+        console.error("Failed to process full snapshot", e);
+      }
+    };
+
+    const onDelta = (raw: unknown) => {
+      if (cancelled) return;
+      try {
+        const delta = adaptQuoteDelta(raw);
+        const networkLatencyMs = updateLatencyEma(delta.asOf);
+        setData((prev) => {
+          const merged = mergeQuoteDelta(prev, delta);
+          return {
+            ...merged,
+            freshness: { ...merged.freshness, networkLatencyMs },
+          };
+        });
+        recordUpdate("market");
+        setConnectionState("live");
+        setError(undefined);
+      } catch (e) {
+        console.error("Failed to process QuoteUpdate delta", e);
       }
     };
 
@@ -132,7 +155,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     };
 
     const setupHub = (hub: HubConnection) => {
-      hub.on("QuoteUpdate", onQuoteUpdate);
+      hub.on("QuoteUpdate", onDelta);
 
       hub.onreconnecting(() => {
         if (!cancelled) {
@@ -144,7 +167,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       hub.onreconnected(() => {
         if (!cancelled) {
           fetchQuote()
-            .then((raw) => { if (!cancelled) onQuoteUpdate(raw); })
+            .then((raw) => { if (!cancelled) applyFullSnapshot(raw); })
             .catch(() => {});
           setConnectionState("live");
           setError(undefined);
@@ -154,7 +177,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       hub.onclose(() => {
         if (cancelled) return;
         setConnectionState("error");
-        setError("Market feed disconnected — retrying\u2026");
+        setError("Market feed disconnected \u2014 retrying\u2026");
         startRetryLoop();
       });
     };
@@ -166,7 +189,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
         try {
           const raw = await fetchQuote();
           if (cancelled) return;
-          onQuoteUpdate(raw);
+          applyFullSnapshot(raw);
 
           stopRetryTimer();
           const newHub = createMarketHubConnection();
@@ -182,7 +205,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     fetchQuote()
       .then((raw) => {
         if (cancelled) return;
-        onQuoteUpdate(raw);
+        applyFullSnapshot(raw);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -239,7 +262,7 @@ export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, 3_000);
+    const id = setInterval(poll, 5_000);
     return () => {
       clearInterval(id);
       unregisterFeed("constituents");
@@ -273,7 +296,7 @@ export function useSystemData(): LiveDataResult<SystemSnapshot> {
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, 5_000);
+    const id = setInterval(poll, 3_000);
     return () => {
       clearInterval(id);
       unregisterFeed("system");

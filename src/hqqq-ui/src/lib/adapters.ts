@@ -213,6 +213,157 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
   };
 }
 
+// ── QuoteRealtimeUpdate → QuoteDelta (slim SignalR delta) ──
+
+interface BQuoteRealtimeUpdate {
+  nav: number;
+  navChangePct: number;
+  marketPrice: number;
+  premiumDiscountPct: number;
+  qqq: number;
+  basketValueB: number;
+  asOf: string;
+  latestSeriesPoint: { time: string; nav: number; market: number } | null;
+  movers: {
+    symbol: string;
+    name: string;
+    changePct: number;
+    impact: number;
+    direction: string;
+  }[];
+  freshness: {
+    symbolsTotal: number;
+    symbolsFresh: number;
+    symbolsStale: number;
+    freshPct: number;
+    lastTickUtc: string | null;
+    avgTickIntervalMs: number | null;
+  };
+  feeds: {
+    webSocketConnected: boolean;
+    fallbackActive: boolean;
+    pricingActive: boolean;
+    basketState: string;
+    pendingActivationBlocked: boolean;
+    pendingBlockedReason: string | null;
+  };
+}
+
+export interface QuoteDelta {
+  nav: number;
+  navChangePct: number;
+  marketPrice: number;
+  premiumDiscountPct: number;
+  qqq: number;
+  basketValueB: number;
+  asOf: Date;
+  latestSeriesPoint: TimeSeriesPoint | null;
+  movers: Mover[];
+  freshness: FreshnessMetrics;
+  feeds: FeedStatus[];
+}
+
+export function adaptQuoteDelta(raw: unknown): QuoteDelta {
+  const q = raw as BQuoteRealtimeUpdate;
+  const now = Date.now();
+  const asOfMs = new Date(q.asOf).getTime();
+  const asOfAgeMs = Number.isFinite(asOfMs) ? Math.max(0, Math.round(now - asOfMs)) : 0;
+  const lastTickMs = q.freshness.lastTickUtc
+    ? now - new Date(q.freshness.lastTickUtc).getTime()
+    : 0;
+
+  const latestSeriesPoint: TimeSeriesPoint | null = q.latestSeriesPoint
+    ? { time: q.latestSeriesPoint.time, nav: q.latestSeriesPoint.nav, market: q.latestSeriesPoint.market }
+    : null;
+
+  const movers: Mover[] = q.movers.map((m) => ({
+    symbol: m.symbol,
+    changePct: m.changePct,
+    impactBps: m.impact,
+  }));
+
+  const freshness: FreshnessMetrics = {
+    lastNavCalcMs: asOfAgeMs,
+    lastTickMs: Math.max(0, Math.round(lastTickMs)),
+    networkLatencyMs: asOfAgeMs,
+    avgTickIntervalMs: q.freshness.avgTickIntervalMs
+      ? Math.round(q.freshness.avgTickIntervalMs)
+      : 0,
+    staleSymbols: q.freshness.symbolsStale,
+    totalSymbols: q.freshness.symbolsTotal,
+  };
+
+  const feeds: FeedStatus[] = [
+    {
+      name: "Market Data",
+      status: q.feeds.webSocketConnected ? "healthy" : "unhealthy",
+    },
+    {
+      name: "Pricing Engine",
+      status: q.feeds.pricingActive ? "healthy" : "unhealthy",
+    },
+    {
+      name: "Basket",
+      status: q.feeds.basketState === "active" ? "healthy" : "degraded",
+      label: q.feeds.basketState,
+    },
+  ];
+
+  if (q.feeds.fallbackActive) {
+    feeds.push({ name: "REST Fallback", status: "degraded", label: "active" });
+  }
+
+  return {
+    nav: q.nav,
+    navChangePct: q.navChangePct,
+    marketPrice: q.marketPrice,
+    premiumDiscountPct: q.premiumDiscountPct,
+    qqq: q.qqq,
+    basketValueB: q.basketValueB,
+    asOf: new Date(q.asOf),
+    latestSeriesPoint,
+    movers,
+    freshness,
+    feeds,
+  };
+}
+
+// ── Merge a slim delta into a full MarketSnapshot ───
+
+export const MAX_SERIES_POINTS = 1_000;
+
+export function mergeQuoteDelta(
+  prev: MarketSnapshot,
+  delta: QuoteDelta,
+): MarketSnapshot {
+  let series = prev.series;
+
+  if (delta.latestSeriesPoint) {
+    const ts = delta.latestSeriesPoint.time;
+    const isDuplicate = series.length > 0 && series[series.length - 1].time === ts;
+    if (!isDuplicate) {
+      series = [...series, delta.latestSeriesPoint];
+      if (series.length > MAX_SERIES_POINTS) {
+        series = series.slice(series.length - MAX_SERIES_POINTS);
+      }
+    }
+  }
+
+  return {
+    nav: delta.nav,
+    navChangePct: delta.navChangePct,
+    marketPrice: delta.marketPrice,
+    premiumDiscountPct: delta.premiumDiscountPct,
+    qqq: delta.qqq,
+    basketValueB: delta.basketValueB,
+    asOf: delta.asOf,
+    series,
+    movers: delta.movers,
+    freshness: delta.freshness,
+    feeds: delta.feeds,
+  };
+}
+
 // ── Constituents → ConstituentSnapshot ──────────────
 
 export function adaptConstituents(raw: unknown): ConstituentSnapshot {

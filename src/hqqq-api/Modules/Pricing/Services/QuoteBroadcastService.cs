@@ -78,15 +78,17 @@ public sealed class QuoteBroadcastService : BackgroundService
                     await _engine.TryActivatePendingAsync(stoppingToken);
                 }
 
-                var quote = _engine.ComputeQuote();
+                var quote = _engine.ComputeQuote(includeSeries: false);
                 if (quote is not null)
                 {
-                    MaybeRecordSeriesPoint(quote);
+                    var latestPoint = MaybeRecordSeriesPoint(quote);
                     MaybeRecordHistoryPoint(quote);
+
+                    var update = QuoteRealtimeUpdate.FromSnapshot(quote, latestPoint);
 
                     var broadcastSw = Stopwatch.StartNew();
                     await _hubContext.Clients.All
-                        .SendAsync("QuoteUpdate", quote, stoppingToken);
+                        .SendAsync("QuoteUpdate", update, stoppingToken);
                     broadcastSw.Stop();
 
                     _metrics.RecordQuoteBroadcast(broadcastSw.Elapsed.TotalMilliseconds);
@@ -186,9 +188,9 @@ public sealed class QuoteBroadcastService : BackgroundService
         _nextHistoryAt = now.AddMilliseconds(_options.SeriesRecordIntervalMs);
     }
 
-    private void MaybeRecordSeriesPoint(Contracts.QuoteSnapshot quote)
+    private SeriesPoint? MaybeRecordSeriesPoint(Contracts.QuoteSnapshot quote)
     {
-        if (!_engine.IsWithinMarketHours()) return;
+        if (!_engine.IsWithinMarketHours()) return null;
 
         var now = DateTimeOffset.UtcNow;
         var today = GetMarketDate();
@@ -200,10 +202,17 @@ public sealed class QuoteBroadcastService : BackgroundService
         }
         _lastSeriesDate = today;
 
-        if (now < _nextRecordAt) return;
+        if (now < _nextRecordAt) return null;
 
         _engine.RecordSeriesPoint(quote);
         _nextRecordAt = now.AddMilliseconds(_options.SeriesRecordIntervalMs);
+
+        return new SeriesPoint
+        {
+            Time = quote.AsOf,
+            Nav = quote.Nav,
+            Market = quote.MarketPrice,
+        };
     }
 
     private async Task MaybeFlushSeriesAsync(CancellationToken ct)

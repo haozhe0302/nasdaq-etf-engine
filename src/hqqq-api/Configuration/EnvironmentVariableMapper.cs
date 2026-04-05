@@ -32,6 +32,9 @@ public static class EnvironmentVariableMapper
 
         ("HQQQ_ENABLE_LIVE_MODE",              "Feature:EnableLiveMode"),
         ("HQQQ_ENABLE_MOCK_FALLBACK",          "Feature:EnableMockFallback"),
+
+        ("HQQQ_RECORDING_ENABLED",             "Recording:Enabled"),
+        ("HQQQ_RECORDING_DIR",                 "Recording:Directory"),
     ];
 
     public static IConfigurationBuilder AddFlatEnvironmentVariables(

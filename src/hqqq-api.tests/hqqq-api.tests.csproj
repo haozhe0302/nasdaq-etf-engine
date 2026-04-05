@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\hqqq-api\hqqq-api.csproj" />
+    <ProjectReference Include="..\hqqq-bench\hqqq-bench.csproj" />
   </ItemGroup>
 
 </Project>

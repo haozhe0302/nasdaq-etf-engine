@@ -3,6 +3,7 @@ using Prometheus;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Basket;
+using Hqqq.Api.Modules.Benchmark;
 using Hqqq.Api.Modules.MarketData;
 using Hqqq.Api.Modules.Pricing;
 using Hqqq.Api.Modules.System;
@@ -25,12 +26,15 @@ builder.Services.Configure<PricingOptions>(
     builder.Configuration.GetSection(PricingOptions.SectionName));
 builder.Services.Configure<FeatureOptions>(
     builder.Configuration.GetSection(FeatureOptions.SectionName));
+builder.Services.Configure<RecordingOptions>(
+    builder.Configuration.GetSection(RecordingOptions.SectionName));
 
 builder.Services
     .AddBasketModule()
     .AddMarketDataModule()
     .AddPricingModule()
-    .AddSystemModule();
+    .AddSystemModule()
+    .AddBenchmarkModule();
 
 var allowedOrigins =
     builder.Configuration["HQQQ_ALLOWED_ORIGINS"]?

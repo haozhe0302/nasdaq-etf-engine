@@ -1,4 +1,5 @@
 using Hqqq.Api.Configuration;
+using Hqqq.Api.Modules.Benchmark.Services;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.MarketData.Services;
 using Hqqq.Api.Modules.System.Services;
@@ -14,7 +15,9 @@ public class StaleDetectionTests
         {
             StaleAfterSeconds = staleAfterSeconds,
         });
-        return new InMemoryLatestPriceStore(options, new MetricsService());
+        var recOpts = Options.Create(new RecordingOptions());
+        return new InMemoryLatestPriceStore(options, new MetricsService(),
+            new EventRecorderService(recOpts));
     }
 
     private static PriceTick MakeTick(string symbol, decimal price) =>

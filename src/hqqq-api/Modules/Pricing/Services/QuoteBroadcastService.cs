@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
 using Hqqq.Api.Hubs;
+using Hqqq.Api.Modules.Benchmark.Services;
 using Hqqq.Api.Modules.Pricing.Contracts;
 using Hqqq.Api.Modules.System.Services;
 
@@ -20,6 +21,7 @@ public sealed class QuoteBroadcastService : BackgroundService
     private readonly ISeriesStore _seriesStore;
     private readonly IHubContext<MarketHub> _hubContext;
     private readonly MetricsService _metrics;
+    private readonly EventRecorderService _recorder;
     private readonly PricingOptions _options;
     private readonly ILogger<QuoteBroadcastService> _logger;
 
@@ -32,6 +34,7 @@ public sealed class QuoteBroadcastService : BackgroundService
         ISeriesStore seriesStore,
         IHubContext<MarketHub> hubContext,
         MetricsService metrics,
+        EventRecorderService recorder,
         IOptions<PricingOptions> options,
         ILogger<QuoteBroadcastService> logger)
     {
@@ -39,6 +42,7 @@ public sealed class QuoteBroadcastService : BackgroundService
         _seriesStore = seriesStore;
         _hubContext = hubContext;
         _metrics = metrics;
+        _recorder = recorder;
         _options = options.Value;
         _logger = logger;
     }
@@ -93,13 +97,26 @@ public sealed class QuoteBroadcastService : BackgroundService
                     // Tick-to-quote: time from most recent tick ingestion to broadcast.
                     // This is a lower bound for the latest tick; for ticks earlier in the
                     // same cycle the true latency is up to one broadcast interval longer.
+                    double? tickToQuoteMsValue = null;
                     if (quote.Freshness.LastTickUtc is not null)
                     {
                         var tickToQuoteMs = (DateTimeOffset.UtcNow - quote.Freshness.LastTickUtc.Value)
                             .TotalMilliseconds;
                         if (tickToQuoteMs >= 0)
+                        {
                             _metrics.RecordTickToQuote(tickToQuoteMs);
+                            tickToQuoteMsValue = tickToQuoteMs;
+                        }
                     }
+
+                    _recorder.RecordQuote(
+                        quote.Nav,
+                        quote.MarketPrice,
+                        Math.Round(quote.PremiumDiscountPct * 100m, 2),
+                        quote.Freshness.SymbolsTotal,
+                        quote.Freshness.SymbolsStale,
+                        broadcastSw.Elapsed.TotalMilliseconds,
+                        tickToQuoteMsValue);
                 }
 
                 await MaybeFlushSeriesAsync(stoppingToken);

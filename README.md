@@ -270,6 +270,72 @@ See [`.env.example`](.env.example) for the full list with comments.
 | `HQQQ_SERIES_FILE` | No | `data/series.json` | Intraday iNAV series persistence path |
 | `HQQQ_QUOTE_BROADCAST_INTERVAL_MS` | No | `1000` | SignalR broadcast interval |
 | `HQQQ_SERIES_CAPACITY` | No | `5000` | In-memory series ring buffer size |
+| `HQQQ_RECORDING_ENABLED` | No | `false` | Enable live event recording to JSONL |
+| `HQQQ_RECORDING_DIR` | No | `data/recordings` | Recording output directory |
+
+---
+
+## Benchmark workflow (record → replay → report)
+
+The engine supports an optional record-and-replay workflow for generating
+quantitative benchmark reports offline — no live API keys needed for replay.
+
+### 1. Record a live session
+
+Enable recording before starting the backend:
+
+```bash
+HQQQ_RECORDING_ENABLED=true dotnet run --project src/hqqq-api
+```
+
+Or add to `.env`:
+
+```
+HQQQ_RECORDING_ENABLED=true
+HQQQ_RECORDING_DIR=data/recordings
+```
+
+Events are written to `data/recordings/YYYY-MM-DD/session-HHMMSS.jsonl`.
+Recording is append-only JSONL with four event types:
+
+| Event type | Fields | Source |
+|------------|--------|--------|
+| `tick` | symbol, price, source, upstreamTimestamp | Price store |
+| `transport` | action (fallback_activated, ws_recovered) | Ingestion service |
+| `quote` | nav, marketPrice, premiumDiscountBps, freshness, broadcastMs, tickToQuoteMs | Broadcast loop |
+| `activation` | fingerprint, jumpBps | Pricing engine |
+
+### 2. Generate a benchmark report (offline)
+
+```bash
+dotnet run --project src/hqqq-bench -- --input data/recordings/2026-04-04
+```
+
+Options:
+
+```
+--input <path>     Path to a .jsonl file or directory of recordings (required)
+--output <dir>     Output directory for reports (default: current directory)
+--from <iso-time>  Filter events from this UTC timestamp
+--to <iso-time>    Filter events up to this UTC timestamp
+```
+
+### 3. Read the report
+
+The tool generates two files:
+
+- `benchmark-report.json` — machine-readable, full statistics
+- `benchmark-report.md` — human-readable Markdown table
+
+Report sections:
+
+| Section | Metrics |
+|---------|---------|
+| Session | start/end, duration, event counts, symbols covered |
+| Latency | tick-to-quote p50/p95/p99, broadcast p50/p95 |
+| Failover | fallback activation count, recovery durations, max/p95 recovery |
+| Freshness | avg/max stale ratio, % quotes with stale symbols |
+| Tracking | basis RMSE vs QQQ, max/avg absolute basis in bps |
 
 ---
 

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
+using Hqqq.Api.Modules.Benchmark.Services;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.System.Services;
 
@@ -20,15 +21,20 @@ public sealed class InMemoryLatestPriceStore : ILatestPriceStore
 
     private readonly int _staleAfterSeconds;
     private readonly MetricsService _metrics;
+    private readonly EventRecorderService _recorder;
 
     private readonly ConcurrentQueue<long> _tickTimestamps = new();
     private long _lastActivityTicks;
     private const int MaxTickSamples = 500;
 
-    public InMemoryLatestPriceStore(IOptions<TiingoOptions> options, MetricsService metrics)
+    public InMemoryLatestPriceStore(
+        IOptions<TiingoOptions> options,
+        MetricsService metrics,
+        EventRecorderService recorder)
     {
         _staleAfterSeconds = options.Value.StaleAfterSeconds;
         _metrics = metrics;
+        _recorder = recorder;
     }
 
     // ── Writes ──────────────────────────────────────────────────
@@ -48,6 +54,7 @@ public sealed class InMemoryLatestPriceStore : ILatestPriceStore
             _tickTimestamps.TryDequeue(out _);
 
         _metrics.IncrementTicksIngested();
+        _recorder.RecordTick(tick.Symbol, tick.Price, tick.Source, tick.EventTimeUtc);
     }
 
     public void SetTrackedSymbols(IReadOnlyDictionary<string, SymbolRole> symbolRoles)

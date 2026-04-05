@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
+using Hqqq.Api.Modules.Benchmark.Services;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.Pricing.Contracts;
@@ -22,6 +23,7 @@ public sealed class PricingEngine
     private readonly IScaleStateStore _stateStore;
     private readonly BasketPricingBasisBuilder _basisBuilder;
     private readonly MetricsService _metrics;
+    private readonly EventRecorderService _recorder;
     private readonly PricingOptions _options;
     private readonly TimeZoneInfo _marketTz;
     private readonly ILogger<PricingEngine> _logger;
@@ -51,6 +53,7 @@ public sealed class PricingEngine
         IScaleStateStore stateStore,
         BasketPricingBasisBuilder basisBuilder,
         MetricsService metrics,
+        EventRecorderService recorder,
         IOptions<PricingOptions> options,
         ILogger<PricingEngine> logger)
     {
@@ -60,6 +63,7 @@ public sealed class PricingEngine
         _stateStore = stateStore;
         _basisBuilder = basisBuilder;
         _metrics = metrics;
+        _recorder = recorder;
         _options = options.Value;
         _logger = logger;
         _seriesBuffer = new SeriesPoint?[_options.SeriesCapacity];
@@ -249,6 +253,7 @@ public sealed class PricingEngine
 
             _metrics.RecordActivationJump(jumpBps);
             _metrics.IncrementBasketActivations();
+            _recorder.RecordActivation(afterState.ActiveFingerprint ?? "", jumpBps);
             _logger.LogInformation(
                 "Pending basket activated: old NAV={OldNav:F2}, new scale={Scale:E6}, jump={Jump:F2}bps, continuity preserved",
                 oldNav, newScaleFactor, jumpBps);

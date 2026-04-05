@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using Hqqq.Api.Configuration;
+using Hqqq.Api.Modules.Benchmark.Services;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.System.Services;
@@ -19,6 +20,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
     private readonly TiingoWebSocketClient _wsClient;
     private readonly TiingoRestClient _restClient;
     private readonly MetricsService _metrics;
+    private readonly EventRecorderService _recorder;
     private readonly TiingoOptions _options;
     private readonly ILogger<MarketDataIngestionService> _logger;
 
@@ -53,6 +55,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         TiingoWebSocketClient wsClient,
         TiingoRestClient restClient,
         MetricsService metrics,
+        EventRecorderService recorder,
         IOptions<TiingoOptions> options,
         ILogger<MarketDataIngestionService> logger)
     {
@@ -62,6 +65,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
         _wsClient = wsClient;
         _restClient = restClient;
         _metrics = metrics;
+        _recorder = recorder;
         _options = options.Value;
         _logger = logger;
     }
@@ -218,6 +222,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                             _options.RestPollingIntervalSeconds);
                         _fallbackActive = true;
                         _metrics.OnFallbackActivated();
+                        _recorder.RecordTransport("fallback_activated");
                     }
 
                     var symbols = _subscriptions.GetAllSymbols();
@@ -239,6 +244,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                     _logger.LogInformation("WebSocket recovered, deactivating REST fallback");
                     _fallbackActive = false;
                     _metrics.OnFallbackDeactivated();
+                    _recorder.RecordTransport("ws_recovered");
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

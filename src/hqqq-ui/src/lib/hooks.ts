@@ -42,7 +42,7 @@ const EMPTY_MARKET: MarketSnapshot = {
   freshness: {
     lastNavCalcMs: 0,
     lastTickMs: 0,
-    calcLatencyP99Ms: 0,
+    networkLatencyMs: 0,
     avgTickIntervalMs: 0,
     staleSymbols: 0,
     totalSymbols: 0,
@@ -86,6 +86,8 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   const [error, setError] = useState<string>();
   const hubRef = useRef<HubConnection | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const latencyEmaRef = useRef<number | null>(null);
+  const latencySampleAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,7 +95,27 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     const onQuoteUpdate = (raw: unknown) => {
       if (cancelled) return;
       try {
-        setData(adaptQuote(raw));
+        const snapshot = adaptQuote(raw);
+        const receivedAt = Date.now();
+        const sampleMs = Math.max(0, receivedAt - snapshot.asOf.getTime());
+
+        const previousSampleAt = latencySampleAtRef.current;
+        const dtMs = previousSampleAt === null ? 0 : Math.max(0, receivedAt - previousSampleAt);
+        const tauMs = 1_000;
+        const alpha = dtMs <= 0 ? 1 : 1 - Math.exp(-dtMs / tauMs);
+        const previousEma = latencyEmaRef.current;
+        const ema = previousEma === null ? sampleMs : previousEma + alpha * (sampleMs - previousEma);
+
+        latencySampleAtRef.current = receivedAt;
+        latencyEmaRef.current = ema;
+
+        setData({
+          ...snapshot,
+          freshness: {
+            ...snapshot.freshness,
+            networkLatencyMs: Number.isFinite(ema) ? Math.round(ema) : 0,
+          },
+        });
         recordUpdate("market");
         setConnectionState("live");
         setError(undefined);
@@ -160,10 +182,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     fetchQuote()
       .then((raw) => {
         if (cancelled) return;
-        setData(adaptQuote(raw));
-        recordUpdate("market");
-        setConnectionState("live");
-        setError(undefined);
+        onQuoteUpdate(raw);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -220,7 +239,7 @@ export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, 5_000);
+    const id = setInterval(poll, 3_000);
     return () => {
       clearInterval(id);
       unregisterFeed("constituents");
@@ -230,7 +249,7 @@ export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
   return { data, connectionState, error };
 }
 
-// ── System (poll every 5 s) ─────────────────────────
+// ── System (poll every 3 s) ─────────────────────────
 
 export function useSystemData(): LiveDataResult<SystemSnapshot> {
   const [data, setData] = useState<SystemSnapshot>(EMPTY_SYSTEM);

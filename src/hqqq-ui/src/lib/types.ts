@@ -41,7 +41,7 @@ export interface Mover {
 export interface FreshnessMetrics {
   lastNavCalcMs: number;
   lastTickMs: number;
-  calcLatencyP99Ms: number;
+  networkLatencyMs: number;
   avgTickIntervalMs: number;
   staleSymbols: number;
   totalSymbols: number;

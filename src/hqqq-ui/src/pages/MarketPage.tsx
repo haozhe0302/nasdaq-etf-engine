@@ -54,6 +54,9 @@ export function MarketPage() {
   const { data: d, connectionState, error } = useMarketData();
   const bounds = useMemo(() => getMarketBoundsUtc(), []);
   const hasSeries = d.series.length > 0;
+  const networkLatencyMs = Number.isFinite(d.freshness.networkLatencyMs)
+    ? d.freshness.networkLatencyMs
+    : 0;
 
   const navData = d.series.map((p) => [p.time, p.nav]);
   const marketData = d.series.map((p) => [p.time, p.market]);
@@ -153,7 +156,7 @@ export function MarketPage() {
         <StatCard label="Market Price" value={`$${d.marketPrice.toFixed(2)}`} sub={`$${(d.marketPrice - d.nav).toFixed(2)} vs NAV`} />
         <StatCard label="Premium / Discount" value={`${d.premiumDiscountPct.toFixed(4)}%`} status={d.premiumDiscountPct >= 0 ? "positive" : "negative"} />
         <StatCard label="QQQ Reference" value={`$${d.qqq.toFixed(2)}`} sub="NASDAQ" />
-        <StatCard label="Basket Mkt Value" value={`$${d.basketValueB.toFixed(2)}B`} />
+        <StatCard label="Basket Market Value" value={`$${d.basketValueB.toFixed(2)}B`} />
       </div>
 
       <div className="grid grid-cols-3 gap-3">
@@ -166,10 +169,10 @@ export function MarketPage() {
           </Panel>
           <Panel title="Quote Freshness" className="flex-1">
             <div className="space-y-0.5 p-3">
-              <MetricRow label="Last iNAV calc" value={`${d.freshness.lastNavCalcMs}ms ago`} />
-              <MetricRow label="Last tick received" value={`${d.freshness.lastTickMs}ms ago`} />
-              <MetricRow label="Calc latency (p99)" value={<span className="text-positive">{d.freshness.calcLatencyP99Ms}ms</span>} />
-              <MetricRow label="Stale symbols" value={`${d.freshness.staleSymbols} / ${d.freshness.totalSymbols}`} />
+              <MetricRow label="Last iNAV Calc" value={`${d.freshness.lastNavCalcMs}ms ago`} />
+              <MetricRow label="Last Tick Received" value={`${d.freshness.lastTickMs}ms ago`} />
+              <MetricRow label="Network Latency" value={`${networkLatencyMs}ms`} />
+              <MetricRow label="Stale Symbols" value={`${d.freshness.staleSymbols} / ${d.freshness.totalSymbols}`} />
             </div>
           </Panel>
         </div>
@@ -195,10 +198,8 @@ export function MarketPage() {
         <Panel title="Basket Summary">
           <div className="space-y-0.5 p-3">
             <MetricRow label="Constituents" value={String(d.freshness.totalSymbols)} />
-            <MetricRow label="Basket market value" value={`$${d.basketValueB.toFixed(2)}B`} />
-            <MetricRow label="Cash component" value="$2.14M" />
-            <MetricRow label="Shares outstanding" value="40.6M" />
-            <MetricRow label="Creation unit" value="50,000 shs" />
+            <MetricRow label="Basket Market Value" value={`$${d.basketValueB.toFixed(2)}B`} />
+            <MetricRow label="Avg Tick Interval" value={`${d.freshness.avgTickIntervalMs}ms`} />
           </div>
         </Panel>
 
@@ -207,8 +208,7 @@ export function MarketPage() {
             {d.feeds.map((f) => (
               <MetricRow key={f.name} label={f.name} value={<StatusBadge status={f.status} label={f.label} />} />
             ))}
-            <MetricRow label="Symbols active" value={`${d.freshness.totalSymbols - d.freshness.staleSymbols} / ${d.freshness.totalSymbols}`} />
-            <MetricRow label="Avg tick interval" value={`${d.freshness.avgTickIntervalMs}ms`} />
+            <MetricRow label="Symbols Active" value={`${d.freshness.totalSymbols - d.freshness.staleSymbols} / ${d.freshness.totalSymbols}`} />
           </div>
         </Panel>
       </div>

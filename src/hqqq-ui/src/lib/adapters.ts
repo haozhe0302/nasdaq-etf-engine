@@ -150,6 +150,7 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
   const q = raw as BQuoteSnapshot;
   const now = Date.now();
   const asOfMs = new Date(q.asOf).getTime();
+  const asOfAgeMs = Number.isFinite(asOfMs) ? Math.max(0, Math.round(now - asOfMs)) : 0;
   const lastTickMs = q.freshness.lastTickUtc
     ? now - new Date(q.freshness.lastTickUtc).getTime()
     : 0;
@@ -167,9 +168,9 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
   }));
 
   const freshness: FreshnessMetrics = {
-    lastNavCalcMs: Math.max(0, Math.round(now - asOfMs)),
+    lastNavCalcMs: asOfAgeMs,
     lastTickMs: Math.max(0, Math.round(lastTickMs)),
-    calcLatencyP99Ms: 0,
+    networkLatencyMs: asOfAgeMs,
     avgTickIntervalMs: q.freshness.avgTickIntervalMs
       ? Math.round(q.freshness.avgTickIntervalMs)
       : 0,

@@ -93,7 +93,7 @@ export function getMarketSnapshot(): MarketSnapshot {
     freshness: {
       lastNavCalcMs: 15 + Math.floor(Math.random() * 50),
       lastTickMs: 5 + Math.floor(Math.random() * 25),
-      calcLatencyP99Ms: +(1.5 + Math.random() * 1.2).toFixed(1),
+      networkLatencyMs: 8 + Math.floor(Math.random() * 20),
       avgTickIntervalMs: 100 + Math.floor(Math.random() * 50),
       staleSymbols: 0,
       totalSymbols: 101,

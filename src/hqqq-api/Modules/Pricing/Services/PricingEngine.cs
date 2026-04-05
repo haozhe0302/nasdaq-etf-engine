@@ -215,10 +215,10 @@ public sealed class PricingEngine
 
             var newScaleFactor = oldNav / newRawValue;
 
-            // Measure NAV discontinuity before continuity-preserving recalibration
+            // Compute the BPS discontinuity before recalibration, but only
+            // record it after we confirm the activation actually succeeded.
             var preRecalibrationNav = _scaleState.ScaleFactor * newRawValue;
             var jumpBps = (double)Math.Abs((preRecalibrationNav - oldNav) / oldNav * 10000m);
-            _metrics.RecordActivationJump(jumpBps);
 
             _basketProvider.ActivatePendingIfReady();
 
@@ -247,6 +247,7 @@ public sealed class PricingEngine
             _lastActivationDate = today;
             _pendingBlockedReason = null;
 
+            _metrics.RecordActivationJump(jumpBps);
             _metrics.IncrementBasketActivations();
             _logger.LogInformation(
                 "Pending basket activated: old NAV={OldNav:F2}, new scale={Scale:E6}, jump={Jump:F2}bps, continuity preserved",

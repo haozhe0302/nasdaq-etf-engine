@@ -41,11 +41,7 @@ public static class SystemModule
                 Status = status,
                 CheckedAtUtc = DateTimeOffset.UtcNow,
                 Version = typeof(SystemModule).Assembly
-                    .GetCustomAttributes(typeof(global::System.Reflection.AssemblyInformationalVersionAttribute), false)
-                    .OfType<global::System.Reflection.AssemblyInformationalVersionAttribute>()
-                    .FirstOrDefault()?.InformationalVersion
-                    ?? typeof(SystemModule).Assembly.GetName().Version?.ToString()
-                    ?? "0.0.0",
+                    .GetName().Version?.ToString() ?? "0.0.0",
                 Runtime = RuntimeInfo.Capture(),
                 Metrics = metrics.GetSnapshot(),
                 Dependencies =

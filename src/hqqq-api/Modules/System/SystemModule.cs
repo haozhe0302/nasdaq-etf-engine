@@ -99,12 +99,6 @@ public static class SystemModule
         .WithTags("System")
         .WithOpenApi();
 
-        app.MapGet("/api/system/ping", () =>
-            Results.Ok(new { serverUtc = DateTimeOffset.UtcNow }))
-        .WithName("Ping")
-        .WithTags("System")
-        .WithOpenApi();
-
         return app;
     }
 }

@@ -6,7 +6,6 @@ import {
   fetchConstituents,
   fetchSystemHealth,
   fetchHistory,
-  fetchPing,
   createMarketHubConnection,
 } from "./api";
 import {
@@ -91,6 +90,22 @@ const EMPTY_SYSTEM: SystemSnapshot = {
   events: [],
 };
 
+// ── Shared health-probe RTT tracker (EMA) ────────────────────
+
+const HEALTH_RTT_EMA_ALPHA = 0.3;
+let healthRttEmaMs = 0;
+
+function recordHealthProbeRtt(startMs: number): void {
+  const rtt = performance.now() - startMs;
+  if (!Number.isFinite(rtt) || rtt < 0) return;
+  const prev = healthRttEmaMs;
+  healthRttEmaMs = prev === 0 ? rtt : prev + HEALTH_RTT_EMA_ALPHA * (rtt - prev);
+}
+
+function getHealthProbeRttMs(): number {
+  return Math.max(0, Math.round(healthRttEmaMs));
+}
+
 // ── Market (full REST snapshot + slim SignalR deltas) ─────
 
 export function useMarketData(): LiveDataResult<MarketSnapshot> {
@@ -100,34 +115,15 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   const [error, setError] = useState<string>();
   const hubRef = useRef<HubConnection | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const rttEmaRef = useRef<number>(0);
-  const pingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-
-    // Ping probe for real browser↔backend RTT
-    const runPing = async () => {
-      const start = performance.now();
-      try {
-        await fetchPing();
-        if (cancelled) return;
-        const rtt = performance.now() - start;
-        const prev = rttEmaRef.current;
-        const alpha = 0.3;
-        rttEmaRef.current = prev === 0 ? rtt : prev + alpha * (rtt - prev);
-      } catch {
-        // ignore ping failures
-      }
-    };
-    runPing();
-    pingTimerRef.current = setInterval(runPing, 5_000);
 
     const applyFullSnapshot = (raw: unknown) => {
       if (cancelled) return;
       try {
         const snapshot = adaptQuote(raw);
-        const networkLatencyMs = Math.round(rttEmaRef.current);
+        const networkLatencyMs = getHealthProbeRttMs();
         setData({
           ...snapshot,
           freshness: { ...snapshot.freshness, networkLatencyMs },
@@ -144,7 +140,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       if (cancelled) return;
       try {
         const delta = adaptQuoteDelta(raw);
-        const networkLatencyMs = Math.round(rttEmaRef.current);
+        const networkLatencyMs = getHealthProbeRttMs();
         setData((prev) => {
           const merged = mergeQuoteDelta(prev, delta);
           return {
@@ -242,7 +238,6 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
     return () => {
       cancelled = true;
       stopRetryTimer();
-      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
       unregisterFeed("market");
       if (hubRef.current?.state !== HubConnectionState.Disconnected) {
         hubRef.current?.stop();
@@ -297,7 +292,9 @@ export function useSystemData(): LiveDataResult<SystemSnapshot> {
 
   const poll = useCallback(async () => {
     try {
+      const start = performance.now();
       const raw = await fetchSystemHealth();
+      recordHealthProbeRtt(start);
       setData(adaptSystemHealth(raw));
       recordUpdate("system");
       setConnectionState("live");
@@ -382,7 +379,9 @@ export function useAppStatus(): AppStatus {
 
   const poll = useCallback(async () => {
     try {
+      const start = performance.now();
       const raw = await fetchSystemHealth();
+      recordHealthProbeRtt(start);
       const health = toHealthStatus(
         (raw as { status: string }).status,
       );

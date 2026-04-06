@@ -1,3 +1,4 @@
+using System.Reflection;
 using Hqqq.Api.Modules.System.Contracts;
 using Hqqq.Api.Modules.System.Services;
 using Hqqq.Api.Modules.Basket.Contracts;
@@ -8,6 +9,15 @@ namespace Hqqq.Api.Modules.System;
 
 public static class SystemModule
 {
+    private static string GetInformationalVersion()
+    {
+        var asm = typeof(SystemModule).Assembly;
+        var attr = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>();
+        if (!string.IsNullOrWhiteSpace(attr?.InformationalVersion))
+            return attr.InformationalVersion;
+        return asm.GetName().Version?.ToString() ?? "0.0.0";
+    }
+
     public static IServiceCollection AddSystemModule(this IServiceCollection services)
     {
         services.AddSingleton<MetricsService>();
@@ -40,8 +50,7 @@ public static class SystemModule
                 ServiceName = "hqqq-api",
                 Status = status,
                 CheckedAtUtc = DateTimeOffset.UtcNow,
-                Version = typeof(SystemModule).Assembly
-                    .GetName().Version?.ToString() ?? "0.0.0",
+                Version = GetInformationalVersion(),
                 Runtime = RuntimeInfo.Capture(),
                 Metrics = metrics.GetSnapshot(),
                 Dependencies =

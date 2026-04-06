@@ -1,0 +1,77 @@
+# Builds and pushes hqqq-api to Azure Container Registry with embedded InformationalVersion.
+#
+# Rules:
+# - Push tag v* (e.g. v1.0.3) → InformationalVersion = tag without v (1.0.3); image :1.0.3
+# - Push to main → InformationalVersion = 0.0.0+<short-sha>; image :0.0.0-<sha>
+# - workflow_dispatch with optional input "version" → use that as InformationalVersion; empty → same as main
+#
+# Required repo secrets: ACR_USERNAME, ACR_PASSWORD (service principal or admin user for the registry)
+name: hqqq-api Docker image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version (e.g. 1.0.3). Leave empty for 0.0.0+<short-sha>."
+        required: false
+        default: ""
+
+env:
+  REGISTRY: acrhqqqmvp001.azurecr.io
+  IMAGE_NAME: hqqq-api
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute InformationalVersion and image tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            INFO="${GITHUB_REF_NAME#v}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            INFO="${{ github.event.inputs.version }}"
+          else
+            SHA=$(git rev-parse --short HEAD)
+            INFO="0.0.0+${SHA}"
+          fi
+          BASE="${INFO%%+*}"
+          # Docker tag: + and # are awkward; mirror scripts/build-hqqq-api-docker.ps1
+          TAG="${INFO//+/-}"
+          TAG="${TAG//#/-}"
+          echo "informational_version=${INFO}" >> "$GITHUB_OUTPUT"
+          echo "msbuild_version=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src/hqqq-api
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.msbuild_version }}
+            INFORMATIONAL_VERSION=${{ steps.meta.outputs.informational_version }}

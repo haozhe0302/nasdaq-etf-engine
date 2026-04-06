@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Hqqq.Api</RootNamespace>
+    <!-- Default when not overridden by dotnet publish -p:Version / -p:InformationalVersion (e.g. Docker, CI) -->
+    <Version>0.0.0</Version>
+    <InformationalVersion>0.0.0-dev</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

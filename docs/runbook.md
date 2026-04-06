@@ -39,11 +39,7 @@ Edit `.env` and replace placeholder API keys.
 
 ## 3) Build and test
 
-### Optional: Docker infra setup (future-phase stack)
-
-Current MVP does not require Docker to run. If you want to pre-provision the
-future-phase infra stack (`Redis`, `Kafka`, `Postgres/Timescale`, `Prometheus`,
-`Grafana`) for local experiments:
+### Docker infra setup
 
 ```bash
 docker compose pull
@@ -68,6 +64,39 @@ dotnet build src/hqqq-api
 ```bash
 dotnet test src/hqqq-api.tests --verbosity normal
 ```
+
+### hqqq-api Docker image (version embedded in `/api/system/health`)
+
+The image bakes **MSBuild `InformationalVersion`** into the DLL. Use the PowerShell helper (repo root) so tags and semver stay consistent:
+
+| Mode | Behavior |
+|------|----------|
+| **Explicit** | `-Version 1.0.3` → `InformationalVersion=1.0.3`, image `:1.0.3` |
+| **Bump patch** | `-BumpPatch` → latest `v*.*.*` tag, patch +1 (no tags → `0.0.1`) |
+| **Default** | HEAD exactly on `v*` tag → that version; else `0.0.0+<short-sha>` |
+
+```powershell
+# Explicit version (also tags image as 1.0.3)
+.\scripts\build-hqqq-api-docker.ps1 -Version 1.0.3
+
+# Auto: latest semver tag + 0.0.1, build, push to ACR
+.\scripts\build-hqqq-api-docker.ps1 -BumpPatch -Push
+
+# Auto: dev build (0.0.0+gitsha) — default when not on a release tag
+.\scripts\build-hqqq-api-docker.ps1
+```
+
+Raw `docker build` (same as the script passes through):
+
+```powershell
+docker build -f .\src\hqqq-api\Dockerfile `
+  --build-arg VERSION=1.0.3 `
+  --build-arg INFORMATIONAL_VERSION=1.0.3 `
+  -t hqqq-api:1.0.3 `
+  .\src\hqqq-api
+```
+
+**CI:** `.github/workflows/hqqq-api-docker.yml` — push to `main` → `0.0.0+<sha>`; push tag `v*` → tag name; optional manual run with `version` input. Requires secrets `ACR_USERNAME` and `ACR_PASSWORD`.
 
 ### Frontend install + build
 

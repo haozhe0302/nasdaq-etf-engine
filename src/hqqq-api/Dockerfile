@@ -9,11 +9,22 @@ WORKDIR /src
 COPY ["hqqq-api.csproj", "./"]
 RUN dotnet restore "hqqq-api.csproj"
 COPY . .
-RUN dotnet build "hqqq-api.csproj" -c Release -o /app/build
+
+# MSBuild Version = semver base (e.g. 1.0.3); InformationalVersion = full label (e.g. 1.0.3 or 0.0.0+abc1234)
+ARG VERSION=0.0.0
+ARG INFORMATIONAL_VERSION=0.0.0-local
+
+RUN dotnet build "hqqq-api.csproj" -c Release -o /app/build \
+    /p:Version="${VERSION}" \
+    /p:InformationalVersion="${INFORMATIONAL_VERSION}"
 
 # Stage 3: Publish optimized output
 FROM build AS publish
-RUN dotnet publish "hqqq-api.csproj" -c Release -o /app/publish /p:UseAppHost=false
+ARG VERSION=0.0.0
+ARG INFORMATIONAL_VERSION=0.0.0-local
+RUN dotnet publish "hqqq-api.csproj" -c Release -o /app/publish /p:UseAppHost=false \
+    /p:Version="${VERSION}" \
+    /p:InformationalVersion="${INFORMATIONAL_VERSION}"
 
 # Stage 4: Final production image (lean, no SDK)
 FROM base AS final

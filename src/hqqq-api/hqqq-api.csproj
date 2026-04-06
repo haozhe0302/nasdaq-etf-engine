@@ -6,8 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Hqqq.Api</RootNamespace>
     <!-- Default when not overridden by dotnet publish -p:Version / -p:InformationalVersion (e.g. Docker, CI) -->
-    <Version>0.0.0</Version>
-    <InformationalVersion>0.0.0-dev</InformationalVersion>
+    <Version>1.0.3</Version>
+    <InformationalVersion>1.0.3</InformationalVersion>
+    <!-- SDK otherwise appends + and full git SHA to InformationalVersion when building from a repo -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

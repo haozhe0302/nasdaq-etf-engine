@@ -17,7 +17,7 @@ export function TopStatusBar() {
         <span className="text-muted">{s.symbolCount} symbols</span>
         <span className="text-edge">│</span>
         <span className="font-mono text-muted">
-          {estTime} EST
+          {estTime} ET
         </span>
       </div>
       <div className="flex items-center gap-4">

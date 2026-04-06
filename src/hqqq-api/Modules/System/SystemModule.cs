@@ -13,9 +13,20 @@ public static class SystemModule
     {
         var asm = typeof(SystemModule).Assembly;
         var attr = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>();
-        if (!string.IsNullOrWhiteSpace(attr?.InformationalVersion))
-            return attr.InformationalVersion;
-        return asm.GetName().Version?.ToString() ?? "0.0.0";
+        var v = attr?.InformationalVersion;
+        if (string.IsNullOrWhiteSpace(v))
+            return asm.GetName().Version?.ToString() ?? "0.0.0";
+
+        // Semver build metadata after '+' is often a full git SHA; cap at 8 chars for display/API.
+        var plus = v.IndexOf('+');
+        if (plus >= 0 && plus < v.Length - 1)
+        {
+            var suffix = v[(plus + 1)..];
+            if (suffix.Length > 8)
+                return v[..(plus + 1)] + suffix[..8];
+        }
+
+        return v;
     }
 
     public static IServiceCollection AddSystemModule(this IServiceCollection services)

@@ -103,12 +103,12 @@ function RuntimeMetricsPanel({
             Latency
           </div>
           <MetricRow
-            label="Tick→Quote (p50)"
-            value={isRegularSessionOpen ? fmtLatency(metrics.tickToQuoteMs, "p50") : "Market Closed"}
+            label={`Tick→Quote (p50)${!isRegularSessionOpen ? " · prev" : ""}`}
+            value={fmtLatency(metrics.tickToQuoteMs, "p50")}
           />
           <MetricRow
-            label="Tick→Quote (p95)"
-            value={isRegularSessionOpen ? fmtLatency(metrics.tickToQuoteMs, "p95") : "Market Closed"}
+            label={`Tick→Quote (p95)${!isRegularSessionOpen ? " · prev" : ""}`}
+            value={fmtLatency(metrics.tickToQuoteMs, "p95")}
           />
           <MetricRow
             label="Broadcast (p50)"

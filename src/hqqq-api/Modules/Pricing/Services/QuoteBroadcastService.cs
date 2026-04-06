@@ -108,7 +108,7 @@ public sealed class QuoteBroadcastService : BackgroundService
                     {
                         var tickToQuoteMs = (DateTimeOffset.UtcNow - quote.Freshness.LastTickUtc.Value)
                             .TotalMilliseconds;
-                        if (tickToQuoteMs >= 0)
+                        if (tickToQuoteMs >= 0 && _engine.IsWithinMarketHours())
                         {
                             _metrics.RecordTickToQuote(tickToQuoteMs);
                             tickToQuoteMsValue = tickToQuoteMs;

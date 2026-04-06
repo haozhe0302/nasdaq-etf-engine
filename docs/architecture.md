@@ -1,230 +1,233 @@
 # Architecture
 
-## Overview
+## 1) System overview
 
-HQQQ is a full-stack ETF analytics engine with two main components:
+HQQQ currently runs as a full-stack MVP with two deployable units:
 
-- **hqqq-api** — an ASP.NET Core modular monolith that owns basket composition,
-  market data ingestion, iNAV calculation, and system observability.
-- **hqqq-ui** — a React/Vite terminal-style dashboard that presents real-time
-  iNAV, constituent holdings, historical analytics, and system health.
+- `hqqq-api` (ASP.NET Core 8): basket construction, market-data ingestion, iNAV
+  pricing, history aggregation, benchmark/report endpoints, and health/metrics
+- `hqqq-ui` (React + Vite): live market dashboard, constituents, history
+  analytics view, and system health view
 
-The backend is a single deployable unit with clear internal module boundaries.
-The frontend communicates with the backend over HTTP (REST) and WebSocket
-(SignalR) for real-time quote streaming.
-
-This is an intentional starting point. A single-process backend keeps
-development and debugging simple for a solo/small-team project. Modules can
-be extracted into separate services later if scale demands it.
+Current architecture intentionally favors speed of iteration and operational
+simplicity (single backend process, local state persistence where needed),
+while keeping module boundaries explicit for future service extraction.
 
 ---
 
-## Backend (hqqq-api)
+## 2) Current backend architecture (`src/hqqq-api`)
 
-### Module map
+### 2.1 Module map
 
-```
+```text
 src/hqqq-api/
 ├── Modules/
-│   ├── Basket/          # ETF basket composition and reference data
-│   ├── MarketData/      # Live constituent price ticks
-│   ├── Pricing/         # Indicative NAV / quote snapshot calculation
-│   └── System/          # Health, readiness, config, observability
-└── Program.cs           # Composition root
+│   ├── Basket/        # Hybrid basket construction + refresh + source caching
+│   ├── MarketData/    # Tiingo WS/REST ingestion + latest price store
+│   ├── Pricing/       # iNAV compute, scale calibration, quote broadcast
+│   ├── History/       # Range-based historical API over persisted snapshots
+│   ├── Benchmark/     # Record/replay report tooling endpoints
+│   └── System/        # Health and runtime metrics
+├── Hubs/
+│   └── MarketHub.cs   # SignalR hub for QuoteUpdate stream
+└── Program.cs         # Composition root
 ```
 
-A `Shared/` directory may be introduced later for genuinely cross-cutting
-primitives. It does not exist yet — avoid creating it until a real need arises.
+### 2.2 Responsibilities by module
 
-### Basket
+- `Basket`
+  - Builds hybrid ETF basket from Stock Analysis / Schwab / Alpha Vantage / Nasdaq
+  - Maintains active and pending basket semantics
+  - Produces deterministic basket fingerprints
+  - Exposes `/api/basket/current` and `/api/basket/refresh`
 
-Owns the hybrid basket composition: which securities are in the ETF, their
-weights and shares held, and the reference date. Constructs baskets from
-multiple public scraped sources (Stock Analysis, Schwab, Alpha Vantage, Nasdaq)
-using an anchor + tail merge strategy.
+- `MarketData`
+  - Runs Tiingo WebSocket ingestion
+  - Activates REST polling fallback when needed
+  - Maintains in-memory latest price store and freshness state
+  - Exposes `/api/marketdata/status` and `/api/marketdata/latest`
 
-Key contract: `BasketConstituent`
+- `Pricing`
+  - Computes real-time quote snapshots from basket + latest prices
+  - Preserves iNAV continuity during pending-basket activation (`newScale = oldNAV / newRawValue`)
+  - Publishes slim `QuoteUpdate` deltas through SignalR
+  - Exposes `/api/quote` and `/api/constituents`
 
-### MarketData
+- `History`
+  - Serves `/api/history?range=` from persisted snapshot data
+  - Performs downsampling, tracking-error stats, and distribution calculations
 
-Owns the ingestion-side representation of live constituent prices. Defines
-the `PriceTick` contract that upstream providers produce and downstream
-consumers (Pricing) depend on.
+- `Benchmark`
+  - Supports record/replay style benchmark workflows for offline analysis
 
-### Pricing
+- `System`
+  - Exposes `/api/system/health` with dependency and runtime snapshot
+  - Surfaces internal metrics snapshot used by UI/system monitoring
 
-Owns the iNAV / quote snapshot domain. Depends on Basket (composition) and
-MarketData (prices) contracts to compute the indicative NAV.
+### 2.3 Dependency direction
 
-Key contract: `QuoteSnapshot`
-
-### System
-
-Health checks, readiness probes, version reporting, and observability
-endpoints. Exposes `/api/system/health`.
-
-Key contracts: `SystemHealth`, `DependencyHealth`
-
-### Dependency direction
-
+```text
+Pricing -> Basket
+Pricing -> MarketData
+History -> Pricing persisted outputs (filesystem data products)
+System  -> probes all modules for health
+Basket / MarketData -> standalone domain providers
 ```
-Pricing  →  Basket
-Pricing  →  MarketData
-System   →  (standalone, may probe other modules for health)
-Basket   →  (standalone)
-MarketData → (standalone)
+
+Design rule: modules consume contracts, not internals; cyclic dependencies are
+not allowed.
+
+### 2.4 Delivery model (quote path)
+
+```text
+Tiingo WS/REST -> MarketData store -> Pricing engine -> SignalR QuoteUpdate
+                                       \-> REST /api/quote (full snapshot)
 ```
 
-Contracts flow **inward**: a module exposes its contracts, and dependents
-import those contracts. No module reaches into another module's internals.
-Cyclic dependencies between modules are not allowed.
-
-### Why modular monolith?
-
-- Single deployable keeps local dev, debugging, and CI simple.
-- Module boundaries enforce separation of concerns without network overhead.
-- Extraction to separate services is straightforward if needed later:
-  each module already owns its own contracts and registration.
+Two-tier payload strategy:
+- REST `/api/quote`: full snapshot for bootstrap and reconnect re-sync
+- SignalR `QuoteUpdate`: slim incremental updates for lower bandwidth
 
 ---
 
-## Frontend (hqqq-ui)
+## 3) Current frontend architecture (`src/hqqq-ui`)
 
-### Structure
+### 3.1 Structure
 
-```
+```text
 src/hqqq-ui/src/
-├── app/            # BrowserRouter, route definitions
-├── components/     # Reusable UI primitives
-├── layout/         # Application shell (persists across route changes)
-├── lib/            # Data types, data sourcing, page-level hooks
-├── pages/          # Page components (one per route)
-└── styles/         # Tailwind CSS theme and design tokens
+├── app/          # Router entry
+├── components/   # Reusable UI building blocks
+├── layout/       # App shell
+├── pages/        # Market / Constituents / History / System
+├── lib/          # types, api, adapters, hooks, update tracker
+└── styles/       # Tailwind theme tokens
 ```
 
-### Application shell
+### 3.2 Route/page model
 
-The shell is composed of three persistent layout components:
+| Route | Page | Data source |
+|---|---|---|
+| `/market` | `MarketPage` | REST bootstrap + SignalR `QuoteUpdate` |
+| `/constituents` | `ConstituentsPage` | REST `/api/constituents` polling (5s) |
+| `/history` | `HistoryPage` | REST `/api/history?range=` polling (30s) |
+| `/system` | `SystemPage` | REST `/api/system/health` polling (3s) |
 
-- **TopStatusBar** — compact header showing HQQQ branding, symbol count,
-  UTC clock, data mode indicator, refresh cadence, and system health badge.
-- **SidebarNav** — left navigation with active-state highlighting for the
-  four primary routes.
-- **Content area** — renders the active page via React Router `<Outlet />`,
-  with overflow scrolling.
+`/` and unknown routes redirect to `/market`.
 
-### Pages
+### 3.3 Frontend data flow contracts
 
-| Route            | Component          | Purpose                                                  |
-|------------------|--------------------|----------------------------------------------------------|
-| `/market`        | `MarketPage`       | Command-center view: KPI strip, iNAV vs market price chart, premium/discount chart, quote freshness, top movers, basket summary, feed status |
-| `/constituents`  | `ConstituentsPage` | Holdings visibility: toolbar with search/filter, 9-column data table, concentration metrics, weight distribution, data quality panel |
-| `/history`       | `HistoryPage`      | Analytics workspace: date range toolbar, historical iNAV vs QQQ comparison chart, P/D history, tracking error metrics, P/D distribution histogram, replay diagnostics |
-| `/system`        | `SystemPage`       | Ops monitoring: service health cards with latency, runtime metrics (uptime, memory, CPU, throughput), pipeline status table, recent events log |
+The UI consumes backend data only via hooks in `lib/hooks.ts`:
+- `useMarketData()`
+- `useConstituentData()`
+- `useHistoryData(range)`
+- `useSystemData()`
+- `useAppStatus()`
 
-`/` redirects to `/market`. Unknown routes also redirect to `/market`.
-
-### Components
-
-Thin, reusable UI primitives shared across pages:
-
-| Component     | Purpose                                    |
-|---------------|--------------------------------------------|
-| `Panel`       | Bordered container with optional title bar  |
-| `StatCard`    | KPI display with label, value, status color |
-| `StatusBadge` | Colored dot + label health indicator        |
-| `MetricRow`   | Label–value pair for dense metric display   |
-| `Chart`       | ECharts wrapper with ResizeObserver         |
-
-### Data layer
-
-```
-lib/
-├── types.ts           # View model interfaces (MarketSnapshot, Constituent, etc.)
-├── api.ts             # REST fetch helpers, SignalR hub connection
-├── adapters.ts        # Backend DTO → UI view model mapping
-├── hooks.ts           # Page-level React hooks (useMarketData, useSystemData, etc.)
-├── mock.ts            # Static mock data (used only by History page)
-└── updateTracker.ts   # EMA-smoothed update interval tracking for status bar
-```
-
-Pages consume data exclusively through hooks (`useMarketData()`,
-`useConstituentData()`, `useHistoryData()`, `useSystemData()`). The hook
-return types are the stable API contract.
-
-**Refresh model**: Market page uses SignalR `QuoteUpdate` events (~1s) with
-REST `/api/quote` as initial load. Constituents and System pages poll their
-respective REST endpoints every 5 seconds. History data is static mock
-(pending persisted series storage). Only the active page's hook runs; hooks
-clean up their connections/intervals on unmount.
-
-### Design system
-
-Dark terminal-style theme defined via Tailwind CSS v4 `@theme` tokens:
-
-| Token       | Hex       | Usage                         |
-|-------------|-----------|-------------------------------|
-| `canvas`    | `#0a0e17` | Page background               |
-| `surface`   | `#111827` | Panels, cards, sidebar        |
-| `overlay`   | `#1a2233` | Hover states                  |
-| `edge`      | `#1e293b` | Borders, dividers             |
-| `content`   | `#e1e4e8` | Primary text                  |
-| `muted`     | `#8b949e` | Secondary text, labels        |
-| `accent`    | `#3b82f6` | Active elements, links        |
-| `positive`  | `#22c55e` | Positive changes, healthy     |
-| `negative`  | `#ef4444` | Negative changes, unhealthy   |
-
-Typography: Inter (sans) for UI text, JetBrains Mono / Fira Code (mono) for
-data values. Compact spacing throughout — designed for information density.
-
-### Charting
-
-ECharts is used for all chart regions. The `Chart` component is a thin wrapper
-(~30 lines) that handles initialization, option updates, and resize observation.
-
-The primary Market chart (iNAV vs market price) is architecturally isolated:
-data flows as `TimeSeriesPoint[]` through the hook, and chart options are
-constructed in the page component. This allows the chart implementation to be
-swapped to Lightweight Charts in a future phase without affecting the data
-layer or other components.
+Adapters in `lib/adapters.ts` isolate backend DTO shape from UI view models,
+so endpoint schema changes are localized.
 
 ---
 
-## Infrastructure
+## 4) Future architecture (in progress)
 
-### MVP (current)
+### 4.1 Phase 2: event-driven split
 
-No external infrastructure is required. The backend runs standalone with:
-- In-memory price store (replaces Redis)
-- Local JSON file persistence for basket cache, scale state, and series
-- Tiingo WebSocket + REST for live market data
+### Goal statement
 
-### Future phases (docker-compose.yml)
+To support replay, multiple independent consumers, traffic decoupling, and
+higher concurrency, the backend evolves from modular monolith internals toward
+an event-driven serving architecture:
 
-| Service       | Purpose                        | Port  | MVP status |
-|---------------|--------------------------------|-------|----------------|
-| TimescaleDB   | Historical iNAV time-series    | 5432  | Not connected  |
-| Redis         | Price cache, calculation cache  | 6379  | Not connected  |
-| Kafka (KRaft) | Event streaming                | 9092  | Not connected  |
-| Kafka UI      | Topic/consumer inspection      | 8080  | Not connected  |
-| Prometheus    | Metrics scraping               | 9090  | Not connected  |
-| Grafana       | Dashboards                     | 3000  | Not connected  |
+- ingress writes normalized ticks to Kafka
+- quote-engine consumes Kafka and computes iNAV
+- persistence-service independently consumes Kafka
+- latest snapshots are materialized in Redis
+- API/WebSocket gateway serves from Redis
+- Prometheus/Grafana tracks lag/stale/latency SLOs
 
-`docker compose up -d` provisions these for experimentation, but the
-MVP codebase does not use them.
+### Component diagram
+
+```text
+Tiingo WebSocket
+      |
+      v
+[ingress-service]
+  - normalize provider payload
+  - attach recv_ts / provider_ts / symbol / seq
+  - publish to Kafka topic: market.raw_ticks
+      |
+      v
+==================== Kafka ====================
+topic: market.raw_ticks   key = symbol
+================================================
+      |                         |                         |
+      |                         |                         |
+      v                         v                         v
+[quote-engine]          [persistence-service]     [analytics/replay-worker]
+consumer group A        consumer group B          consumer group C
+- consume ticks         - persist raw/normalized  - basis stats
+- maintain in-memory    - write Postgres/TSDB     - anomaly checks
+  latest symbol state   - optional compact table  - backtests/replays
+- compute basket/iNAV
+- write latest outputs to Redis
+- publish snapshot-update event
+      |
+      v
+==================== Redis =====================
+keys:
+  hqqq:snapshot:latest
+  hqqq:constituents:latest
+  hqqq:metrics:latest
+channels:
+  hqqq:snapshot:updates
+================================================
+      |
+      v
+[api-gateway / websocket-gateway]
+- REST GET /api/quote reads Redis latest snapshot
+- client connect sends latest snapshot immediately
+- subscribe pub/sub or SignalR backplane
+- broadcast updates to 1000+ clients
+```
+
+### Why Kafka + Redis split
+
+Kafka is the durable event log and fan-out backbone. Redis is the latest-state
+serving layer for low-latency read paths and gateway scale-out. Raw provider
+ticks should not bypass Kafka into Redis as the primary pipeline.
+
+### Target capability expansion
+
+- 1000+ concurrent WebSocket clients
+- multiple downstream consumers (UI, persistence, alerting, analytics, replay)
+- replay/backfill/recalculation as first-class workflows
+- multiple ETF baskets (not just HQQQ)
+- pluggable multi-provider ingestion
+- rolling releases, autoscaling, and better failure isolation
+
+### 4.2 Phase 3: Kubernetes operationalization
+
+Scope and principles:
+
+- Run stateless app tier on Kubernetes: gateway, ingress, worker deployments
+- Use `Deployment` + `Service` primitives with HPA-based scaling
+- Manage runtime config through `ConfigMap` and sensitive config through `Secret`
+- Keep stateful infra (Kafka/Redis/Postgres) independent or managed, based on
+  operational maturity and cost profile
+
+Kubernetes is used primarily for operability, elasticity, and availability of
+stateless services, not as a hot-path micro-optimization tool.
 
 ---
 
-## Future evolution
+## 5) Current-to-future evolution summary
 
-| Concern                        | Current (MVP)                    | Planned                                  |
-|--------------------------------|--------------------------------------|------------------------------------------|
-| Market data transport          | Tiingo WS + 5s REST fallback         | Additional data providers                |
-| iNAV calculation               | Live hybrid basket pricing engine    | Parallel pricing, more sources           |
-| Data persistence               | Local JSON files                     | TimescaleDB for historical snapshots     |
-| Caching                        | In-memory ConcurrentDictionary       | Redis for distributed price cache        |
-| Event streaming                | —                                    | Kafka for tick ingestion and quote pub   |
-| History page                   | Static mock data                     | Live replay from persisted series        |
-| Primary chart library          | ECharts                              | Lightweight Charts for Market chart      |
-| Authentication                 | —                                    | TBD                                      |
-| CI/CD                          | —                                    | GitHub Actions                           |
+| Concern | MVP now | Future direction |
+|---|---|---|
+| Tick transport | Direct ingest in backend process | Kafka as primary durable event bus |
+| Serving state | In-process memory + local files | Redis latest-state serving layer |
+| History storage | Filesystem snapshots | Postgres/Timescale event/snapshot persistence |
+| Fan-out model | Single-process internal fan-out | Multi-consumer groups over Kafka |
+| Gateway scale | Single backend instance | Multi-instance API/WS gateway with backplane |
+| Deployment | Local/prototype style | Kubernetes app-tier with autoscaling |

@@ -176,10 +176,14 @@ public sealed class TiingoWebSocketClient : IDisposable
                     break;
 
                 case "A":
-                    LastHeartbeatUtc = DateTimeOffset.UtcNow;
                     if (ProcessDataMessage(root))
                     {
+                        LastHeartbeatUtc = DateTimeOffset.UtcNow;
                         LastDataUtc = DateTimeOffset.UtcNow;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("WS A-frame received but not parsed as valid market data: {Json}", json);
                     }
                     break;
 
@@ -245,41 +249,78 @@ public sealed class TiingoWebSocketClient : IDisposable
     {
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
             return false;
-        if (data.GetArrayLength() < 10) return false;
-
+    
+        // Format A (observed in Postman / compact format):
+        // ["2026-04-06T14:47:57.238505306-04:00", "amzn", 212.27]
+        if (data.GetArrayLength() >= 3)
+        {
+            var ts0 = GetString(data, 0);
+            var ticker0 = GetString(data, 1);
+            var price0 = GetDecimal(data, 2);
+    
+            if (!string.IsNullOrWhiteSpace(ts0)
+                && !string.IsNullOrWhiteSpace(ticker0)
+                && price0 is > 0)
+            {
+                DateTimeOffset eventTime = DateTimeOffset.UtcNow;
+                if (DateTimeOffset.TryParse(ts0, out var parsed0))
+                    eventTime = parsed0;
+    
+                _priceStore.Update(new PriceTick
+                {
+                    Symbol = ticker0.ToUpperInvariant(),
+                    Price = price0.Value,
+                    Currency = "USD",
+                    Source = "ws",
+                    EventTimeUtc = eventTime,
+                    BidPrice = null,
+                    AskPrice = null,
+                });
+    
+                return true;
+            }
+        }
+    
+        // Format B (legacy / verbose format)
+        if (data.GetArrayLength() < 10)
+        {
+            _logger.LogInformation("WS A-frame ignored: unsupported data shape {Json}", data.ToString());
+            return false;
+        }
+    
         var ticker = GetString(data, 3);
         if (string.IsNullOrWhiteSpace(ticker))
         {
             _logger.LogDebug("WS data with empty ticker, skipping");
             return false;
         }
-
+    
         var lastPrice = GetDecimal(data, 9) ?? GetDecimal(data, 6);
         if (lastPrice is null or <= 0)
         {
             _logger.LogDebug("WS: non-positive or missing price for {Ticker}, skipping", ticker);
             return false;
         }
-
-        DateTimeOffset eventTime = DateTimeOffset.UtcNow;
+    
+        DateTimeOffset eventTimeVerbose = DateTimeOffset.UtcNow;
         var dateStr = GetString(data, 1);
-        if (dateStr is not null && DateTimeOffset.TryParse(dateStr, out var parsed))
-            eventTime = parsed;
-
+        if (dateStr is not null && DateTimeOffset.TryParse(dateStr, out var parsedVerbose))
+            eventTimeVerbose = parsedVerbose;
+    
         var bidPrice = GetDecimal(data, 5);
         var askPrice = GetDecimal(data, 7);
-
+    
         _priceStore.Update(new PriceTick
         {
             Symbol = ticker.ToUpperInvariant(),
             Price = lastPrice.Value,
             Currency = "USD",
             Source = "ws",
-            EventTimeUtc = eventTime,
+            EventTimeUtc = eventTimeVerbose,
             BidPrice = bidPrice > 0 ? bidPrice : null,
             AskPrice = askPrice > 0 ? askPrice : null,
         });
-
+    
         return true;
     }
 

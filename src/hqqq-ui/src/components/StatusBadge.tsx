@@ -3,6 +3,8 @@ const styles = {
   degraded: { dot: "bg-yellow-500", text: "text-yellow-500" },
   unhealthy: { dot: "bg-negative", text: "text-negative" },
   unknown: { dot: "bg-muted", text: "text-muted" },
+  /** Backend "idle": nothing to do (e.g. no pending basket, or CA not computed yet). */
+  idle: { dot: "bg-muted", text: "text-muted" },
 } as const;
 
 interface StatusBadgeProps {

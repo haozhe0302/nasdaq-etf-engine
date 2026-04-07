@@ -1,6 +1,6 @@
 // ── shared primitives ───────────────────────────────
 
-export type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown";
+export type HealthStatus = "healthy" | "degraded" | "unhealthy" | "unknown" | "idle";
 
 export type ConnectionState = "connecting" | "live" | "error" | "stale";
 

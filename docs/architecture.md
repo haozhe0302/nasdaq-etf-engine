@@ -180,7 +180,7 @@ src/hqqq-ui/src/
 | Route | Page | Data source |
 |---|---|---|
 | `/market` | `MarketPage` | REST bootstrap + SignalR `QuoteUpdate` |
-| `/constituents` | `ConstituentsPage` | REST `/api/constituents` polling (5s) |
+| `/constituents` | `ConstituentsPage` | REST `/api/constituents` polling (3s) |
 | `/history` | `HistoryPage` | REST `/api/history?range=` polling (30s) |
 | `/system` | `SystemPage` | REST `/api/system/health` polling (3s) |
 

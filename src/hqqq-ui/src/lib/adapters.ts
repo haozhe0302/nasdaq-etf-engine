@@ -157,7 +157,13 @@ interface BSystemHealth {
 // ── Helpers ──────────────────────────────────────────
 
 export function toHealthStatus(s: string): HealthStatus {
-  if (s === "healthy" || s === "degraded" || s === "unhealthy" || s === "unknown")
+  if (
+    s === "healthy" ||
+    s === "degraded" ||
+    s === "unhealthy" ||
+    s === "unknown" ||
+    s === "idle"
+  )
     return s;
   if (s === "initializing" || s === "blocked") return "degraded";
   return "unknown";

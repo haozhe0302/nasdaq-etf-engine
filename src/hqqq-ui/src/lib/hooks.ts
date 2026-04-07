@@ -249,7 +249,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   return { data, connectionState, error };
 }
 
-// ── Constituents (poll every 5 s) ───────────────────
+// ── Constituents (poll every 3 s) ───────────────────
 
 export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
   const [data, setData] = useState<ConstituentSnapshot>(EMPTY_CONSTITUENTS);
@@ -273,7 +273,7 @@ export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, 5_000);
+    const id = setInterval(poll, 3_000);
     return () => {
       clearInterval(id);
       unregisterFeed("constituents");
@@ -406,7 +406,7 @@ export function useAppStatus(): AppStatus {
 
   useEffect(() => {
     poll();
-    const healthId = setInterval(poll, 5_000);
+    const healthId = setInterval(poll, 3_000);
 
     const tickId = setInterval(() => {
       setStatus((prev) => ({ ...prev, updateIntervalMs: getMinIntervalMs() }));

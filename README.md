@@ -1,10 +1,8 @@
 # HQQQ — Nasdaq-100 ETF Engine
 
-Frontend Live Demo: <https://delightful-dune-08a7a390f.1.azurestaticapps.net/>  
-Frontend Local Demo: <http://localhost:5173>
+**Frontend Live Demo:** <https://delightful-dune-08a7a390f.1.azurestaticapps.net/>  
 
 Backend Live Demo: <https://app-hqqq-api-mvp-cdgffghwf8c4hgdh.eastus-01.azurewebsites.net/api/system/health>  
-Backend Local Demo: <http://localhost:5015>
 
 ---
 
@@ -24,7 +22,6 @@ sizes (`Q`) to compute a raw basket value, then apply a continuity-preserving
 Basket sources (Stock Analysis / Schwab / Alpha Vantage / Nasdaq API)
   -> Hybrid basket builder
        -> anchor + tail merge + weight normalization
-       -> raw-source caching (data/raw/*)
        -> merged-basket SHA-256 fingerprint (idempotent refresh)
        -> active/pending semantics
             -> refresh creates pending basket

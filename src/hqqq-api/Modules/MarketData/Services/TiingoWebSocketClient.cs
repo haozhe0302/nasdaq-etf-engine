@@ -20,9 +20,16 @@ public sealed class TiingoWebSocketClient : IDisposable
 
     private ClientWebSocket? _ws;
     private volatile bool _connected;
+    private volatile bool _subscribeSent;
+    private readonly object _errorLock = new();
 
     public bool IsConnected => _connected && _ws?.State == WebSocketState.Open;
     public DateTimeOffset LastHeartbeatUtc { get; private set; } = DateTimeOffset.MinValue;
+
+    public string? LastUpstreamError { get; private set; }
+    public int? LastUpstreamErrorCode { get; private set; }
+    public DateTimeOffset? LastUpstreamErrorAtUtc { get; private set; }
+    public bool ErrorDuringSubscribe { get; private set; }
 
     public TiingoWebSocketClient(
         IOptions<TiingoOptions> options,
@@ -43,13 +50,14 @@ public sealed class TiingoWebSocketClient : IDisposable
         _ws?.Dispose();
         _ws = new ClientWebSocket();
         _connected = false;
+        _subscribeSent = false;
 
         var uri = new Uri(_options.WebSocketUrl);
-        _logger.LogInformation("Connecting to Tiingo IEX WebSocket at {Url}", uri);
+        _logger.LogInformation("[WS:connect-start] Connecting to Tiingo IEX WebSocket at {Url}", uri);
 
         await _ws.ConnectAsync(uri, ct);
         _connected = true;
-        _logger.LogInformation("Tiingo WebSocket connected");
+        _logger.LogInformation("[WS:connect-ok] Tiingo WebSocket connected");
 
         try
         {
@@ -76,10 +84,13 @@ public sealed class TiingoWebSocketClient : IDisposable
         {
             eventName = "subscribe",
             authorization = _options.ApiKey,
-            eventData = new { thresholdLevel = 5, tickers }
+            eventData = new { thresholdLevel = _options.WebSocketThresholdLevel, tickers }
         });
 
-        _logger.LogInformation("Subscribing to {Count} symbols via WebSocket", tickers.Count);
+        _logger.LogInformation(
+            "[WS:subscribe-send] Subscribing to {Count} symbols (thresholdLevel={Level})",
+            tickers.Count, _options.WebSocketThresholdLevel);
+        _subscribeSent = true;
         await SendAsync(msg, ct);
     }
 
@@ -115,7 +126,8 @@ public sealed class TiingoWebSocketClient : IDisposable
                 result = await _ws.ReceiveAsync(segment, ct);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    _logger.LogWarning("Tiingo WebSocket closed by server: {Status} {Desc}",
+                    _logger.LogWarning(
+                        "[WS:close-by-server] Tiingo WebSocket closed by server: {Status} {Desc}",
                         result.CloseStatus, result.CloseStatusDescription);
                     return;
                 }
@@ -133,7 +145,7 @@ public sealed class TiingoWebSocketClient : IDisposable
 
     // ── Message parsing ─────────────────────────────────────────
 
-    private void ProcessMessage(string json)
+    internal void ProcessMessage(string json)
     {
         try
         {
@@ -158,12 +170,57 @@ public sealed class TiingoWebSocketClient : IDisposable
                     LastHeartbeatUtc = DateTimeOffset.UtcNow;
                     ProcessDataMessage(root);
                     break;
+
+                case "E":
+                    ProcessErrorMessage(root);
+                    break;
             }
         }
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Malformed Tiingo WS message, skipping");
         }
+    }
+
+    private void ProcessErrorMessage(JsonElement root)
+    {
+        int? code = null;
+        string? message = null;
+
+        if (root.TryGetProperty("response", out var resp))
+        {
+            if (resp.TryGetProperty("code", out var codeProp) &&
+                codeProp.ValueKind == JsonValueKind.Number)
+                code = codeProp.GetInt32();
+
+            if (resp.TryGetProperty("message", out var msgProp) &&
+                msgProp.ValueKind == JsonValueKind.String)
+                message = msgProp.GetString();
+        }
+
+        if (message is null && root.TryGetProperty("data", out var dataProp))
+        {
+            if (dataProp.ValueKind == JsonValueKind.String)
+                message = dataProp.GetString();
+        }
+
+        message ??= "Unknown upstream error";
+
+        lock (_errorLock)
+        {
+            LastUpstreamError = message;
+            LastUpstreamErrorCode = code;
+            LastUpstreamErrorAtUtc = DateTimeOffset.UtcNow;
+            ErrorDuringSubscribe = _subscribeSent;
+        }
+
+        var isTierMismatch = message.Contains("thresholdLevel", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("subscription tier", StringComparison.OrdinalIgnoreCase);
+
+        _logger.LogError(
+            "[WS:upstream-error] Tiingo upstream error (code={Code}, duringSubscribe={DuringSubscribe}, " +
+            "tierMismatch={TierMismatch}): {Message}",
+            code, _subscribeSent, isTierMismatch, message);
     }
 
     /// <summary>

@@ -224,6 +224,13 @@ export function getSystemSnapshot(): SystemSnapshot {
       avgResponseMs: +(1.2 + Math.random() * 0.6).toFixed(1),
       errorRatePct: 0,
     },
+    upstream: {
+      webSocketConnected: true,
+      fallbackActive: false,
+      lastUpstreamError: null,
+      lastUpstreamErrorCode: null,
+      lastUpstreamErrorAtUtc: null,
+    },
     pipelines: BASE_PIPELINES.map((p) => ({
       ...p,
       throughputPerSec: Math.round(p.throughputPerSec * (0.9 + Math.random() * 0.2)),

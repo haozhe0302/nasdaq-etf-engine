@@ -143,12 +143,21 @@ export interface HistoryDiagnostics {
 
 // ── system ──────────────────────────────────────────
 
+export interface UpstreamTransport {
+  webSocketConnected: boolean;
+  fallbackActive: boolean;
+  lastUpstreamError: string | null;
+  lastUpstreamErrorCode: number | null;
+  lastUpstreamErrorAtUtc: string | null;
+}
+
 export interface SystemSnapshot {
   services: ServiceHealth[];
   runtime: RuntimeMetrics;
   pipelines: PipelineStatus[];
   events: SystemEvent[];
   metrics?: RuntimeMetricsData;
+  upstream?: UpstreamTransport;
 }
 
 export interface RuntimeMetricsData {

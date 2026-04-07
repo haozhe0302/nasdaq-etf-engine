@@ -86,6 +86,7 @@ const EMPTY_SYSTEM: SystemSnapshot = {
     errorRatePct: 0,
   },
   metrics: undefined,
+  upstream: undefined,
   pipelines: [],
   events: [],
 };

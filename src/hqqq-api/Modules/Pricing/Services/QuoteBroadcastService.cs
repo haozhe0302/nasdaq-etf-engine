@@ -182,7 +182,7 @@ public sealed class QuoteBroadcastService : BackgroundService
             SymbolsTotal = quote.Freshness.SymbolsTotal,
             SymbolsStale = quote.Freshness.SymbolsStale,
         });
-        _nextHistoryAt = now.AddMilliseconds(_options.SeriesRecordIntervalMs);
+        _nextHistoryAt = now.AddMilliseconds(_options.HistoryRecordIntervalMs);
     }
 
     private SeriesPoint? MaybeRecordSeriesPoint(Contracts.QuoteSnapshot quote)

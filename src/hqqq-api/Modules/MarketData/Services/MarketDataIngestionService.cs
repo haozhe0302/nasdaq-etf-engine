@@ -35,6 +35,10 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
     public bool IsWebSocketConnected => _wsClient.IsConnected;
     public bool IsFallbackActive => _fallbackActive;
 
+    public string? LastUpstreamError => _wsClient.LastUpstreamError;
+    public int? LastUpstreamErrorCode => _wsClient.LastUpstreamErrorCode;
+    public DateTimeOffset? LastUpstreamErrorAtUtc => _wsClient.LastUpstreamErrorAtUtc;
+
     public DateTimeOffset? LastActivityUtc
     {
         get
@@ -269,9 +273,12 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                 {
                     if (!_fallbackActive)
                     {
+                        var reason = _wsClient.LastUpstreamError is not null
+                            ? $"upstream rejection: {_wsClient.LastUpstreamError}"
+                            : "no connection";
                         _logger.LogInformation(
-                            "WebSocket not connected, activating REST fallback (every {Sec}s)",
-                            _options.RestPollingIntervalSeconds);
+                            "[fallback:activated] REST fallback activated (reason={Reason}, every {Sec}s)",
+                            reason, _options.RestPollingIntervalSeconds);
                         _fallbackActive = true;
                         _metrics.OnFallbackActivated();
                         _recorder.RecordTransport("fallback_activated");

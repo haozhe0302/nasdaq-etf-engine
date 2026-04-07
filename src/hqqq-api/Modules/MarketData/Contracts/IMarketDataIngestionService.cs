@@ -10,4 +10,8 @@ public interface IMarketDataIngestionService
     bool IsWebSocketConnected { get; }
     bool IsFallbackActive { get; }
     DateTimeOffset? LastActivityUtc { get; }
+
+    string? LastUpstreamError { get; }
+    int? LastUpstreamErrorCode { get; }
+    DateTimeOffset? LastUpstreamErrorAtUtc { get; }
 }

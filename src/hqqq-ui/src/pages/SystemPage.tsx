@@ -2,7 +2,7 @@ import { useMarketData, useSystemData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MetricRow } from "@/components/MetricRow";
-import type { RuntimeMetricsData, LatencyStatsData } from "@/lib/types";
+import type { RuntimeMetricsData, LatencyStatsData, UpstreamTransport } from "@/lib/types";
 
 function fmtUptime(s: number): string {
   if (s <= 0) return "—";
@@ -40,6 +40,49 @@ function toTitleCase(text: string): string {
     .filter(Boolean)
     .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
     .join(" ");
+}
+
+function fmtTimeAgo(isoStr: string | null): string {
+  if (!isoStr) return "";
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return "";
+  const secs = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ago`;
+}
+
+function UpstreamTransportPanel({ upstream }: { upstream?: UpstreamTransport }) {
+  const wsStatus = upstream?.webSocketConnected ? "Healthy" : "Disconnected";
+  const wsBadge: "healthy" | "unhealthy" = upstream?.webSocketConnected ? "healthy" : "unhealthy";
+  const fbStatus = upstream?.fallbackActive ? "Active" : "Inactive";
+  const fbBadge: "healthy" | "degraded" = upstream?.fallbackActive ? "degraded" : "healthy";
+
+  return (
+    <Panel title="Upstream Transport">
+      <div className="space-y-1.5 p-3">
+        <MetricRow
+          label="Upstream WS"
+          value={<StatusBadge status={wsBadge} label={wsStatus} />}
+        />
+        <MetricRow
+          label="Fallback"
+          value={<StatusBadge status={fbBadge} label={fbStatus} />}
+        />
+        {upstream?.lastUpstreamError && (
+          <div className="mt-2 rounded border border-negative/30 bg-negative/10 px-2 py-1.5 text-xs text-negative">
+            <div className="font-medium">Last upstream error</div>
+            <div className="mt-0.5">{upstream.lastUpstreamError}</div>
+            {upstream.lastUpstreamErrorAtUtc && (
+              <div className="mt-0.5 text-[10px] text-muted">
+                {fmtTimeAgo(upstream.lastUpstreamErrorAtUtc)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
 }
 
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
@@ -182,7 +225,7 @@ export function SystemPage() {
       />
 
       <div className="grid grid-cols-3 gap-3">
-        <Panel title="Runtime" className="col-span-2">
+        <Panel title="Runtime">
           <div className="grid grid-cols-2 gap-x-8 p-3">
             <div className="space-y-0.5">
               <MetricRow label="Process uptime" value={fmtUptime(rt.uptimeSeconds)} />
@@ -196,6 +239,8 @@ export function SystemPage() {
             </div>
           </div>
         </Panel>
+
+        <UpstreamTransportPanel upstream={d.upstream} />
 
         <Panel title="Notes">
           <div className="space-y-2 p-3 text-xs text-muted">

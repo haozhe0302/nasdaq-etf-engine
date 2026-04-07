@@ -26,6 +26,22 @@ public sealed record SystemHealth
 
     /// <summary>Live observability metrics snapshot (gauges, percentiles, counters).</summary>
     public RuntimeMetricsSnapshot? Metrics { get; init; }
+
+    /// <summary>Upstream Tiingo WebSocket transport diagnostics.</summary>
+    public UpstreamDiagnostics? Upstream { get; init; }
+}
+
+/// <summary>
+/// Diagnostics for the upstream Tiingo WebSocket connection,
+/// surfacing transport state and the most recent upstream error.
+/// </summary>
+public sealed record UpstreamDiagnostics
+{
+    public required bool WebSocketConnected { get; init; }
+    public required bool FallbackActive { get; init; }
+    public string? LastUpstreamError { get; init; }
+    public int? LastUpstreamErrorCode { get; init; }
+    public DateTimeOffset? LastUpstreamErrorAtUtc { get; init; }
 }
 
 public sealed record RuntimeInfo

@@ -46,6 +46,9 @@ public static class MarketDataModule
             {
                 isRunning = ingestion.IsRunning,
                 lastActivityUtc = ingestion.LastActivityUtc,
+                lastUpstreamError = ingestion.LastUpstreamError,
+                lastUpstreamErrorCode = ingestion.LastUpstreamErrorCode,
+                lastUpstreamErrorAtUtc = ingestion.LastUpstreamErrorAtUtc,
                 health,
             });
         })

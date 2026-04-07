@@ -123,6 +123,14 @@ interface BRuntimeMetrics {
   totalBasketActivations: number;
 }
 
+interface BUpstreamDiagnostics {
+  webSocketConnected: boolean;
+  fallbackActive: boolean;
+  lastUpstreamError: string | null;
+  lastUpstreamErrorCode: number | null;
+  lastUpstreamErrorAtUtc: string | null;
+}
+
 interface BSystemHealth {
   serviceName: string;
   status: string;
@@ -137,6 +145,7 @@ interface BSystemHealth {
     threadCount: number;
   };
   metrics?: BRuntimeMetrics | null;
+  upstream?: BUpstreamDiagnostics | null;
   dependencies: {
     name: string;
     status: string;
@@ -389,7 +398,7 @@ function buildFeeds(f: FeedFields): FeedStatus[] {
 // ── Merge a slim delta into a full MarketSnapshot ───
 
 const REGULAR_SESSION_MS = 6.5 * 60 * 60 * 1_000; // 9:30–16:00 ET
-const SERIES_RECORD_INTERVAL_MS = 5_000; // matches backend PricingOptions.SeriesRecordIntervalMs default
+const SERIES_RECORD_INTERVAL_MS = 5_000; // matches backend PricingOptions.SeriesRecordIntervalMs (history uses HistoryRecordIntervalMs = 15s separately)
 
 /** Client-side cap: covers a full regular trading day plus a small buffer. */
 export const MAX_SERIES_POINTS =
@@ -529,6 +538,15 @@ export function adaptSystemHealth(raw: unknown): SystemSnapshot {
       errorRatePct: 0,
     },
     metrics,
+    upstream: h.upstream
+      ? {
+          webSocketConnected: h.upstream.webSocketConnected,
+          fallbackActive: h.upstream.fallbackActive,
+          lastUpstreamError: h.upstream.lastUpstreamError ?? null,
+          lastUpstreamErrorCode: h.upstream.lastUpstreamErrorCode ?? null,
+          lastUpstreamErrorAtUtc: h.upstream.lastUpstreamErrorAtUtc ?? null,
+        }
+      : undefined,
     pipelines: [],
     events: [],
   };

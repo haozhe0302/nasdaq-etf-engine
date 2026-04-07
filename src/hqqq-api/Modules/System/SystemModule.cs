@@ -64,6 +64,14 @@ public static class SystemModule
                 Version = GetInformationalVersion(),
                 Runtime = RuntimeInfo.Capture(),
                 Metrics = metrics.GetSnapshot(),
+                Upstream = new UpstreamDiagnostics
+                {
+                    WebSocketConnected = marketData.IsWebSocketConnected,
+                    FallbackActive = marketData.IsFallbackActive,
+                    LastUpstreamError = marketData.LastUpstreamError,
+                    LastUpstreamErrorCode = marketData.LastUpstreamErrorCode,
+                    LastUpstreamErrorAtUtc = marketData.LastUpstreamErrorAtUtc,
+                },
                 Dependencies =
                 [
                     new DependencyHealth

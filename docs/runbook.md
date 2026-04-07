@@ -67,36 +67,37 @@ dotnet test src/hqqq-api.tests --verbosity normal
 
 ### hqqq-api Docker image (version embedded in `/api/system/health`)
 
-The image bakes **MSBuild `InformationalVersion`** into the DLL. Use the PowerShell helper (repo root) so tags and semver stay consistent:
+The image bakes **MSBuild `InformationalVersion`** into the DLL (API returns it; the UI prefixes `v`). **ACR image tags** for releases use **`vX.Y.Z`** so the registry matches what you see on the System page (`v1.0.x`).
 
 | Mode | Behavior |
 |------|----------|
-| **Explicit** | `-Version 1.0.3` → `InformationalVersion=1.0.3`, image `:1.0.3` |
-| **Bump patch** | `-BumpPatch` → latest `v*.*.*` tag, patch +1 (no tags → `0.0.1`) |
-| **Default** | HEAD exactly on `v*` tag → that version; else `0.0.0+<short-sha>` |
+| **CI (GitHub Actions)** | On push to `main` that touches `src/hqqq-api/**` (or this workflow), reads the highest `X.Y.Z` among ACR tags, **patch +1**, pushes `:vX.Y.Z` and `:latest`. Jobs in the same repo are **queued** so two pushes do not reuse the same version number. |
+| **Explicit** | `-Version 1.0.3` → `InformationalVersion=1.0.3`, image `:v1.0.3` |
+| **Bump patch (git)** | `-BumpPatch` → latest `v*.*.*` **git** tag, patch +1 (no tags → `0.0.1`), image `:vX.Y.Z` |
+| **Default (local)** | HEAD on `v*` tag → that version, `:vX.Y.Z`; else dev `0.0.0+<sha>`, image `:0.0.0-<sha>` |
 
 ```powershell
-# Explicit version (also tags image as 1.0.3)
-.\scripts\build-hqqq-api-docker.ps1 -Version 1.0.3
+# Manual release aligned with ACR + System page (example 1.0.5)
+.\scripts\build-hqqq-api-docker.ps1 -Version 1.0.5 -Push
 
-# Auto: latest semver tag + 0.0.1, build, push to ACR
+# Or bump from latest v* tag in git, then push
 .\scripts\build-hqqq-api-docker.ps1 -BumpPatch -Push
 
-# Auto: dev build (0.0.0+gitsha) — default when not on a release tag
+# Local dev image (not a semver release tag)
 .\scripts\build-hqqq-api-docker.ps1
 ```
 
-Raw `docker build` (same as the script passes through):
+Raw `docker build` (must pass both args; tag as `vX.Y.Z` if you want consistency with CI):
 
 ```powershell
 docker build -f .\src\hqqq-api\Dockerfile `
   --build-arg VERSION=1.0.3 `
   --build-arg INFORMATIONAL_VERSION=1.0.3 `
-  -t hqqq-api:1.0.3 `
+  -t acrhqqqmvp001.azurecr.io/hqqq-api:v1.0.3 `
   .\src\hqqq-api
 ```
 
-**CI:** `.github/workflows/hqqq-api-docker.yml` — push to `main` → `0.0.0+<sha>`; push tag `v*` → tag name; optional manual run with `version` input. Requires secrets `ACR_USERNAME` and `ACR_PASSWORD`.
+**CI:** `.github/workflows/hqqq-api-docker.yml` — requires `ACR_USERNAME` / `ACR_PASSWORD` with permission to **list tags** (pull scope) and **push**. Configure the Azure Web App container to use **`latest`** (or a fixed `:vX.Y.Z`) so each new image is what runs; CI does not redeploy the Web App by itself—enable **Continuous Deployment** from ACR or refresh the container manually after a push.
 
 ### Frontend install + build
 

@@ -3,9 +3,9 @@
   Build (and optionally push) the hqqq-api Docker image with correct Assembly InformationalVersion.
 
 .RULES
-  - -Version "x.y.z"     → InformationalVersion = x.y.z (you choose the label; also used as image tag unless -ImageTag is set)
-  - -BumpPatch            → latest v* semver tag in repo, patch +1 (e.g. v1.0.2 → 1.0.3). If no tags: 0.0.1
-  - (default)             → if HEAD is exactly on tag v*: use that tag; else InformationalVersion = 0.0.0+<short-sha>
+  - -Version "x.y.z"     → InformationalVersion = x.y.z; image tag vX.Y.Z unless -ImageTag is set
+  - -BumpPatch            → latest v* semver tag in git, patch +1 (no tags → 0.0.1); image tag vX.Y.Z unless -ImageTag set
+  - (default)             → HEAD exactly on tag v*: that version, image tag vX.Y.Z; else dev build 0.0.0+<sha> (image :0.0.0-<sha>)
 
   Docker receives:
     --build-arg VERSION=<semver base before +>
@@ -82,7 +82,11 @@ $informational = Resolve-InformationalVersion
 $msbuildVersion = Get-SemverBase $informational
 
 if (-not $ImageTag) {
-  $ImageTag = $informational -replace '[\+#]', '-' -replace '[^\w\.\-]', '-'
+  if ($informational -match '^(\d+\.\d+\.\d+)$') {
+    $ImageTag = "v$($matches[1])"
+  } else {
+    $ImageTag = $informational -replace '[\+#]', '-' -replace '[^\w\.\-]', '-'
+  }
 }
 
 $fullImage = "${Registry}/${ImageName}:${ImageTag}"

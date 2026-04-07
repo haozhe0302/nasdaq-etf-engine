@@ -1,25 +1,22 @@
-# Builds and pushes hqqq-api to Azure Container Registry with embedded InformationalVersion.
+# Push to main (when hqqq-api or this workflow changes): read highest x.y.z from ACR, patch+1,
+# build with that semver baked in, push :vX.Y.Z and :latest. System page shows vX.Y.Z via API + UI.
 #
-# Rules:
-# - Push tag v* (e.g. v1.0.3) → InformationalVersion = tag without v (1.0.3); image :1.0.3
-# - Push to main → InformationalVersion = 0.0.0+<short-sha>; image :0.0.0-<sha>
-# - workflow_dispatch with optional input "version" → use that as InformationalVersion; empty → same as main
-#
-# Required repo secrets: ACR_USERNAME, ACR_PASSWORD (service principal or admin user for the registry)
+# Requires secrets: ACR_USERNAME, ACR_PASSWORD (ACR admin or SP with pull+push on the repository).
+# Point Azure App Service container to :latest (or a specific :vX.Y.Z) so runtime matches ACR.
 name: hqqq-api Docker image
 
 on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+    paths:
+      - "src/hqqq-api/**"
+      - ".github/workflows/hqqq-api-docker.yml"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Semantic version (e.g. 1.0.3). Leave empty for 0.0.0+<short-sha>."
-        required: false
-        default: ""
+
+concurrency:
+  group: hqqq-api-docker-${{ github.repository }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: acrhqqqmvp001.azurecr.io
@@ -31,47 +28,68 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Compute InformationalVersion and image tag
-        id: meta
+      - name: Next semver from ACR (patch + 1)
+        id: ver
+        env:
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            INFO="${GITHUB_REF_NAME#v}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
-            INFO="${{ github.event.inputs.version }}"
-          else
-            SHA=$(git rev-parse --short HEAD)
-            INFO="0.0.0+${SHA}"
+          REGISTRY="${{ env.REGISTRY }}"
+          REPO="${{ env.IMAGE_NAME }}"
+          SCOPE="repository:${REPO}:pull"
+          TOKEN_JSON="$(curl -fsS -u "${ACR_USERNAME}:${ACR_PASSWORD}" \
+            "https://${REGISTRY}/oauth2/token?service=${REGISTRY}&scope=${SCOPE}")"
+          TOKEN="$(echo "$TOKEN_JSON" | jq -r '.access_token // .token // empty')"
+          if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+            echo "::error::ACR OAuth token response missing access_token (check ACR credentials)."
+            exit 1
           fi
-          BASE="${INFO%%+*}"
-          # Docker tag: + and # are awkward; mirror scripts/build-hqqq-api-docker.ps1
-          TAG="${INFO//+/-}"
-          TAG="${TAG//#/-}"
-          echo "informational_version=${INFO}" >> "$GITHUB_OUTPUT"
-          echo "msbuild_version=${BASE}" >> "$GITHUB_OUTPUT"
-          echo "image_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          set +e
+          TAGS_JSON="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" \
+            "https://${REGISTRY}/v2/${REPO}/tags/list" 2>/dev/null)"
+          CURL_EC=$?
+          set -e
+          HIGHEST=""
+          if [[ $CURL_EC -eq 0 ]]; then
+            set +o pipefail
+            HIGHEST="$(echo "$TAGS_JSON" | jq -r '(.tags // [])[]?' | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
+            set -o pipefail
+          fi
+          if [[ -z "$HIGHEST" ]]; then
+            NEW_VERSION="1.0.0"
+            echo "No prior x.y.z tags in ACR; starting at ${NEW_VERSION}"
+          else
+            IFS=. read -r MA MI PA <<< "$HIGHEST"
+            NEW_VERSION="${MA}.${MI}.$((PA + 1))"
+            echo "Highest in ACR: ${HIGHEST} -> next: ${NEW_VERSION}"
+          fi
+          echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=v${NEW_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Azure Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./src/hqqq-api
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.ver.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           build-args: |
-            VERSION=${{ steps.meta.outputs.msbuild_version }}
-            INFORMATIONAL_VERSION=${{ steps.meta.outputs.informational_version }}
+            VERSION=${{ steps.ver.outputs.version }}
+            INFORMATIONAL_VERSION=${{ steps.ver.outputs.version }}

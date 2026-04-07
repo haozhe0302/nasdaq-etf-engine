@@ -64,15 +64,15 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
             return false;
         }
     
-        var lastWs = _wsClient.LastHeartbeatUtc;
-        if (lastWs <= DateTimeOffset.MinValue)
+        var lastWsData = _wsClient.LastDataUtc;
+        if (lastWsData <= DateTimeOffset.MinValue)
         {
-            reason = "connected but no inbound WS frames yet";
+            reason = "connected but no valid WS market data yet";
             return false;
-        }
+}
     
         var timeout = TimeSpan.FromSeconds(Math.Max(10, _options.RestPollingIntervalSeconds * 3));
-        var silence = nowUtc - lastWs;
+        var silence = nowUtc - lastWsData;
     
         if (silence > timeout)
         {
@@ -246,7 +246,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
             _wsReconnectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var reconnectToken = _wsReconnectCts.Token;
 
-            var hbBefore = _wsClient.LastHeartbeatUtc;
+            var dataBefore = _wsClient.LastDataUtc;
 
             try
             {
@@ -255,7 +255,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                 // Only reset backoff if the session was productive (received data).
                 // Outside market hours Tiingo closes the connection immediately
                 // with NormalClosure — that must trigger backoff, not a tight loop.
-                if (_wsClient.LastHeartbeatUtc > hbBefore)
+                if (_wsClient.LastDataUtc > dataBefore)
                     attempt = 0;
                 else
                     attempt++;

@@ -29,6 +29,7 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
     private volatile bool _isRunning;
     private volatile bool _fallbackActive;
     private long _lastRestActivityTicks;
+    private long _lastForcedWsReconnectTicks;
     private string _lastFingerprint = "";
 
     public bool IsRunning => _isRunning;
@@ -50,6 +51,62 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                 : DateTimeOffset.MinValue;
             var max = ws > rest ? ws : rest;
             return max > DateTimeOffset.MinValue ? max : null;
+        }
+    }
+
+    private bool HasRecentWebSocketActivity(DateTimeOffset nowUtc, out string reason)
+    {
+        if (!_wsClient.IsConnected)
+        {
+            reason = _wsClient.LastUpstreamError is not null
+                ? $"upstream rejection: {_wsClient.LastUpstreamError}"
+                : "no connection";
+            return false;
+        }
+    
+        var lastWs = _wsClient.LastHeartbeatUtc;
+        if (lastWs <= DateTimeOffset.MinValue)
+        {
+            reason = "connected but no inbound WS frames yet";
+            return false;
+        }
+    
+        var timeout = TimeSpan.FromSeconds(Math.Max(10, _options.RestPollingIntervalSeconds * 3));
+        var silence = nowUtc - lastWs;
+    
+        if (silence > timeout)
+        {
+            reason = $"WS silent for {silence.TotalSeconds:F0}s";
+            return false;
+        }
+    
+        reason = string.Empty;
+        return true;
+    }
+    
+    private void TryForceWebSocketReconnect(DateTimeOffset nowUtc, string reason)
+    {
+        var lastTicks = Interlocked.Read(ref _lastForcedWsReconnectTicks);
+        if (lastTicks > 0)
+        {
+            var last = new DateTimeOffset(lastTicks, TimeSpan.Zero);
+            if (nowUtc - last < TimeSpan.FromSeconds(15))
+                return;
+        }
+    
+        Interlocked.Exchange(ref _lastForcedWsReconnectTicks, nowUtc.UtcTicks);
+    
+        _logger.LogWarning(
+            "[fallback:reconnect] WS unhealthy ({Reason}); forcing reconnect",
+            reason);
+    
+        try
+        {
+            _wsReconnectCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            /* race with WS loop dispose */
         }
     }
 
@@ -269,30 +326,35 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                     continue;
                 }
 
-                if (!_wsClient.IsConnected)
+                var nowUtc = DateTimeOffset.UtcNow;
+                var wsHealthy = HasRecentWebSocketActivity(nowUtc, out var wsReason);
+                
+                if (!wsHealthy)
                 {
                     if (!_fallbackActive)
                     {
-                        var reason = _wsClient.LastUpstreamError is not null
-                            ? $"upstream rejection: {_wsClient.LastUpstreamError}"
-                            : "no connection";
                         _logger.LogInformation(
                             "[fallback:activated] REST fallback activated (reason={Reason}, every {Sec}s)",
-                            reason, _options.RestPollingIntervalSeconds);
+                            wsReason, _options.RestPollingIntervalSeconds);
+                
                         _fallbackActive = true;
                         _metrics.OnFallbackActivated();
                         _recorder.RecordTransport("fallback_activated");
                     }
-
+                
+                    if (_wsClient.IsConnected)
+                    {
+                        TryForceWebSocketReconnect(nowUtc, wsReason);
+                    }
+                
                     var symbols = _subscriptions.GetAllSymbols();
                     if (symbols.Count > 0)
                     {
                         _logger.LogDebug("REST fallback polling {Count} symbols", symbols.Count);
                         var ticks = await _restClient.FetchLatestPricesAsync(symbols, ct);
-
                         foreach (var tick in ticks)
                             _priceStore.Update(tick);
-
+                
                         if (ticks.Count > 0)
                             Interlocked.Exchange(ref _lastRestActivityTicks,
                                 DateTimeOffset.UtcNow.UtcTicks);
@@ -300,7 +362,8 @@ public sealed class MarketDataIngestionService : BackgroundService, IMarketDataI
                 }
                 else if (_fallbackActive)
                 {
-                    _logger.LogInformation("WebSocket recovered, deactivating REST fallback");
+                    _logger.LogInformation(
+                        "WebSocket recovered with recent inbound activity, deactivating REST fallback");
                     _fallbackActive = false;
                     _metrics.OnFallbackDeactivated();
                     _recorder.RecordTransport("ws_recovered");

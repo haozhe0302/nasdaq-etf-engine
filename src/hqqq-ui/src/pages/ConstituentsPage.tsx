@@ -223,9 +223,9 @@ export function ConstituentsPage() {
 
           <Panel title="Data Quality">
             <div className="space-y-0.5 p-3">
-              <MetricRow label="Stale prices" value={<span className="text-positive">{d.quality.stalePrices}</span>} />
-              <MetricRow label="Missing symbols" value={<span className="text-positive">{d.quality.missingSymbols}</span>} />
-              <MetricRow label="Last refresh" value={refreshAgo} />
+              <MetricRow label="Stale Prices" value={<span className="text-positive">{d.quality.stalePrices}</span>} />
+              <MetricRow label="Missing Symbols" value={<span className="text-positive">{d.quality.missingSymbols}</span>} />
+              <MetricRow label="Last Refresh" value={refreshAgo} />
               <MetricRow label="Coverage" value={`${d.quality.coverage} / ${d.quality.totalSymbols}`} />
             </div>
           </Panel>

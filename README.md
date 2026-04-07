@@ -20,12 +20,41 @@ sizes (`Q`) to compute a raw basket value, then apply a continuity-preserving
 
 ## What this MVP delivers
 
+```text
+Basket sources (Stock Analysis / Schwab / Alpha Vantage / Nasdaq API)
+  -> Hybrid basket builder
+       -> anchor + tail merge + weight normalization
+       -> raw-source caching (data/raw/*)
+       -> merged-basket SHA-256 fingerprint (idempotent refresh)
+       -> active/pending semantics
+            -> refresh creates pending basket
+            -> market-open activation + continuity-preserving recalibration
+       -> corporate-action adjustment (post-AsOf split -> scaled disclosed shares)
+       -> pricing basis + scale-state persistence (restore on restart)
+       -> quote-engine basket inputs
+
+Tiingo WebSocket (IEX quotes)
+  -> realtime ingestion (auto reconnect)
+  -> latest-price store
+       -> stale detection (>5s flagged stale)
+       -> 2-second REST fallback when websocket unavailable
+       -> quote-engine price inputs
+
+quote-engine
+  -> compute iNAV + qqq proxy + premium/discount + freshness + movers
+  -> REST/SignalR APIs
+       |-> Frontend Market page (live quote + charts + feed freshness)
+       |-> Frontend Constituents page (holdings + concentration + quality)
+       |-> Frontend History page (/api/history range analytics)
+       \-> Frontend System page (health + runtime/dependency metrics)
+```
+
 | Capability | Status |
 |---|---|
 | **Hybrid basket construction** — anchor (Stock Analysis top-25 or Schwab top-20) + tail (Alpha Vantage filtered or Nasdaq proxy), merged with weight normalization | Live |
 | **Active / pending basket semantics** — refresh creates pending basket, activation occurs at market open with continuity-preserving recalibration | Live |
 | **Tiingo WebSocket streaming** — real-time IEX quotes with automatic reconnect | Live |
-| **5-second REST fallback** — polling fallback when WebSocket is unavailable | Live |
+| **2-second REST fallback** — polling fallback when WebSocket is unavailable | Live |
 | **Stale detection** — prices older than 5 seconds are marked stale and surfaced to UI metrics | Live |
 | **Scale-state persistence** — scale factor and basis state restored after restart | Live |
 | **Merged-basket fingerprinting** — SHA-256 fingerprint enables idempotent refresh behavior | Live |

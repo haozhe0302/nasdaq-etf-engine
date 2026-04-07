@@ -25,6 +25,7 @@ public sealed class TiingoWebSocketClient : IDisposable
 
     public bool IsConnected => _connected && _ws?.State == WebSocketState.Open;
     public DateTimeOffset LastHeartbeatUtc { get; private set; } = DateTimeOffset.MinValue;
+    public DateTimeOffset LastDataUtc { get; private set; } = DateTimeOffset.MinValue;
 
     public string? LastUpstreamError { get; private set; }
     public int? LastUpstreamErrorCode { get; private set; }
@@ -52,6 +53,7 @@ public sealed class TiingoWebSocketClient : IDisposable
         _connected = false;
         _subscribeSent = false;
         LastHeartbeatUtc = DateTimeOffset.MinValue;
+        LastDataUtc = DateTimeOffset.MinValue;
         
         lock (_errorLock)
         {
@@ -175,7 +177,10 @@ public sealed class TiingoWebSocketClient : IDisposable
 
                 case "A":
                     LastHeartbeatUtc = DateTimeOffset.UtcNow;
-                    ProcessDataMessage(root);
+                    if (ProcessDataMessage(root))
+                    {
+                        LastDataUtc = DateTimeOffset.UtcNow;
+                    }
                     break;
 
                 case "E":
@@ -236,24 +241,24 @@ public sealed class TiingoWebSocketClient : IDisposable
     ///               midPrice, askPrice, askSize, lastSalePrice, lastSize,
     ///               lastSaleTimestamp, ...]
     /// </summary>
-    private void ProcessDataMessage(JsonElement root)
+    private bool ProcessDataMessage(JsonElement root)
     {
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-            return;
-        if (data.GetArrayLength() < 10) return;
+            return false;
+        if (data.GetArrayLength() < 10) return false;
 
         var ticker = GetString(data, 3);
         if (string.IsNullOrWhiteSpace(ticker))
         {
             _logger.LogDebug("WS data with empty ticker, skipping");
-            return;
+            return false;
         }
 
         var lastPrice = GetDecimal(data, 9) ?? GetDecimal(data, 6);
         if (lastPrice is null or <= 0)
         {
             _logger.LogDebug("WS: non-positive or missing price for {Ticker}, skipping", ticker);
-            return;
+            return false;
         }
 
         DateTimeOffset eventTime = DateTimeOffset.UtcNow;
@@ -274,6 +279,8 @@ public sealed class TiingoWebSocketClient : IDisposable
             BidPrice = bidPrice > 0 ? bidPrice : null,
             AskPrice = askPrice > 0 ? askPrice : null,
         });
+
+        return true;
     }
 
     // ── JSON helpers ────────────────────────────────────────────

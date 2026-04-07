@@ -5,6 +5,7 @@ using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
 using Hqqq.Api.Modules.MarketData.Services;
 using Hqqq.Api.Modules.Pricing.Contracts;
+using Hqqq.Api.Modules.CorporateActions.Contracts;
 using Hqqq.Api.Modules.System.Services;
 
 namespace Hqqq.Api.Modules.Pricing.Services;
@@ -24,6 +25,7 @@ public sealed class PricingEngine
     private readonly MarketSessionService _sessionService;
     private readonly IScaleStateStore _stateStore;
     private readonly BasketPricingBasisBuilder _basisBuilder;
+    private readonly ICorporateActionAdjustmentService _adjustmentService;
     private readonly MetricsService _metrics;
     private readonly EventRecorderService _recorder;
     private readonly PricingOptions _options;
@@ -56,6 +58,7 @@ public sealed class PricingEngine
         MarketSessionService sessionService,
         IScaleStateStore stateStore,
         BasketPricingBasisBuilder basisBuilder,
+        ICorporateActionAdjustmentService adjustmentService,
         MetricsService metrics,
         EventRecorderService recorder,
         IOptions<PricingOptions> options,
@@ -67,6 +70,7 @@ public sealed class PricingEngine
         _sessionService = sessionService;
         _stateStore = stateStore;
         _basisBuilder = basisBuilder;
+        _adjustmentService = adjustmentService;
         _metrics = metrics;
         _recorder = recorder;
         _options = options.Value;
@@ -141,9 +145,10 @@ public sealed class PricingEngine
             var health = _priceStore.GetHealthSnapshot();
             if (health.ActiveCoveragePct < 50) return false;
 
+            var adjustedResult = await _adjustmentService.AdjustAsync(basketState.Active, ct);
             var prices = BuildPriceMap(
                 basketState.Active.Constituents.Select(c => c.Symbol));
-            var basis = _basisBuilder.Build(basketState.Active, prices);
+            var basis = _basisBuilder.Build(adjustedResult.AdjustedSnapshot, prices);
             if (basis.Entries.Count == 0) return false;
 
             var rawValue = ComputeRawValue(basis.Entries, prices);
@@ -219,7 +224,8 @@ public sealed class PricingEngine
             var oldNav = _scaleState.ScaleFactor * oldRawValue;
             if (oldNav <= 0) { _pendingBlockedReason = "Cannot compute transition NAV"; return false; }
 
-            var newBasis = _basisBuilder.Build(basketState.Pending, prices);
+            var adjustedPending = await _adjustmentService.AdjustAsync(basketState.Pending, ct);
+            var newBasis = _basisBuilder.Build(adjustedPending.AdjustedSnapshot, prices);
             if (newBasis.Entries.Count == 0) { _pendingBlockedReason = "Empty new basis"; return false; }
 
             var newRawValue = ComputeRawValue(newBasis.Entries, prices);

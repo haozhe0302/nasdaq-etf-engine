@@ -42,12 +42,15 @@ public sealed class BasketPricingBasisBuilder
             anchorMarketValue += price * shares;
             anchorWeightCoverage += c.Weight ?? 0m;
 
+            var origin = c.SharesSource.Contains("split-adjusted", StringComparison.OrdinalIgnoreCase)
+                ? "official:split-adjusted" : "official";
+
             officialEntries.Add(new PricingBasisEntry
             {
                 Symbol = c.Symbol,
                 Shares = shares,
                 ReferencePrice = price,
-                SharesOrigin = "official",
+                SharesOrigin = origin,
                 TargetWeight = c.Weight,
             });
         }

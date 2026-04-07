@@ -5,6 +5,7 @@ using Hqqq.Api.Hubs;
 using Hqqq.Api.Modules.Basket;
 using Hqqq.Api.Modules.Benchmark;
 using Hqqq.Api.Modules.History;
+using Hqqq.Api.Modules.CorporateActions;
 using Hqqq.Api.Modules.MarketData;
 using Hqqq.Api.Modules.Pricing;
 using Hqqq.Api.Modules.System;
@@ -33,6 +34,7 @@ builder.Services.Configure<RecordingOptions>(
 builder.Services
     .AddBasketModule()
     .AddMarketDataModule()
+    .AddCorporateActionsModule()
     .AddPricingModule()
     .AddSystemModule()
     .AddBenchmarkModule()

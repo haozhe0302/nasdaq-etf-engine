@@ -30,6 +30,7 @@ sizes (`Q`) to compute a raw basket value, then apply a continuity-preserving
 | **Scale-state persistence** — scale factor and basis state restored after restart | Live |
 | **Merged-basket fingerprinting** — SHA-256 fingerprint enables idempotent refresh behavior | Live |
 | **Raw-source caching** — upstream source payloads cached to `data/raw/` for fetch resilience | Live |
+| **Corporate-action adjustment** — splits after basket `AsOfDate` scale disclosed shares before pricing-basis build | Live |
 | **Frontend Market page** — live iNAV, QQQ proxy price, premium/discount, charts, movers, feed freshness | Live |
 | **Frontend Constituents page** — holdings table, concentration metrics, quality stats | Live |
 | **Frontend History page** — range-based historical analytics from backend `/api/history` | Live |
@@ -50,6 +51,7 @@ nasdaq-etf-engine/
 │   │   ├── Hubs/                       # SignalR MarketHub
 │   │   ├── Modules/
 │   │   │   ├── Basket/                 # Hybrid basket construction + caching
+│   │   │   ├── CorporateActions/       # Split adjustment (basket snapshot → pricing basis)
 │   │   │   ├── MarketData/             # Tiingo WS/REST ingestion + latest prices
 │   │   │   ├── Pricing/                # iNAV engine + broadcast + scale state
 │   │   │   ├── History/                # /api/history range query + stats

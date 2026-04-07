@@ -123,8 +123,6 @@ public class TiingoWebSocketDiagnosticsTests
         Assert.Equal(500, client.LastUpstreamErrorCode);
     }
 
-    // ── No regression: H / I / A handling ────────────────
-
     [Fact]
     public void ProcessMessage_H_UpdatesHeartbeat()
     {
@@ -202,8 +200,6 @@ public class TiingoWebSocketDiagnosticsTests
         Assert.NotNull(iface.GetProperty("LastUpstreamErrorCode"));
         Assert.NotNull(iface.GetProperty("LastUpstreamErrorAtUtc"));
     }
-
-    // ── Stub price store for isolated WS client tests ────
 
     private sealed class StubPriceStore : ILatestPriceStore
     {

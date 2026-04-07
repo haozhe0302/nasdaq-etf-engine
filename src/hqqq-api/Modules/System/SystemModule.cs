@@ -3,6 +3,7 @@ using Hqqq.Api.Modules.System.Contracts;
 using Hqqq.Api.Modules.System.Services;
 using Hqqq.Api.Modules.Basket.Contracts;
 using Hqqq.Api.Modules.MarketData.Contracts;
+using Hqqq.Api.Modules.CorporateActions.Contracts;
 using Hqqq.Api.Modules.Pricing.Services;
 
 namespace Hqqq.Api.Modules.System;
@@ -42,7 +43,8 @@ public static class SystemModule
             ILatestPriceStore priceStore,
             IMarketDataIngestionService marketData,
             PricingEngine pricingEngine,
-            MetricsService metrics) =>
+            MetricsService metrics,
+            ICorporateActionAdjustmentService adjustmentService) =>
         {
             var bs = basketProvider.GetState();
             var fh = priceStore.GetHealthSnapshot();
@@ -118,6 +120,7 @@ public static class SystemModule
                                 : pricingEngine.PendingBlockedReason
                                     ?? "Insufficient coverage",
                     },
+                    BuildCorporateActionHealth(adjustmentService),
                 ],
             };
 
@@ -128,5 +131,39 @@ public static class SystemModule
         .WithOpenApi();
 
         return app;
+    }
+
+    private static DependencyHealth BuildCorporateActionHealth(
+        ICorporateActionAdjustmentService service)
+    {
+        var report = service.LastReport;
+        if (report is null)
+        {
+            return new DependencyHealth
+            {
+                Name = "corporate-actions",
+                Status = "idle",
+                LastCheckedAtUtc = DateTimeOffset.UtcNow,
+                Details = "No adjustment computed yet",
+            };
+        }
+
+        var symbols = report.Adjustments.Count > 0
+            ? string.Join(", ", report.Adjustments.Select(a =>
+                $"{a.Symbol}×{a.CumulativeSplitFactor:G}"))
+            : "none";
+
+        return new DependencyHealth
+        {
+            Name = "corporate-actions",
+            Status = report.ProviderFailed ? "degraded" : "healthy",
+            LastCheckedAtUtc = report.ComputedAtUtc,
+            Details = report.ProviderFailed
+                ? $"Provider failed: {report.ProviderError}"
+                : $"{report.AdjustedConstituentCount} adjusted, " +
+                  $"{report.UnadjustedConstituentCount} unchanged " +
+                  $"(lag {report.BasketAsOfDate}→{report.RuntimeDate}, " +
+                  $"affected: {symbols})",
+        };
     }
 }

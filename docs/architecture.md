@@ -23,6 +23,7 @@ while keeping module boundaries explicit for future service extraction.
 src/hqqq-api/
 ├── Modules/
 │   ├── Basket/        # Hybrid basket construction + refresh + source caching
+│   ├── CorporateActions/  # Split adjustment between basket snapshot and pricing basis
 │   ├── MarketData/    # Tiingo WS/REST ingestion + latest price store
 │   ├── Pricing/       # iNAV compute, scale calibration, quote broadcast
 │   ├── History/       # Range-based historical API over persisted snapshots
@@ -47,6 +48,11 @@ src/hqqq-api/
   - Maintains in-memory latest price store and freshness state
   - Exposes `/api/marketdata/status` and `/api/marketdata/latest`
 
+- `CorporateActions`
+  - Adjusts disclosed share counts for stock splits between basket `AsOfDate` and pricing date
+  - Implements `ICorporateActionAdjustmentService` and pluggable `ICorporateActionProvider` (Tiingo-backed)
+  - Does not mutate active/pending baskets held by `Basket`; produces adjusted clones for pricing only
+
 - `Pricing`
   - Computes real-time quote snapshots from basket + latest prices
   - Preserves iNAV continuity during pending-basket activation (`newScale = oldNAV / newRawValue`)
@@ -68,6 +74,7 @@ src/hqqq-api/
 
 ```text
 Pricing -> Basket
+Pricing -> CorporateActions -> (Tiingo daily splits via ICorporateActionProvider)
 Pricing -> MarketData
 History -> Pricing persisted outputs (filesystem data products)
 System  -> probes all modules for health
@@ -87,6 +94,70 @@ Tiingo WS/REST -> MarketData store -> Pricing engine -> SignalR QuoteUpdate
 Two-tier payload strategy:
 - REST `/api/quote`: full snapshot for bootstrap and reconnect re-sync
 - SignalR `QuoteUpdate`: slim incremental updates for lower bandwidth
+
+### 2.5 Corporate-action adjustment layer
+
+`CorporateActionAdjustmentService` sits between basket retrieval and pricing-basis
+construction. It compensates for share-count staleness when a stock split occurs
+between the basket's `AsOfDate` and the pricing runtime date.
+
+```text
+BasketSnapshotProvider          CorporateActionAdjustmentService      BasketPricingBasisBuilder
+  (active/pending basket)  ──►  (adjust shares for splits)        ──►  (quantity vector)
+                                        │
+                               ICorporateActionProvider
+                               (TiingoCorporateActionProvider)
+```
+
+**Data flow**
+
+1. `PricingEngine.TryBootstrapAsync` (and `TryActivatePendingAsync`) obtains the
+   active/pending `BasketSnapshot` from `IBasketSnapshotProvider`.
+2. It passes the snapshot to `ICorporateActionAdjustmentService.AdjustAsync(snapshot)`.
+3. The service queries `ICorporateActionProvider.GetSplitsAsync(symbols, fromDate, toDate)`.
+4. For each constituent with official shares and an applicable split, the service
+   creates a clone with `SharesHeld *= cumulativeFactor` and appends `:split-adjusted`
+   to `SharesSource`.
+5. The adjusted snapshot (same fingerprint, new constituent list) is passed to
+   `BasketPricingBasisBuilder.Build(adjustedSnapshot, prices)`.
+6. The builder propagates the `SharesOrigin` as `"official:split-adjusted"` when
+   the `SharesSource` contains `"split-adjusted"`.
+
+**Why original snapshots remain immutable**
+
+Active/pending basket semantics rely on fingerprint-based idempotency. The adjustment
+layer produces a *clone* of the snapshot with modified constituent records; the original
+objects held by `BasketSnapshotProvider` are never mutated. The adjusted snapshot
+retains the original fingerprint so that scale-state persistence and basket-activation
+checks remain consistent.
+
+**Cache and failure behavior**
+
+- **`TiingoCorporateActionProvider`**: per-symbol in-memory cache with 1-hour TTL;
+  concurrency-limited to 5 simultaneous Tiingo requests; per-symbol failures are
+  isolated (one failing ticker does not affect others).
+- **`CorporateActionAdjustmentService`**: caches the most recent `AdjustedBasketResult`
+  keyed by `(basket.Fingerprint, runtimeDate)`. On provider failure the service
+  returns the unadjusted snapshot and sets `Report.ProviderFailed = true`
+  (visible in `/api/system/health` under the `corporate-actions` dependency).
+
+**Provenance model**
+
+| Field | Description |
+|-------|-------------|
+| `BasketConstituent.SharesSource` | Appended with `:split-adjusted` when the shares were multiplied by a split factor |
+| `PricingBasisEntry.SharesOrigin` | `"official:split-adjusted"` for adjusted entries, unchanged `"official"` or `"derived"` otherwise |
+| `AdjustmentReport.Adjustments[]` | Per-symbol audit: original shares, adjusted shares, cumulative factor, individual split events |
+| `AdjustmentReport.ProviderFailed` | Whether the split-data provider threw; if `true`, shares are unadjusted and the system operates in degraded mode |
+
+**Adding future corporate-action types**
+
+1. Define a new event record alongside `SplitEvent` (e.g. `SpinOffEvent`).
+2. Extend `ICorporateActionProvider` with a new query method (e.g. `GetSpinOffsAsync`).
+3. Add a new adjustment pass inside `CorporateActionAdjustmentService.ComputeAdjustmentAsync`
+   after the split pass.
+4. The `AdjustmentReport` and `ConstituentAdjustment` records can be extended with
+   additional action-type-specific fields.
 
 ---
 

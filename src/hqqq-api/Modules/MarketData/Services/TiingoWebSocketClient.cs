@@ -51,6 +51,15 @@ public sealed class TiingoWebSocketClient : IDisposable
         _ws = new ClientWebSocket();
         _connected = false;
         _subscribeSent = false;
+        LastHeartbeatUtc = DateTimeOffset.MinValue;
+        
+        lock (_errorLock)
+        {
+            LastUpstreamError = null;
+            LastUpstreamErrorCode = null;
+            LastUpstreamErrorAtUtc = null;
+            ErrorDuringSubscribe = false;
+        }
 
         var uri = new Uri(_options.WebSocketUrl);
         _logger.LogInformation("[WS:connect-start] Connecting to Tiingo IEX WebSocket at {Url}", uri);
@@ -161,9 +170,7 @@ public sealed class TiingoWebSocketClient : IDisposable
                     break;
 
                 case "I":
-                    LastHeartbeatUtc = DateTimeOffset.UtcNow;
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                        _logger.LogDebug("Tiingo WS info: {Json}", json);
+                    _logger.LogInformation("Tiingo WS info frame received: {Json}", json);
                     break;
 
                 case "A":

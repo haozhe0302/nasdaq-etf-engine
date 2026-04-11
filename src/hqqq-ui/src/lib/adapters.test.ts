@@ -16,6 +16,7 @@ function makeBackendDelta(overrides: Record<string, unknown> = {}) {
     marketPrice: 456.78,
     premiumDiscountPct: 0.05,
     qqq: 456.78,
+    qqqChangePct: 0.5,
     basketValueB: 1.23,
     asOf: "2026-04-05T14:30:00Z",
     latestSeriesPoint: null,
@@ -55,6 +56,7 @@ function makeSnapshot(seriesOverride?: TimeSeriesPoint[]): MarketSnapshot {
     marketPrice: 400,
     premiumDiscountPct: 0,
     qqq: 400,
+    qqqChangePct: 0,
     basketValueB: 1,
     asOf: new Date("2026-04-05T14:00:00Z"),
     series: seriesOverride ?? [

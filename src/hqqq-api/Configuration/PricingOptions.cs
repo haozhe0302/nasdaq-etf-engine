@@ -13,4 +13,5 @@ public sealed class PricingOptions
     public string MarketTimeZone { get; set; } = "America/New_York";
     public string HistoryDir { get; set; } = "data/history";
     public string NyseCalendarFilePath { get; set; } = "data/nyse-calendar.json";
+    public string AnchorRefreshTimeLocal { get; set; } = "09:00";
 }

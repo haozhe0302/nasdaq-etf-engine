@@ -30,6 +30,7 @@ public static class EnvironmentVariableMapper
         ("HQQQ_SERIES_CAPACITY",               "Pricing:SeriesCapacity"),
         ("HQQQ_MARKET_TIME_ZONE",              "Pricing:MarketTimeZone"),
         ("HQQQ_HISTORY_DIR",                   "Pricing:HistoryDir"),
+        ("HQQQ_ANCHOR_REFRESH_TIME",           "Pricing:AnchorRefreshTimeLocal"),
 
         ("HQQQ_ENABLE_LIVE_MODE",              "Feature:EnableLiveMode"),
         ("HQQQ_ENABLE_MOCK_FALLBACK",          "Feature:EnableMockFallback"),

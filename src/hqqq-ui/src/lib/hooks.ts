@@ -37,6 +37,7 @@ const EMPTY_MARKET: MarketSnapshot = {
   marketPrice: 0,
   premiumDiscountPct: 0,
   qqq: 0,
+  qqqChangePct: 0,
   basketValueB: 0,
   asOf: new Date(),
   series: [],

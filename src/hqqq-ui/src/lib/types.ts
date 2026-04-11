@@ -18,6 +18,7 @@ export interface MarketSnapshot {
   marketPrice: number;
   premiumDiscountPct: number;
   qqq: number;
+  qqqChangePct: number;
   basketValueB: number;
   asOf: Date;
   series: TimeSeriesPoint[];

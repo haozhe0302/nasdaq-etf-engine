@@ -14,6 +14,7 @@ public class QuoteRealtimeUpdateTests
             MarketPrice = 456.78m,
             PremiumDiscountPct = 0.0567m,
             Qqq = 456.78m,
+            QqqChangePct = 0.15m,
             BasketValueB = 1.2345m,
             AsOf = new DateTimeOffset(2026, 4, 5, 14, 30, 0, TimeSpan.Zero),
             Series = series ?? GenerateSeries(500),

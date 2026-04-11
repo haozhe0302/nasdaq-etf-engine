@@ -13,6 +13,7 @@ public sealed record QuoteRealtimeUpdate
     public required decimal MarketPrice { get; init; }
     public required decimal PremiumDiscountPct { get; init; }
     public required decimal Qqq { get; init; }
+    public required decimal QqqChangePct { get; init; }
     public required decimal BasketValueB { get; init; }
     public required DateTimeOffset AsOf { get; init; }
 
@@ -47,6 +48,7 @@ public sealed record QuoteRealtimeUpdate
             MarketPrice = quote.MarketPrice,
             PremiumDiscountPct = quote.PremiumDiscountPct,
             Qqq = quote.Qqq,
+            QqqChangePct = quote.QqqChangePct,
             BasketValueB = quote.BasketValueB,
             AsOf = quote.AsOf,
             LatestSeriesPoint = latestSeriesPoint,

@@ -26,6 +26,7 @@ public sealed class PricingEngine
     private readonly IScaleStateStore _stateStore;
     private readonly BasketPricingBasisBuilder _basisBuilder;
     private readonly ICorporateActionAdjustmentService _adjustmentService;
+    private readonly ReferenceAnchorsStore _anchorsStore;
     private readonly MetricsService _metrics;
     private readonly EventRecorderService _recorder;
     private readonly PricingOptions _options;
@@ -59,6 +60,7 @@ public sealed class PricingEngine
         IScaleStateStore stateStore,
         BasketPricingBasisBuilder basisBuilder,
         ICorporateActionAdjustmentService adjustmentService,
+        ReferenceAnchorsStore anchorsStore,
         MetricsService metrics,
         EventRecorderService recorder,
         IOptions<PricingOptions> options,
@@ -71,6 +73,7 @@ public sealed class PricingEngine
         _stateStore = stateStore;
         _basisBuilder = basisBuilder;
         _adjustmentService = adjustmentService;
+        _anchorsStore = anchorsStore;
         _metrics = metrics;
         _recorder = recorder;
         _options = options.Value;
@@ -317,16 +320,32 @@ public sealed class PricingEngine
         var rawValue = ComputeRawValue(basis.Entries, prices);
         var nav = state.ScaleFactor * rawValue;
 
-        var prevClosePrices = BuildPreviousClosePriceMap(symbols);
-        var prevCloseRawValue = ComputeRawValue(basis.Entries, prevClosePrices);
-        var prevCloseNav = state.ScaleFactor * prevCloseRawValue;
-        var navChangePct = prevCloseNav > 0
-            ? (nav - prevCloseNav) / prevCloseNav * 100m : 0m;
+        var anchors = _anchorsStore.Get();
+
+        decimal navChangePct;
+        if (anchors?.NavPreviousClose is > 0)
+        {
+            navChangePct = (nav - anchors.NavPreviousClose.Value)
+                / anchors.NavPreviousClose.Value * 100m;
+        }
+        else
+        {
+            var prevClosePrices = BuildPreviousClosePriceMap(symbols);
+            var prevCloseRawValue = ComputeRawValue(basis.Entries, prevClosePrices);
+            var prevCloseNav = state.ScaleFactor * prevCloseRawValue;
+            navChangePct = prevCloseNav > 0
+                ? (nav - prevCloseNav) / prevCloseNav * 100m : 0m;
+        }
 
         var qqq = _priceStore.Get("QQQ");
         var qqqPrice = qqq?.Price ?? 0m;
         var premiumDiscountPct = nav > 0
             ? (qqqPrice - nav) / nav * 100m : 0m;
+
+        var qqqChangePct = anchors?.QqqPreviousClose is > 0
+            ? (qqqPrice - anchors.QqqPreviousClose.Value)
+                / anchors.QqqPreviousClose.Value * 100m
+            : 0m;
 
         var basketValueB = rawValue / 1_000_000_000m;
 
@@ -339,6 +358,7 @@ public sealed class PricingEngine
             MarketPrice = Math.Round(qqqPrice, 2),
             PremiumDiscountPct = Math.Round(premiumDiscountPct, 4),
             Qqq = Math.Round(qqqPrice, 2),
+            QqqChangePct = Math.Round(qqqChangePct, 4),
             BasketValueB = Math.Round(basketValueB, 4),
             AsOf = DateTimeOffset.UtcNow,
             Series = includeSeries ? GetSeries() : [],

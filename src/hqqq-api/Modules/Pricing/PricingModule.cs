@@ -10,7 +10,9 @@ public static class PricingModule
         services.AddSingleton<IScaleStateStore, JsonScaleStateStore>();
         services.AddSingleton<ISeriesStore, JsonSeriesStore>();
         services.AddSingleton<BasketPricingBasisBuilder>();
+        services.AddSingleton<ReferenceAnchorsStore>();
         services.AddSingleton<PricingEngine>();
+        services.AddHostedService<ReferenceAnchorsRefreshService>();
         services.AddHostedService<QuoteBroadcastService>();
 
         return services;

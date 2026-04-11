@@ -25,6 +25,7 @@ interface BQuoteSnapshot {
   marketPrice: number;
   premiumDiscountPct: number;
   qqq: number;
+  qqqChangePct: number;
   basketValueB: number;
   asOf: string;
   series: { time: string; nav: number; market: number }[];
@@ -219,6 +220,7 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     marketPrice: q.marketPrice,
     premiumDiscountPct: q.premiumDiscountPct,
     qqq: q.qqq,
+    qqqChangePct: q.qqqChangePct ?? 0,
     basketValueB: q.basketValueB,
     asOf: new Date(q.asOf),
     series,
@@ -241,6 +243,7 @@ interface BQuoteRealtimeUpdate {
   marketPrice: number;
   premiumDiscountPct: number;
   qqq: number;
+  qqqChangePct: number;
   basketValueB: number;
   asOf: string;
   latestSeriesPoint: { time: string; nav: number; market: number } | null;
@@ -284,6 +287,7 @@ export interface QuoteDelta {
   marketPrice: number;
   premiumDiscountPct: number;
   qqq: number;
+  qqqChangePct: number;
   basketValueB: number;
   asOf: Date;
   latestSeriesPoint: TimeSeriesPoint | null;
@@ -343,6 +347,7 @@ export function adaptQuoteDelta(raw: unknown): QuoteDelta {
     marketPrice: q.marketPrice,
     premiumDiscountPct: q.premiumDiscountPct,
     qqq: q.qqq,
+    qqqChangePct: q.qqqChangePct ?? 0,
     basketValueB: q.basketValueB,
     asOf: new Date(q.asOf),
     latestSeriesPoint,
@@ -440,6 +445,7 @@ export function mergeQuoteDelta(
     marketPrice: delta.marketPrice,
     premiumDiscountPct: delta.premiumDiscountPct,
     qqq: delta.qqq,
+    qqqChangePct: delta.qqqChangePct,
     basketValueB: delta.basketValueB,
     asOf: delta.asOf,
     series,

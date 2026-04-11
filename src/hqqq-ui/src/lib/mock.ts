@@ -86,6 +86,7 @@ export function getMarketSnapshot(): MarketSnapshot {
     marketPrice: mktNow,
     premiumDiscountPct: +((mktNow - navNow) / navNow * 100).toFixed(4),
     qqq: +(452.89 + Math.sin(_mktTick / 20) * 0.3).toFixed(2),
+    qqqChangePct: +((452.89 + Math.sin(_mktTick / 20) * 0.3 - 451.5) / 451.5 * 100).toFixed(3),
     basketValueB: 18.42,
     asOf: new Date(),
     series: _series.map((p) => ({ ...p })),

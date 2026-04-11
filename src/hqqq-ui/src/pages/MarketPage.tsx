@@ -200,7 +200,7 @@ export function MarketPage() {
         <StatCard label="Indicative NAV" value={`$${d.nav.toFixed(2)}`} sub={fmtPct(d.navChangePct)} status={d.navChangePct >= 0 ? "positive" : "negative"} />
         <StatCard label="Market Price" value={`$${d.marketPrice.toFixed(2)}`} sub={`$${(d.marketPrice - d.nav).toFixed(2)} vs NAV`} />
         <StatCard label="Premium / Discount" value={`${d.premiumDiscountPct.toFixed(4)}%`} status={d.premiumDiscountPct >= 0 ? "positive" : "negative"} />
-        <StatCard label="QQQ Reference" value={`$${d.qqq.toFixed(2)}`} sub="NASDAQ" />
+        <StatCard label="QQQ Reference" value={`$${d.qqq.toFixed(2)}`} sub={fmtPct(d.qqqChangePct)} status={d.qqqChangePct >= 0 ? "positive" : "negative"} />
         <StatCard label="Basket Market Value" value={`$${d.basketValueB.toFixed(2)}B`} />
       </div>
 

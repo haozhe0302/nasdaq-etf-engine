@@ -13,6 +13,7 @@ public sealed record QuoteSnapshot
     public required decimal MarketPrice { get; init; }
     public required decimal PremiumDiscountPct { get; init; }
     public required decimal Qqq { get; init; }
+    public required decimal QqqChangePct { get; init; }
     public required decimal BasketValueB { get; init; }
     public required DateTimeOffset AsOf { get; init; }
     public required IReadOnlyList<SeriesPoint> Series { get; init; }

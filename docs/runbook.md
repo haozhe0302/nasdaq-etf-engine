@@ -9,7 +9,7 @@ commands, and shutdown procedures.
 
 | Tool | Version |
 |---|---|
-| .NET SDK | 8.0+ |
+| .NET SDK | 10.0+ |
 | Node.js | 22 LTS |
 | npm | 10.x |
 

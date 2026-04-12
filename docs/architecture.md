@@ -4,7 +4,7 @@
 
 HQQQ currently runs as a full-stack MVP with two deployable units:
 
-- `hqqq-api` (ASP.NET Core 8): basket construction, market-data ingestion, iNAV
+- `hqqq-api` (ASP.NET Core 10): basket construction, market-data ingestion, iNAV
   pricing, history aggregation, benchmark/report endpoints, and health/metrics
 - `hqqq-ui` (React + Vite): live market dashboard, constituents, history
   analytics view, and system health view

@@ -72,7 +72,7 @@ nasdaq-etf-engine/
 │   ├── architecture.md
 │   └── runbook.md
 ├── src/
-│   ├── hqqq-api/                       # ASP.NET Core 8 backend (modular monolith)
+│   ├── hqqq-api/                       # ASP.NET Core 10 backend (modular monolith)
 │   │   ├── Configuration/              # Options + env-var mapping
 │   │   ├── Hubs/                       # SignalR MarketHub
 │   │   ├── Modules/
@@ -153,7 +153,7 @@ Full phase design and component diagrams are in [docs/architecture.md](docs/arch
 
 | Tool | Version | Notes |
 |---|---|---|
-| .NET SDK | 8.0+ | `dotnet --version` |
+| .NET SDK | 10.0+ | `dotnet --version` |
 | Node.js | 22 LTS | Pinned in `src/hqqq-ui/.nvmrc` |
 | npm | 10.x | Bundled with Node 22 |
 

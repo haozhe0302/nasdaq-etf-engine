@@ -1,6 +1,6 @@
-# Phase 2A0 — Repository Restructure Notes
+# Phase 2 — Repository Restructure Notes
 
-Completed: Phase 2A0 repo layout restructure.
+Completed: Phase 2 repo layout restructure.
 
 ---
 

@@ -202,10 +202,7 @@ so endpoint schema changes are localized.
 
 ## 4) Future architecture (in progress)
 
-> **Phase 2 repo restructure is complete.** The repository now contains service
-> skeletons under `src/services/` and shared libraries under
-> `src/building-blocks/`. See [../phase2/restructure-notes.md](phase2/restructure-notes.md)
-> for migration status and module-to-service mapping.
+> **See Phase 2 repo restructure details here [../phase2/restructure-notes.md](phase2/restructure-notes.md)** 
 
 ### 4.1 Phase 2: event-driven split
 

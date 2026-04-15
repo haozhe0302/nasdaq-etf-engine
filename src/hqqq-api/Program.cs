@@ -1,3 +1,10 @@
+// ══════════════════════════════════════════════════════════════
+// LEGACY — Phase 1 modular monolith.
+// This project is preserved during Phase 2 migration.
+// New development targets src/services/* projects.
+// See docs/phase2/restructure-notes.md for migration status.
+// ══════════════════════════════════════════════════════════════
+
 using dotenv.net;
 using Prometheus;
 using Hqqq.Api.Configuration;

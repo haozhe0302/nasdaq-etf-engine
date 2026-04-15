@@ -1,0 +1,1 @@
+namespace Hqqq.Infrastructure.Redis;

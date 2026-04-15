@@ -1,19 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- LEGACY: Phase 1 test project — preserved during Phase 2 migration -->
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>Hqqq.Api.Tests</RootNamespace>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-
+    <RootNamespace>Hqqq.Contracts.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
@@ -24,8 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\hqqq-api\hqqq-api.csproj" />
-    <ProjectReference Include="..\tools\hqqq-bench\hqqq-bench.csproj" />
+    <ProjectReference Include="..\..\src\building-blocks\Hqqq.Contracts\Hqqq.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

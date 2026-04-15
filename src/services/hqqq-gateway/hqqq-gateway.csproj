@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <RootNamespace>Hqqq.Gateway</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\building-blocks\Hqqq.Contracts\Hqqq.Contracts.csproj" />
+    <ProjectReference Include="..\..\building-blocks\Hqqq.Infrastructure\Hqqq.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\building-blocks\Hqqq.Observability\Hqqq.Observability.csproj" />
+  </ItemGroup>
+
+</Project>

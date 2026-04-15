@@ -93,10 +93,57 @@ nasdaq-etf-engine/
 │           ├── lib/                    # API, hooks, adapters, types
 │           ├── pages/                  # Market/Constituents/History/System
 │           └── styles/                 # Tailwind theme tokens
-└── docker-compose.yml    # Future-phase infra compose file (not required for MVP)
+└── docker-compose.yml
+```
+
+## Repository structure (Phase 2)
+
+```text
+nasdaq-etf-engine/
+├── Hqqq.sln                              # Root solution (all projects)
+├── Directory.Build.props                  # Shared .NET build settings
+├── docs/
+│   ├── architecture.md
+│   ├── runbook.md
+│   └── phase2/
+│       └── restructure-notes.md          # Migration status + notes
+├── src/
+│   ├── building-blocks/
+│   │   ├── Hqqq.Contracts/               # Cross-service event/DTO contracts
+│   │   ├── Hqqq.Domain/                  # Pure domain model (entities, value objects)
+│   │   ├── Hqqq.Infrastructure/          # Kafka/Redis/Timescale factories
+│   │   └── Hqqq.Observability/           # Metrics, tracing, health builders
+│   ├── services/
+│   │   ├── hqqq-reference-data/          # Basket + corporate-action service
+│   │   ├── hqqq-ingress/                 # Tiingo ingest worker
+│   │   ├── hqqq-quote-engine/            # iNAV compute worker
+│   │   ├── hqqq-gateway/                 # REST + SignalR serving gateway
+│   │   ├── hqqq-persistence/             # TimescaleDB writer worker
+│   │   └── hqqq-analytics/               # Replay/backfill worker
+│   ├── tools/
+│   │   └── hqqq-bench/                   # Offline replay + benchmark CLI
+│   ├── hqqq-api/                         # [Legacy] Phase 1 modular monolith
+│   ├── hqqq-api.tests/                   # [Legacy] Phase 1 tests
+│   └── hqqq-ui/                          # React + Vite frontend
+│       └── src/
+│           ├── app/                      # Router
+│           ├── components/               # Reusable UI primitives
+│           ├── layout/                   # App shell
+│           ├── lib/                      # API, hooks, adapters, types
+│           ├── pages/                    # Market/Constituents/History/System
+│           └── styles/                   # Tailwind theme tokens
+├── tests/
+│   ├── Hqqq.Contracts.Tests/
+│   ├── Hqqq.ReferenceData.Tests/
+│   ├── Hqqq.Ingress.Tests/
+│   ├── Hqqq.QuoteEngine.Tests/
+│   ├── Hqqq.Gateway.Tests/
+│   └── Hqqq.Persistence.Tests/
+└── docker-compose.yml
 ```
 
 Deep architecture details are documented in [docs/architecture.md](docs/architecture.md).
+Phase 2 migration status is tracked in [docs/phase2/restructure-notes.md](docs/phase2/restructure-notes.md).
 
 ## Future phases (in progress)
 

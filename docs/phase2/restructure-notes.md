@@ -1,6 +1,6 @@
 # Phase 2 — Repository Restructure Notes
 
-Completed: Phase 2 repo layout restructure.
+Completed: Phase 2 repo layout restructure + Phase 2A cleanup/hardening.
 
 ---
 
@@ -8,28 +8,46 @@ Completed: Phase 2 repo layout restructure.
 
 ### Shared libraries (`src/building-blocks/`)
 
-| Project | Purpose |
-|---------|---------|
-| `Hqqq.Contracts` | Cross-service Kafka event DTOs and shared value types |
-| `Hqqq.Domain` | Pure domain model — entities, value objects, domain services |
-| `Hqqq.Infrastructure` | Kafka/Redis/Timescale connection factories, serialization, hosting |
-| `Hqqq.Observability` | Prometheus metrics, tracing, structured logging, health builders |
+| Project | Purpose | Status |
+|---------|---------|--------|
+| `Hqqq.Contracts` | Cross-service Kafka event DTOs and shared value types | Types defined |
+| `Hqqq.Domain` | Pure domain model — entities, value objects, domain services | Types defined |
+| `Hqqq.Infrastructure` | Kafka/Redis/Timescale connection helpers, serialization, hosting, health checks | Implemented (lightweight) |
+| `Hqqq.Observability` | Metrics definitions, tracing, structured logging, health payload builders | Implemented (scaffolding) |
 
-All contain placeholder namespace files only. Will be populated in Phase 2A1.
+`Hqqq.Infrastructure` contains:
+- Kafka options, topic registry, bootstrap helper, producer/consumer config builders
+- Redis options, key registry, connection factory
+- Timescale options, connection factory
+- Shared JSON serializer defaults
+- Service registration extensions and legacy config shim
+- Dependency health checks (degraded-not-crashed pattern)
+
+`Hqqq.Observability` contains:
+- Metric name constants and shared meter instruments
+- Structured logging configuration extensions
+- Activity source for tracing
+- Health payload builder for consistent JSON responses
 
 ### Service skeletons (`src/services/`)
 
-| Service | SDK | Port | Purpose |
-|---------|-----|------|---------|
-| `hqqq-reference-data` | Web | 5020 | Basket refresh, activation, corp-action adjustment |
-| `hqqq-ingress` | Worker | — | Tiingo WS/REST normalization, Kafka publishing |
-| `hqqq-quote-engine` | Worker | — | Kafka tick consumption, iNAV compute, Redis write |
-| `hqqq-gateway` | Web | 5030 | REST + SignalR serving from Redis/Timescale |
-| `hqqq-persistence` | Worker | — | Kafka-to-TimescaleDB writer |
-| `hqqq-analytics` | Worker | — | Replay, backfill, anomaly detection |
+| Service | SDK | Port | Purpose | Status |
+|---------|-----|------|---------|--------|
+| `hqqq-reference-data` | Web | 5020 | Basket refresh, activation, corp-action adjustment | Stub with shared config binding |
+| `hqqq-ingress` | Worker | — | Tiingo WS/REST normalization, Kafka publishing | Stub with Tiingo + Kafka options |
+| `hqqq-quote-engine` | Worker | — | Kafka tick consumption, iNAV compute, Redis write | Stub with Kafka + Redis options |
+| `hqqq-gateway` | Web | 5030 | REST + SignalR serving from Redis/Timescale | Stub with health endpoints |
+| `hqqq-persistence` | Worker | — | Kafka-to-TimescaleDB writer | Stub with Kafka + Timescale options |
+| `hqqq-analytics` | Worker | — | Replay, backfill, anomaly detection | Stub with Kafka + Timescale options |
 
-All contain minimal `Program.cs` with health endpoint or background worker
-skeleton. No business logic yet.
+All services now:
+- Bind shared infrastructure options via `AddHqqqKafka`/`AddHqqqRedis`/`AddHqqqTimescale`
+- Register shared observability via `AddHqqqObservability`
+- Log configuration posture on startup
+- Include legacy config fallback via `LegacyConfigShim`
+- Web services expose `/healthz/live` and `/healthz/ready` with JSON payloads
+- Worker services log dependency configuration at startup and run idle loops
+- Contain explicit TODO markers for Phase 2B/C wiring points
 
 ### Test project skeletons (`tests/`)
 
@@ -40,13 +58,27 @@ skeleton. No business logic yet.
 - `Hqqq.Gateway.Tests`
 - `Hqqq.Persistence.Tests`
 
-Each contains a single smoke test asserting `true`.
+Each contains focused smoke tests for config binding, serialization, topic
+metadata, and service startup where applicable.
 
 ### Build infrastructure
 
 - `Hqqq.sln` — root solution file with solution folders: `building-blocks`,
   `services`, `tools`, `legacy`, `tests`
 - `Directory.Build.props` — shared settings: `net10.0`, nullable, implicit usings
+- `.github/workflows/phase2-ci.yml` — root solution smoke CI (build + test)
+
+### Configuration
+
+- `.env.example` — Phase 2 hierarchical configuration template
+  (`Tiingo__ApiKey`, `Kafka__BootstrapServers`, `Redis__Configuration`, `Timescale__ConnectionString`)
+- Legacy flat env vars documented as deprecated with migration guidance
+
+### Local infrastructure
+
+- `docker-compose.yml` — TimescaleDB, Redis, Kafka (KRaft), Kafka UI, Prometheus, Grafana
+- Kafka auto topic creation disabled — topics bootstrapped explicitly
+- `scripts/bootstrap-kafka-topics.{ps1,sh}` — idempotent topic creation scripts
 
 ## What was moved
 
@@ -64,19 +96,18 @@ Each contains a single smoke test asserting `true`.
 The legacy monolith continues to serve as the running system until Phase 2B
 completes the gateway cutover.
 
-## What is only scaffolded
+## What is intentionally stubbed (Phase 2B/C)
 
-All new services (`src/services/*`) contain **placeholder implementations only**:
-- Web services: `/healthz` endpoint returning `"ok"`
-- Worker services: `BackgroundService` with a 5-second delay loop
-- Gateway: placeholder `/api/quote` returning 503 "not yet wired", SignalR hub at `/hubs/market`
+All new services contain **placeholder implementations** with explicit TODO markers:
+- No real Tiingo websocket/REST ingestion (hqqq-ingress)
+- No real Kafka tick publishing/consumption
+- No real iNAV quote calculation (hqqq-quote-engine)
+- No Redis materialized snapshot serving (hqqq-gateway)
+- No Timescale persistence logic (hqqq-persistence)
+- No replay/backfill/anomaly jobs (hqqq-analytics)
 
-No Kafka, Redis, or TimescaleDB runtime code has been added yet.
-
-## Legacy backup code blocks
-
-None in this step. All legacy code remains in its original location under
-`src/hqqq-api/Modules/`. Code will be migrated (not copied) in subsequent steps.
+Services start, bind configuration, report their posture, and idle.
+Dependencies report as "degraded" rather than crashing when unavailable.
 
 ## Module-to-service mapping (planned)
 
@@ -93,8 +124,10 @@ None in this step. All legacy code remains in its original location under
 
 ## Next steps
 
-- **Phase 2A1**: Populate `Hqqq.Contracts` and `Hqqq.Domain` with extracted
-  types from current MVP modules
-- **Phase 2A2**: Build `hqqq-reference-data` service with basket/corp-action logic
-- **Phase 2A3**: Build `hqqq-ingress` service with Tiingo adapter
-- **Phase 2A4**: Local infra bootstrap and Kafka topic/config plumbing
+- **Phase 2B**: Wire real Tiingo ingestion in `hqqq-ingress`
+- **Phase 2B**: Wire Kafka consumers/producers across services
+- **Phase 2B**: Implement iNAV quote engine computation
+- **Phase 2B**: Implement Redis snapshot writes and gateway serving
+- **Phase 2B**: Implement Timescale persistence pipeline
+- **Phase 2B**: Complete gateway cutover from legacy API
+- **Phase 2C**: Add replay, backfill, and anomaly detection in analytics

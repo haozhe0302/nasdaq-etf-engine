@@ -1,10 +1,41 @@
+using System.Net;
+using Microsoft.AspNetCore.Mvc.Testing;
+
 namespace Hqqq.Gateway.Tests;
 
-public class SmokeTests
+public class SmokeTests : IClassFixture<WebApplicationFactory<Program>>
 {
-    [Fact]
-    public void ProjectCompiles_ReturnsTrue()
+    private readonly HttpClient _client;
+
+    public SmokeTests(WebApplicationFactory<Program> factory)
     {
-        Assert.True(true);
+        _client = factory.CreateClient();
+    }
+
+    [Fact]
+    public async Task LiveHealthCheck_ReturnsOk()
+    {
+        var response = await _client.GetAsync("/healthz/live");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Healthy", body);
+    }
+
+    [Fact]
+    public async Task ReadyHealthCheck_ReturnsOk()
+    {
+        var response = await _client.GetAsync("/healthz/ready");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task QuoteEndpoint_Returns503()
+    {
+        var response = await _client.GetAsync("/api/quote");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("not_wired", body);
     }
 }

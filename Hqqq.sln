@@ -1,4 +1,4 @@
-﻿
+
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -50,6 +50,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hqqq.Gateway.Tests", "tests\Hqqq.Gateway.Tests\Hqqq.Gateway.Tests.csproj", "{E8497FD9-11B7-47E3-9A3D-E7B5BD5B6FC0}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hqqq.Persistence.Tests", "tests\Hqqq.Persistence.Tests\Hqqq.Persistence.Tests.csproj", "{5C90A2BC-42FF-4258-B726-F02CA97D9E67}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hqqq.Infrastructure.Tests", "tests\Hqqq.Infrastructure.Tests\Hqqq.Infrastructure.Tests.csproj", "{B3A1E2F4-7D8C-4A5B-9E6D-0F1C2D3E4F5A}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -136,6 +138,10 @@ Global
 		{5C90A2BC-42FF-4258-B726-F02CA97D9E67}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5C90A2BC-42FF-4258-B726-F02CA97D9E67}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5C90A2BC-42FF-4258-B726-F02CA97D9E67}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B3A1E2F4-7D8C-4A5B-9E6D-0F1C2D3E4F5A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B3A1E2F4-7D8C-4A5B-9E6D-0F1C2D3E4F5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B3A1E2F4-7D8C-4A5B-9E6D-0F1C2D3E4F5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B3A1E2F4-7D8C-4A5B-9E6D-0F1C2D3E4F5A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{D82D903A-27EF-419E-86A8-02FB7D68FCB1} = {052073C5-1862-4962-8F3B-E2154CD10C8A}
@@ -157,5 +163,6 @@ Global
 		{BB482513-E528-478D-B2FB-2F458FEC0696} = {23361592-44DD-405B-A750-3A18E5ECE16D}
 		{E8497FD9-11B7-47E3-9A3D-E7B5BD5B6FC0} = {23361592-44DD-405B-A750-3A18E5ECE16D}
 		{5C90A2BC-42FF-4258-B726-F02CA97D9E67} = {23361592-44DD-405B-A750-3A18E5ECE16D}
+		{B3A1E2F4-7D8C-4A5B-9E6D-0F1C2D3E4F5A} = {23361592-44DD-405B-A750-3A18E5ECE16D}
 	EndGlobalSection
 EndGlobal

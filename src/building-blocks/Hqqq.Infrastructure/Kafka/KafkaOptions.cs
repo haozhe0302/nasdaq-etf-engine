@@ -6,6 +6,7 @@ namespace Hqqq.Infrastructure.Kafka;
 public sealed class KafkaOptions
 {
     public string BootstrapServers { get; set; } = "localhost:9092";
+    public string ClientId { get; set; } = "hqqq-local";
     public string ConsumerGroupPrefix { get; set; } = "hqqq";
     public string? SchemaRegistryUrl { get; set; }
 }

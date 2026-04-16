@@ -1,1 +1,0 @@
-namespace Hqqq.Observability.Logging;

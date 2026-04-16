@@ -172,6 +172,9 @@ public sealed class TiingoWebSocketClient : IDisposable
                     break;
 
                 case "I":
+                    // Tiingo sends "I" (info) frames as part of normal connection chatter.
+                    // Treat them like heartbeats so downstream health logic can observe liveness.
+                    LastHeartbeatUtc = DateTimeOffset.UtcNow;
                     _logger.LogInformation("Tiingo WS info frame received: {Json}", json);
                     break;
 

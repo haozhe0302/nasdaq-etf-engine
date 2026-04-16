@@ -7,7 +7,6 @@
 
 set -euo pipefail
 
-KAFKA_CONTAINER="kafka"
 BOOTSTRAP_SERVER="localhost:9092"
 TOPIC_CMD="/opt/kafka/bin/kafka-topics.sh"
 
@@ -24,7 +23,7 @@ create_topic() {
 
     echo "  Creating topic: $name (partitions=$partitions, cleanup=$cleanup)"
 
-    docker exec "$KAFKA_CONTAINER" "$TOPIC_CMD" \
+    docker compose exec -T kafka "$TOPIC_CMD" \
         --bootstrap-server "$BOOTSTRAP_SERVER" \
         --create \
         --if-not-exists \
@@ -39,6 +38,12 @@ echo ""
 echo "=== HQQQ Kafka Topic Bootstrap ==="
 echo ""
 
+if ! docker compose ps kafka >/dev/null 2>&1; then
+    echo "ERROR: Kafka service 'kafka' not found."
+    echo "Run this script from repo root and ensure 'docker compose up -d' has started infrastructure."
+    exit 1
+fi
+
 create_topic "market.raw_ticks.v1"          3 "delete"
 create_topic "market.latest_by_symbol.v1"   3 "compact"
 create_topic "refdata.basket.active.v1"     1 "compact"
@@ -51,4 +56,4 @@ echo "=== Topic bootstrap complete ==="
 echo ""
 
 echo "Verifying topics:"
-docker exec "$KAFKA_CONTAINER" "$TOPIC_CMD" --bootstrap-server "$BOOTSTRAP_SERVER" --list
+docker compose exec -T kafka "$TOPIC_CMD" --bootstrap-server "$BOOTSTRAP_SERVER" --list

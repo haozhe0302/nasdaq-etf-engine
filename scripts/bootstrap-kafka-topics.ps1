@@ -6,7 +6,6 @@
 
 $ErrorActionPreference = "Stop"
 
-$KafkaContainer = "kafka"
 $BootstrapServer = "localhost:9092"
 $TopicCmd = "/opt/kafka/bin/kafka-topics.sh"
 
@@ -26,7 +25,7 @@ function Invoke-KafkaTopic {
     Write-Host "  Creating topic: $Name (partitions=$Partitions, cleanup=$CleanupPolicy)" -ForegroundColor Cyan
 
     $allArgs = @(
-        "exec", $KafkaContainer, $TopicCmd,
+        "compose", "exec", "-T", "kafka", $TopicCmd,
         "--bootstrap-server", $BootstrapServer,
         "--create",
         "--if-not-exists",
@@ -46,6 +45,11 @@ Write-Host ""
 Write-Host "=== HQQQ Kafka Topic Bootstrap ===" -ForegroundColor Green
 Write-Host ""
 
+docker compose ps kafka 1>$null 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "Kafka service 'kafka' not found. Run this script from repo root and ensure 'docker compose up -d' has started infrastructure."
+}
+
 Invoke-KafkaTopic -Name "market.raw_ticks.v1"            -Partitions 3 -CleanupPolicy "delete"
 Invoke-KafkaTopic -Name "market.latest_by_symbol.v1"      -Partitions 3 -CleanupPolicy "compact"
 Invoke-KafkaTopic -Name "refdata.basket.active.v1"        -Partitions 1 -CleanupPolicy "compact"
@@ -58,4 +62,4 @@ Write-Host "=== Topic bootstrap complete ===" -ForegroundColor Green
 Write-Host ""
 
 Write-Host "Verifying topics:" -ForegroundColor Cyan
-docker exec $KafkaContainer $TopicCmd --bootstrap-server $BootstrapServer --list
+docker compose exec -T kafka $TopicCmd --bootstrap-server $BootstrapServer --list

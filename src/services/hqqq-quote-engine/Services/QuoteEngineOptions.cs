@@ -1,9 +1,11 @@
+using Hqqq.Infrastructure.Kafka;
+
 namespace Hqqq.QuoteEngine.Services;
 
 /// <summary>
-/// Engine-wide constants. Not yet exposed via <c>appsettings.json</c> in
-/// B2 to keep the diff narrow — wire up IOptions in B3 alongside the real
-/// Kafka consumers.
+/// Engine-wide configuration, bound from the <c>QuoteEngine</c> section in
+/// <c>appsettings.json</c>. Defaults are tuned to match the legacy monolith's
+/// observable behavior so B3 cut-over stays transparent to the frontend.
 /// </summary>
 public sealed class QuoteEngineOptions
 {
@@ -28,4 +30,25 @@ public sealed class QuoteEngineOptions
     public int SeriesCapacity { get; init; } = 4096;
 
     public int MoversTopN { get; init; } = 5;
+
+    /// <summary>
+    /// File path for the lightweight engine checkpoint (basket identity +
+    /// pricing basis + scale + last snapshot digest). Default is rooted in
+    /// the service working directory so it's discoverable in local dev; in
+    /// container deployments this should be pointed at a persistent volume
+    /// via <c>QuoteEngine:CheckpointPath</c>.
+    /// </summary>
+    public string CheckpointPath { get; init; } = "./data/quote-engine/checkpoint.json";
+
+    /// <summary>
+    /// Cadence of periodic checkpoint writes from the materialize loop.
+    /// Writes on basket activation happen out-of-band regardless of this.
+    /// </summary>
+    public TimeSpan CheckpointInterval { get; init; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>Kafka topic carrying normalized ticks.</summary>
+    public string RawTicksTopic { get; init; } = KafkaTopics.RawTicks;
+
+    /// <summary>Kafka topic carrying the richer active-basket state event.</summary>
+    public string BasketActiveTopic { get; init; } = KafkaTopics.BasketActive;
 }

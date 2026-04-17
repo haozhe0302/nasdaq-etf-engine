@@ -233,7 +233,13 @@ docker compose down -v     # stop containers and remove volumes
 
 ---
 
-## 9) Live demo endpoints
+## 9) Container deployments
+
+- `QuoteEngine:CheckpointPath` (default `./data/quote-engine/checkpoint.json`) must map to a persistent volume in container deployments so checkpoint state survives restarts.
+
+---
+
+## 10) Live demo endpoints
 
 - Frontend live: <https://delightful-dune-08a7a390f.1.azurestaticapps.net/>
 - Backend live health: <https://app-hqqq-api-mvp-cdgffghwf8c4hgdh.eastus-01.azurewebsites.net/api/system/health>

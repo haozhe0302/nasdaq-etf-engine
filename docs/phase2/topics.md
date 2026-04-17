@@ -9,7 +9,7 @@ All topic names are defined as constants in
 |-------|-----|-----------|---------|------------|----------|-------------|
 | `market.raw_ticks.v1` | symbol | `RawTickV1` | delete (time-based) | 1 (Phase 2), scale later | hqqq-ingress | hqqq-quote-engine |
 | `market.latest_by_symbol.v1` | symbol | `LatestSymbolQuoteV1` | compact | 1 | hqqq-ingress | hqqq-quote-engine (bootstrap) |
-| `refdata.basket.active.v1` | basketId | `BasketActivatedV1` | compact | 1 | hqqq-reference-data | hqqq-quote-engine, hqqq-ingress |
+| `refdata.basket.active.v1` | basketId | `BasketActiveStateV1` | compact | 1 | hqqq-reference-data | hqqq-quote-engine, hqqq-ingress |
 | `pricing.snapshots.v1` | basketId | `QuoteSnapshotV1` | delete (time-based) | 1 | hqqq-quote-engine | hqqq-gateway, hqqq-persistence |
 | `ops.incidents.v1` | service | `IncidentEventV1` | delete (time-based) | 1 | any service | hqqq-analytics |
 

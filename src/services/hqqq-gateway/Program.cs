@@ -1,6 +1,8 @@
 using Hqqq.Infrastructure.Hosting;
 using Hqqq.Observability.Health;
 using Hqqq.Observability.Logging;
+using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Endpoints;
 using Hqqq.Gateway.Hubs;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
@@ -12,6 +14,8 @@ builder.Services.AddHqqqRedis(builder.Configuration);
 builder.Services.AddHqqqTimescale(builder.Configuration);
 builder.Services.AddHqqqObservability();
 
+builder.Services.AddGatewaySources(builder.Configuration, builder.Environment);
+
 builder.Services.AddSignalR();
 
 builder.Services.AddHealthChecks()
@@ -22,7 +26,7 @@ var app = builder.Build();
 app.Services.LogConfigurationPosture(
     "hqqq-gateway",
     app.Logger,
-    "Redis", "Timescale");
+    "Redis", "Timescale", "Gateway");
 
 app.MapHealthChecks("/healthz/live", new()
 {
@@ -43,16 +47,14 @@ app.MapHealthChecks("/healthz/ready", new()
     },
 });
 
-app.MapGet("/api/quote", () =>
-    Results.Json(new { status = "not_wired", message = "Gateway not yet connected to Redis (Phase 2B)" },
-        statusCode: 503));
-
+app.MapGatewayEndpoints();
 app.MapHub<MarketHub>("/hubs/market");
 
-// TODO: Phase 2B — add Redis-backed GET /api/quote with real iNAV data
-// TODO: Phase 2B — add GET /api/basket/constituents from Timescale
-// TODO: Phase 2B — add GET /api/history/* from Timescale
-// TODO: Phase 2B — wire Redis pub/sub backplane for SignalR
+// TODO: Phase 2B  — swap IQuoteSource to RedisQuoteSource (Redis-backed latest snapshot)
+// TODO: Phase 2B  — swap IConstituentsSource to RedisConstituentsSource (Redis-backed)
+// TODO: Phase 2B5 — swap IHistorySource to TimescaleHistorySource (Timescale-backed)
+// TODO: Phase 2C3 — swap ISystemHealthSource to gateway-native health aggregation
+// TODO: Phase 2D2 — wire Redis pub/sub backplane for SignalR fan-out on /hubs/market
 
 app.Run();
 

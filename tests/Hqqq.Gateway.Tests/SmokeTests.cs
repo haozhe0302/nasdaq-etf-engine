@@ -30,12 +30,12 @@ public class SmokeTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task QuoteEndpoint_Returns503()
+    public async Task QuoteEndpoint_ReturnsOk_InStubMode()
     {
         var response = await _client.GetAsync("/api/quote");
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await response.Content.ReadAsStringAsync();
-        Assert.Contains("not_wired", body);
+        Assert.Contains("nav", body);
     }
 }

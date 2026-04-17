@@ -51,4 +51,14 @@ public sealed class QuoteEngineOptions
 
     /// <summary>Kafka topic carrying the richer active-basket state event.</summary>
     public string BasketActiveTopic { get; init; } = KafkaTopics.BasketActive;
+
+    /// <summary>Kafka topic carrying materialized iNAV snapshot events.</summary>
+    public string PricingSnapshotsTopic { get; init; } = KafkaTopics.PricingSnapshots;
+
+    /// <summary>
+    /// Cadence of the materialize loop. Matches the legacy <c>QuoteBroadcastService</c>
+    /// 1 Hz tempo by default; tests lower this to keep worker-level assertions
+    /// fast without losing the snapshot + delta pipeline coverage.
+    /// </summary>
+    public TimeSpan MaterializeInterval { get; init; } = TimeSpan.FromSeconds(1);
 }

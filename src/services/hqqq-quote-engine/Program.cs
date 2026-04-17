@@ -4,6 +4,7 @@ using Hqqq.QuoteEngine.Abstractions;
 using Hqqq.QuoteEngine.Consumers;
 using Hqqq.QuoteEngine.Feeds;
 using Hqqq.QuoteEngine.Persistence;
+using Hqqq.QuoteEngine.Publishing;
 using Hqqq.QuoteEngine.Services;
 using Hqqq.QuoteEngine.State;
 using Hqqq.QuoteEngine.Workers;
@@ -16,6 +17,7 @@ builder.Logging.AddHqqqDefaults();
 
 builder.Services.AddHqqqKafka(builder.Configuration);
 builder.Services.AddHqqqRedis(builder.Configuration);
+builder.Services.AddHqqqRedisConnection();
 builder.Services.AddHqqqObservability();
 
 builder.Services.Configure<QuoteEngineOptions>(builder.Configuration.GetSection("QuoteEngine"));
@@ -30,7 +32,17 @@ builder.Services.AddSingleton(sp => new EngineRuntimeState(
 builder.Services.AddSingleton<IncrementalNavCalculator>();
 builder.Services.AddSingleton<SnapshotMaterializer>();
 builder.Services.AddSingleton<QuoteDeltaMaterializer>();
+builder.Services.AddSingleton<ConstituentsSnapshotMaterializer>();
+builder.Services.AddSingleton<QuoteSnapshotV1Mapper>();
 builder.Services.AddSingleton<IQuoteEngine, QuoteEngine>();
+
+// ── Output sinks: Redis latest state + Kafka snapshot events ─
+builder.Services.AddSingleton<IQuoteSnapshotSink, RedisSnapshotWriter>();
+builder.Services.AddSingleton<IConstituentSnapshotSink, RedisConstituentsWriter>();
+builder.Services.AddSingleton<ConfluentPricingSnapshotProducer>();
+builder.Services.AddSingleton<IPricingSnapshotProducer>(sp =>
+    sp.GetRequiredService<ConfluentPricingSnapshotProducer>());
+builder.Services.AddSingleton<ISnapshotEventPublisher, SnapshotTopicPublisher>();
 
 // ── In-process buffers between Kafka consumers and the pipeline worker ──
 // The consumers push into the sink side; the pipeline worker drains the
@@ -67,8 +79,5 @@ host.Services.LogConfigurationPosture(
     "hqqq-quote-engine",
     host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup"),
     "Kafka", "Redis", "QuoteEngine");
-
-// TODO: B4 — publish materialized snapshots to pricing.snapshots.v1 + write Redis cache
-// TODO: B4 — hqqq-gateway consumes snapshots and fans out over REST + SignalR
 
 host.Run();

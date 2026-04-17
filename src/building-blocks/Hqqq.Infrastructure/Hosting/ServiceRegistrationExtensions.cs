@@ -4,6 +4,8 @@ using Hqqq.Infrastructure.Timescale;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using StackExchange.Redis;
 
 namespace Hqqq.Infrastructure.Hosting;
 
@@ -29,6 +31,25 @@ public static class ServiceRegistrationExtensions
         this IServiceCollection services, IConfiguration configuration)
     {
         services.Configure<RedisOptions>(configuration.GetSection("Redis"));
+        return services;
+    }
+
+    /// <summary>
+    /// Registers a shared <see cref="IConnectionMultiplexer"/> and the
+    /// lightweight <see cref="IRedisStringCache"/> seam used by services that
+    /// materialize latest serving state to Redis. Callers must also invoke
+    /// <see cref="AddHqqqRedis(IServiceCollection, IConfiguration)"/> so
+    /// <see cref="RedisOptions"/> is bound. The multiplexer connects eagerly
+    /// on first resolve so startup fails fast if Redis is unreachable.
+    /// </summary>
+    public static IServiceCollection AddHqqqRedisConnection(this IServiceCollection services)
+    {
+        services.AddSingleton<IConnectionMultiplexer>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<RedisOptions>>().Value;
+            return ConnectionMultiplexer.Connect(options.Configuration);
+        });
+        services.AddSingleton<IRedisStringCache, RedisStringCache>();
         return services;
     }
 

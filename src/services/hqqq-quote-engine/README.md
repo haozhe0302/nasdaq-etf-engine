@@ -2,11 +2,13 @@
 
 Internal pricing engine for the HQQQ basket family.
 
-**B3 scope (current):** the engine now consumes real Kafka inputs
-(`market.raw_ticks.v1`, `refdata.basket.active.v1`) and persists a
-lightweight file-based checkpoint so restarts reinstall the active basket
-before the first live message is handled. Output side (Redis latest-state,
-`pricing.snapshots.v1` producer, gateway fan-out) remains deferred to B4.
+**B4 scope (current):** the engine now consumes real Kafka inputs
+(`market.raw_ticks.v1`, `refdata.basket.active.v1`), persists a lightweight
+file-based checkpoint so restarts reinstall the active basket before the
+first live message is handled, and materializes its outputs to the serving
+layer: Redis latest-state for the basket's quote + constituents snapshot,
+and `pricing.snapshots.v1` on Kafka for downstream persistence / analytics
+consumers. Gateway REST + SignalR fan-out remains deferred to B5.
 
 ## Internal pipeline
 
@@ -18,8 +20,10 @@ Kafka refdata.basket.active.v1   ─► BasketEventConsumer    ─┤
                                                                                  BasketStateStore
                                                                                  EngineRuntimeState
                                                                                      │
-                                                                                     ├─► SnapshotMaterializer ─► QuoteSnapshotDto (logged)
-                                                                                     └─► QuoteDeltaMaterializer ─► QuoteUpdateDto (logged)
+                                                                                     ├─► SnapshotMaterializer ─► QuoteSnapshotDto ─┬─► RedisSnapshotWriter ─► Redis hqqq:snapshot:{basketId}
+                                                                                     │                                              └─► QuoteSnapshotV1Mapper ─► SnapshotTopicPublisher ─► Kafka pricing.snapshots.v1
+                                                                                     ├─► ConstituentsSnapshotMaterializer ─► ConstituentsSnapshotDto ─► RedisConstituentsWriter ─► Redis hqqq:constituents:{basketId}
+                                                                                     └─► QuoteDeltaMaterializer ─► QuoteUpdateDto (in-proc, for later SignalR fan-out)
 
 EngineCheckpointRestorer (startup, pre-consumer) ─► engine.OnBasketActivated
 QuoteEngineWorker ─► FileEngineCheckpointStore (on activation + interval)
@@ -37,7 +41,7 @@ future analytics service without dragging engine state along.
 - Full `QuoteSnapshotDto` and slim `QuoteUpdateDto` materialization.
 - Deterministic under test without Kafka or Redis.
 
-### B3 (this phase) — real inputs + crash recovery
+### B3 — real inputs + crash recovery
 
 - Consume `market.raw_ticks.v1` via `RawTickConsumer` into the engine's
   normalized-tick sink.
@@ -56,11 +60,37 @@ future analytics service without dragging engine state along.
 - Startup is tolerant: missing Kafka, missing checkpoint, or corrupt
   checkpoint never fail the process.
 
+### B4 (this phase) — downstream outputs
+
+- Materialize the latest quote snapshot to Redis under the namespaced key
+  `hqqq:snapshot:{basketId}` via `RedisSnapshotWriter`. Redis is the
+  serving layer, not a source of truth — writes overwrite on every
+  materialize cycle.
+- Materialize the latest constituents snapshot (holdings + concentration +
+  quality + source provenance) to Redis under `hqqq:constituents:{basketId}`
+  via `RedisConstituentsWriter`. Shape matches the frontend
+  `BConstituentSnapshot` adapter so the gateway reader in B5 deserializes
+  the cached JSON directly.
+- Publish `QuoteSnapshotV1` to `pricing.snapshots.v1` (key = `basketId`)
+  via `SnapshotTopicPublisher`. The publisher depends on an
+  `IPricingSnapshotProducer` seam; the production `ConfluentPricingSnapshotProducer`
+  wraps a single long-lived `IProducer<string, QuoteSnapshotV1>` with the
+  shared `JsonValueSerializer<T>`, reusing `KafkaConfigBuilder` idempotent-producer
+  defaults.
+- Sink failures are isolated: each of Redis-snapshot / Redis-constituents /
+  Kafka-publish is wrapped in its own `try`/`catch` inside the materialize
+  loop. One sink failing never blocks the others or crashes the worker.
+- Engine math and state (`IncrementalNavCalculator`, `SnapshotMaterializer`,
+  `QuoteDeltaMaterializer`, `PerSymbolQuoteStore`, `BasketStateStore`,
+  `EngineRuntimeState`) stay free of sink or producer dependencies. Only
+  the worker knows about publishing.
+
 ### Deferred
 
-- **B4**: gateway REST + SignalR fan-out; `pricing.snapshots.v1` producer;
-  Redis cache writes; corporate-action + reference-anchor services.
-- **B5**: Timescale persistence + history.
+- **B5**: gateway REST + SignalR fan-out; gateway Redis readers against
+  the new `hqqq:snapshot:*` / `hqqq:constituents:*` keys; Timescale
+  persistence of `pricing.snapshots.v1` + history; corporate-action and
+  reference-anchor services.
 
 ## Configuration
 
@@ -71,7 +101,9 @@ Bound from the `QuoteEngine` section:
   "CheckpointPath": "./data/quote-engine/checkpoint.json",
   "CheckpointInterval": "00:00:10",
   "RawTicksTopic": "market.raw_ticks.v1",
-  "BasketActiveTopic": "refdata.basket.active.v1"
+  "BasketActiveTopic": "refdata.basket.active.v1",
+  "PricingSnapshotsTopic": "pricing.snapshots.v1",
+  "MaterializeInterval": "00:00:01"
 }
 ```
 
@@ -79,6 +111,11 @@ Kafka connection settings come from the shared `Kafka` section
 (`BootstrapServers`, `ClientId`, `ConsumerGroupPrefix`). Consumer groups
 are derived as `{prefix}-quote-engine-ticks` and
 `{prefix}-quote-engine-baskets`.
+
+Redis connection settings come from the shared `Redis` section
+(`Configuration`). The eager `AddHqqqRedisConnection` registration fails
+fast at startup if Redis is unreachable, so a missing cache is surfaced
+before the first materialize cycle writes silently into the void.
 
 ## HA model
 

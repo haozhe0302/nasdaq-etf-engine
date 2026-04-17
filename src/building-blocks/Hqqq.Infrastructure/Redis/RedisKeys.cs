@@ -11,6 +11,9 @@ public static class RedisKeys
     /// <summary>Latest iNAV snapshot hash. Pattern: <c>hqqq:snapshot:{basketId}</c>.</summary>
     public const string SnapshotPattern = "hqqq:snapshot:{0}";
 
+    /// <summary>Latest constituents snapshot. Pattern: <c>hqqq:constituents:{basketId}</c>.</summary>
+    public const string ConstituentsPattern = "hqqq:constituents:{0}";
+
     /// <summary>Latest price per symbol. Pattern: <c>hqqq:latest:{symbol}</c>.</summary>
     public const string LatestQuotePattern = "hqqq:latest:{0}";
 
@@ -28,6 +31,7 @@ public static class RedisKeys
     // ── Key builders ────────────────────────────────────────────
 
     public static string Snapshot(string basketId) => string.Format(SnapshotPattern, basketId);
+    public static string Constituents(string basketId) => string.Format(ConstituentsPattern, basketId);
     public static string LatestQuote(string symbol) => string.Format(LatestQuotePattern, symbol);
     public static string ActiveBasket(string basketId) => string.Format(ActiveBasketPattern, basketId);
     public static string Freshness(string basketId) => string.Format(FreshnessPattern, basketId);

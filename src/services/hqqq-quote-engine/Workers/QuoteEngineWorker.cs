@@ -5,13 +5,14 @@ using Hqqq.QuoteEngine.State;
 
 namespace Hqqq.QuoteEngine.Workers;
 
+
 /// <summary>
 /// Hosted worker orchestrating the engine pipeline once upstream consumers
 /// are pumping into the in-process sinks:
 /// <list type="number">
 ///   <item>drain basket activations → <see cref="IQuoteEngine.OnBasketActivated"/> (+ checkpoint write)</item>
 ///   <item>drain normalized ticks → <see cref="IQuoteEngine.OnTick"/></item>
-///   <item>materialize snapshot + delta on a cadence (logged; Redis / Kafka / SignalR wiring lands in B4)</item>
+///   <item>materialize snapshot + delta on a cadence, write latest Redis state and publish a Kafka snapshot event</item>
 ///   <item>persist a lightweight checkpoint periodically so a restart reinstalls the active basket</item>
 /// </list>
 /// </summary>
@@ -22,6 +23,11 @@ public sealed class QuoteEngineWorker : BackgroundService
     private readonly IBasketStateFeed _basketFeed;
     private readonly QuoteEngineOptions _options;
     private readonly IEngineCheckpointStore _checkpointStore;
+    private readonly IQuoteSnapshotSink _quoteSink;
+    private readonly IConstituentSnapshotSink _constituentsSink;
+    private readonly ISnapshotEventPublisher _eventPublisher;
+    private readonly ConstituentsSnapshotMaterializer _constituentsMaterializer;
+    private readonly QuoteSnapshotV1Mapper _snapshotEventMapper;
     private readonly ILogger<QuoteEngineWorker> _logger;
 
     private ActiveBasket? _lastActiveBasket;
@@ -35,6 +41,11 @@ public sealed class QuoteEngineWorker : BackgroundService
         IBasketStateFeed basketFeed,
         QuoteEngineOptions options,
         IEngineCheckpointStore checkpointStore,
+        IQuoteSnapshotSink quoteSink,
+        IConstituentSnapshotSink constituentsSink,
+        ISnapshotEventPublisher eventPublisher,
+        ConstituentsSnapshotMaterializer constituentsMaterializer,
+        QuoteSnapshotV1Mapper snapshotEventMapper,
         ILogger<QuoteEngineWorker> logger)
     {
         _engine = engine;
@@ -42,6 +53,11 @@ public sealed class QuoteEngineWorker : BackgroundService
         _basketFeed = basketFeed;
         _options = options;
         _checkpointStore = checkpointStore;
+        _quoteSink = quoteSink;
+        _constituentsSink = constituentsSink;
+        _eventPublisher = eventPublisher;
+        _constituentsMaterializer = constituentsMaterializer;
+        _snapshotEventMapper = snapshotEventMapper;
         _logger = logger;
     }
 
@@ -120,9 +136,9 @@ public sealed class QuoteEngineWorker : BackgroundService
 
     private async Task MaterializeLoopAsync(CancellationToken ct)
     {
-        // Match the legacy QuoteBroadcastService cadence (1 Hz) so the B4
-        // cut-over lines up with what the current frontend expects.
-        var interval = TimeSpan.FromSeconds(1);
+        // Match the legacy QuoteBroadcastService cadence (1 Hz by default)
+        // so the B4 cut-over lines up with what the current frontend expects.
+        var interval = _options.MaterializeInterval;
         var nextCheckpointAt = DateTimeOffset.UtcNow + _options.CheckpointInterval;
 
         try
@@ -134,14 +150,14 @@ public sealed class QuoteEngineWorker : BackgroundService
                     var snapshot = _engine.BuildSnapshot();
                     var delta = _engine.BuildDelta();
 
-                    if (snapshot is not null && delta is not null)
+                    if (snapshot is not null && delta is not null && _lastActiveBasket is { } basket)
                     {
-                        // TODO(B4): publish delta to pricing.snapshots.v1 + Redis cache.
-                        // TODO(B4): fan delta out to SignalR via hqqq-gateway.
                         _logger.LogDebug(
                             "Materialized snapshot nav={Nav} qqq={Qqq} premDisc={Pct}% fresh={Fresh}/{Total}",
                             snapshot.Nav, snapshot.Qqq, snapshot.PremiumDiscountPct,
                             snapshot.Freshness.SymbolsFresh, snapshot.Freshness.SymbolsTotal);
+
+                        await PublishOutputsAsync(basket, snapshot, ct).ConfigureAwait(false);
 
                         _lastSnapshotDigest = new SnapshotDigest
                         {
@@ -154,8 +170,8 @@ public sealed class QuoteEngineWorker : BackgroundService
 
                     if (DateTimeOffset.UtcNow >= nextCheckpointAt)
                     {
-                        if (_lastActiveBasket is { } basket)
-                            await TryWriteCheckpointAsync(basket, _lastSnapshotDigest, ct).ConfigureAwait(false);
+                        if (_lastActiveBasket is { } checkpointBasket)
+                            await TryWriteCheckpointAsync(checkpointBasket, _lastSnapshotDigest, ct).ConfigureAwait(false);
 
                         nextCheckpointAt = DateTimeOffset.UtcNow + _options.CheckpointInterval;
                     }
@@ -166,6 +182,50 @@ public sealed class QuoteEngineWorker : BackgroundService
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+        }
+    }
+
+    private async Task PublishOutputsAsync(
+        ActiveBasket basket, Hqqq.Contracts.Dtos.QuoteSnapshotDto snapshot, CancellationToken ct)
+    {
+        // Each sink is isolated: one failure must not block the other two,
+        // and must never kill the worker. The engine is the authoritative
+        // owner of state — Redis / Kafka are just projections of it.
+        try
+        {
+            await _quoteSink.WriteAsync(basket.BasketId, snapshot, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Redis snapshot write failed for basket {BasketId}", basket.BasketId);
+        }
+
+        try
+        {
+            var constituentsDto = _constituentsMaterializer.Build();
+            if (constituentsDto is not null)
+            {
+                await _constituentsSink
+                    .WriteAsync(basket.BasketId, constituentsDto, ct)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Redis constituents write failed for basket {BasketId}", basket.BasketId);
+        }
+
+        try
+        {
+            var evt = _snapshotEventMapper.Map(basket.BasketId, snapshot);
+            await _eventPublisher.PublishAsync(evt, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Kafka snapshot publish failed for basket {BasketId}", basket.BasketId);
         }
     }
 

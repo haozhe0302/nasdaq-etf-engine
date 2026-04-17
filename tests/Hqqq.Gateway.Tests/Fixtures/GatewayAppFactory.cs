@@ -1,4 +1,5 @@
 using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Services.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -8,7 +9,7 @@ namespace Hqqq.Gateway.Tests.Fixtures;
 
 /// <summary>
 /// Reusable WebApplicationFactory with config overrides and optional
-/// fake HttpMessageHandler injection for the named "legacy" HttpClient.
+/// fake HttpMessageHandler / IGatewayRedisReader injection.
 /// Re-calls AddGatewaySources after config overrides so mode resolution
 /// picks up test values (last-wins in DI).
 /// </summary>
@@ -16,6 +17,7 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
 {
     private readonly Dictionary<string, string?> _config = new();
     private FakeHttpMessageHandler? _fakeHandler;
+    private FakeGatewayRedisReader? _fakeRedisReader;
 
     public GatewayAppFactory WithConfig(string key, string value)
     {
@@ -26,6 +28,12 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
     public GatewayAppFactory WithFakeHandler(FakeHttpMessageHandler handler)
     {
         _fakeHandler = handler;
+        return this;
+    }
+
+    public GatewayAppFactory WithFakeRedisReader(FakeGatewayRedisReader reader)
+    {
+        _fakeRedisReader = reader;
         return this;
     }
 
@@ -50,6 +58,13 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
             {
                 services.AddHttpClient(GatewaySourceRegistration.LegacyHttpClientName)
                     .ConfigurePrimaryHttpMessageHandler(() => _fakeHandler);
+            }
+
+            if (_fakeRedisReader is not null)
+            {
+                // Last-wins for singletons — ensure test's fake is resolved
+                // even when AddGatewaySources also registered the real reader.
+                services.AddSingleton<IGatewayRedisReader>(_fakeRedisReader);
             }
         });
     }

@@ -11,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddLegacyFlatKeyFallback();
 
 builder.Services.AddHqqqRedis(builder.Configuration);
+builder.Services.AddHqqqRedisConnection();
 builder.Services.AddHqqqTimescale(builder.Configuration);
 builder.Services.AddHqqqObservability();
 
@@ -50,9 +51,9 @@ app.MapHealthChecks("/healthz/ready", new()
 app.MapGatewayEndpoints();
 app.MapHub<MarketHub>("/hubs/market");
 
-// TODO: Phase 2B  — swap IQuoteSource to RedisQuoteSource (Redis-backed latest snapshot)
-// TODO: Phase 2B  — swap IConstituentsSource to RedisConstituentsSource (Redis-backed)
-// TODO: Phase 2B5 — swap IHistorySource to TimescaleHistorySource (Timescale-backed)
+// Phase 2B5 — IQuoteSource and IConstituentsSource now support Redis-backed
+// implementations selectable via Gateway:Sources:Quote / Gateway:Sources:Constituents.
+// TODO: Phase 2C3 — swap IHistorySource to TimescaleHistorySource (Timescale-backed)
 // TODO: Phase 2C3 — swap ISystemHealthSource to gateway-native health aggregation
 // TODO: Phase 2D2 — wire Redis pub/sub backplane for SignalR fan-out on /hubs/market
 

@@ -15,9 +15,14 @@ for history. Pure serving layer with no business computation.
 
 ## Configuration
 
-### `Gateway:DataSource`
+Gateway source selection is layered: a **global** `Gateway:DataSource` acts as
+the fallback for every endpoint, and individual endpoints can be overridden
+with `Gateway:Sources:*`. History and system-health stay on the global switch
+for now — only quote and constituents can be switched to `redis` in B5.
 
-Controls which adapter implementation serves each endpoint.
+### `Gateway:DataSource` (global fallback)
+
+Used when an endpoint has no per-endpoint override.
 
 | Value | Behavior |
 |-------|----------|
@@ -25,10 +30,37 @@ Controls which adapter implementation serves each endpoint.
 | `legacy` | Forward requests to legacy `hqqq-api` via HttpClient. |
 | _(empty)_ | Auto-select: `legacy` if `Gateway:LegacyBaseUrl` is set and env is Development; otherwise `stub`. |
 
+### `Gateway:Sources:Quote` / `Gateway:Sources:Constituents`
+
+Per-endpoint overrides for `GET /api/quote` and `GET /api/constituents`.
+
+| Value | Behavior |
+|-------|----------|
+| `stub` | Return deterministic placeholder DTOs (HTTP 200). |
+| `legacy` | Forward the request to legacy `hqqq-api`. |
+| `redis` | Read the latest snapshot from Redis (`hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`). |
+| _(empty)_ | Inherit `Gateway:DataSource`. |
+
+In `redis` mode, if the Redis key is missing the gateway returns a controlled
+degraded response (HTTP 503, JSON body `{"error":"quote_unavailable", ...}` /
+`{"error":"constituents_unavailable", ...}`). Malformed payloads return
+HTTP 502 with `{"error":"quote_malformed"}` / `{"error":"constituents_malformed"}`.
+The gateway never silently substitutes stub data when `redis` was requested.
+
+> `/api/history` and `/api/system/health` intentionally do **not** accept
+> `redis` in B5. History moves to Timescale in C3; system-health moves to
+> native gateway aggregation in a later observability step.
+
+### `Gateway:BasketId`
+
+Basket identifier used to format Redis keys for quote/constituents sources.
+Defaults to `HQQQ` (matches the seed basket in `hqqq-reference-data`).
+
 ### `Gateway:LegacyBaseUrl`
 
 Base URL of the legacy `hqqq-api` instance (e.g. `http://localhost:5000`).
-Required when `DataSource=legacy` or when relying on auto-detection in Development.
+Required when any endpoint resolves to `legacy` (globally or per-endpoint) or
+when relying on auto-detection in Development.
 
 ### Examples
 
@@ -42,4 +74,16 @@ Gateway__LegacyBaseUrl=http://localhost:5000
 
 # Auto-detect in Development: legacy if LegacyBaseUrl is set
 Gateway__LegacyBaseUrl=http://localhost:5000
+
+# B5 mixed mode: quote/constituents from Redis, history/health still stub
+Gateway__Sources__Quote=redis
+Gateway__Sources__Constituents=redis
+Gateway__BasketId=HQQQ
+Redis__Configuration=localhost:6379
+
+# B5 partial cut-over: quote from Redis, everything else from legacy
+Gateway__DataSource=legacy
+Gateway__LegacyBaseUrl=http://localhost:5000
+Gateway__Sources__Quote=redis
+Redis__Configuration=localhost:6379
 ```

@@ -1,5 +1,6 @@
 using Hqqq.Gateway.Configuration;
 using Hqqq.Gateway.Services.Infrastructure;
+using Hqqq.Gateway.Services.Sources;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -18,6 +19,7 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
     private readonly Dictionary<string, string?> _config = new();
     private FakeHttpMessageHandler? _fakeHandler;
     private FakeGatewayRedisReader? _fakeRedisReader;
+    private ITimescaleHistoryQueryService? _fakeHistoryQuery;
 
     public GatewayAppFactory WithConfig(string key, string value)
     {
@@ -34,6 +36,12 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
     public GatewayAppFactory WithFakeRedisReader(FakeGatewayRedisReader reader)
     {
         _fakeRedisReader = reader;
+        return this;
+    }
+
+    public GatewayAppFactory WithFakeHistoryQuery(ITimescaleHistoryQueryService query)
+    {
+        _fakeHistoryQuery = query;
         return this;
     }
 
@@ -65,6 +73,14 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
                 // Last-wins for singletons — ensure test's fake is resolved
                 // even when AddGatewaySources also registered the real reader.
                 services.AddSingleton<IGatewayRedisReader>(_fakeRedisReader);
+            }
+
+            if (_fakeHistoryQuery is not null)
+            {
+                // Last-wins for singletons — ensures the Timescale history
+                // source resolves the fake query service in tests without
+                // needing a real Timescale connection.
+                services.AddSingleton<ITimescaleHistoryQueryService>(_fakeHistoryQuery);
             }
         });
     }

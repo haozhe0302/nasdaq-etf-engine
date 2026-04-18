@@ -51,10 +51,13 @@ app.MapHealthChecks("/healthz/ready", new()
 app.MapGatewayEndpoints();
 app.MapHub<MarketHub>("/hubs/market");
 
-// Phase 2B5 — IQuoteSource and IConstituentsSource now support Redis-backed
+// Phase 2B5 — IQuoteSource and IConstituentsSource support Redis-backed
 // implementations selectable via Gateway:Sources:Quote / Gateway:Sources:Constituents.
-// TODO: Phase 2C3 — swap IHistorySource to TimescaleHistorySource (Timescale-backed)
-// TODO: Phase 2C3 — swap ISystemHealthSource to gateway-native health aggregation
+// Phase 2C2 — IHistorySource supports a Timescale-backed implementation
+// selectable via Gateway:Sources:History=timescale, reading quote_snapshots
+// directly. Stub/legacy remain available as fallbacks.
+// TODO: later observability step — swap ISystemHealthSource to gateway-native
+// health aggregation (system-health is intentionally still on stub/legacy).
 // TODO: Phase 2D2 — wire Redis pub/sub backplane for SignalR fan-out on /hubs/market
 
 app.Run();

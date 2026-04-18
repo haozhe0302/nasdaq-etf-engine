@@ -150,6 +150,40 @@ public class MixedModePrecedenceTests : IDisposable
     }
 
     [Fact]
+    public void StackedCutover_HistoryTimescale_OverridesLegacyGlobal()
+    {
+        // C2 scenario: quote via Redis, constituents via Legacy (inherited),
+        // history via Timescale, system-health via Legacy (global fallback).
+        using var factory = new GatewayAppFactory()
+            .WithConfig("Gateway:DataSource", "legacy")
+            .WithConfig("Gateway:LegacyBaseUrl", "http://legacy.test")
+            .WithConfig("Gateway:BasketId", TestBasketId)
+            .WithConfig("Gateway:Sources:Quote", "redis")
+            .WithConfig("Gateway:Sources:History", "timescale")
+            .WithFakeRedisReader(_redis)
+            .WithFakeHandler(_http)
+            .WithFakeHistoryQuery(new FakeTimescaleHistoryQueryService());
+
+        using var _ = factory.CreateClient();
+        using var scope = factory.Services.CreateScope();
+        var modes = scope.ServiceProvider.GetRequiredService<ResolvedSourceModes>();
+
+        Assert.Equal(GatewayDataSourceMode.Redis, modes.Quote);
+        Assert.Equal(GatewayDataSourceMode.Legacy, modes.Constituents);
+        Assert.Equal(GatewayDataSourceMode.Timescale, modes.History);
+        Assert.Equal(GatewayDataSourceMode.Legacy, modes.SystemHealth);
+
+        Assert.IsType<RedisQuoteSource>(
+            scope.ServiceProvider.GetRequiredService<IQuoteSource>());
+        Assert.IsType<LegacyHttpConstituentsSource>(
+            scope.ServiceProvider.GetRequiredService<IConstituentsSource>());
+        Assert.IsType<TimescaleHistorySource>(
+            scope.ServiceProvider.GetRequiredService<IHistorySource>());
+        Assert.IsType<LegacyHttpSystemHealthSource>(
+            scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
+    }
+
+    [Fact]
     public async Task SystemHealth_StillForwardsToLegacy_AndOverlaysGatewayMetadata()
     {
         var upstreamHealth = """

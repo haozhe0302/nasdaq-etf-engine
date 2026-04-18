@@ -2,7 +2,11 @@ using Hqqq.Gateway.Services.Adapters.Legacy;
 using Hqqq.Gateway.Services.Adapters.Stub;
 using Hqqq.Gateway.Services.Infrastructure;
 using Hqqq.Gateway.Services.Sources;
+using Hqqq.Gateway.Services.Timescale;
+using Hqqq.Infrastructure.Timescale;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace Hqqq.Gateway.Configuration;
 
@@ -24,10 +28,10 @@ public static class GatewaySourceRegistration
         var globalMode = options.ResolveMode(environment);
         var quoteMode = options.ResolveQuoteMode(environment);
         var constituentsMode = options.ResolveConstituentsMode(environment);
+        var historyMode = options.ResolveHistoryMode(environment);
 
-        // History and system-health stay on the global mode (B1 transitional
-        // path) until C3 / observability work. They do not accept `redis`.
-        var historyMode = globalMode;
+        // System-health stays on the global mode (B1 transitional path) until
+        // a later observability step. It does not accept `redis` or `timescale`.
         var systemHealthMode = globalMode;
 
         services.AddSingleton(new ResolvedGatewayMode(globalMode));
@@ -59,6 +63,20 @@ public static class GatewaySourceRegistration
         if (anyRedis)
         {
             services.AddSingleton<IGatewayRedisReader, GatewayRedisReader>();
+        }
+
+        if (historyMode == GatewayDataSourceMode.Timescale)
+        {
+            // Shared NpgsqlDataSource for all Timescale readers in the
+            // gateway. Mirrors the pattern in hqqq-persistence/Program.cs.
+            services.AddSingleton(sp =>
+            {
+                var timescaleOptions = sp.GetRequiredService<IOptions<TimescaleOptions>>().Value;
+                var logger = sp.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger(nameof(TimescaleConnectionFactory));
+                return TimescaleConnectionFactory.Create(timescaleOptions, logger);
+            });
+            services.AddSingleton<ITimescaleHistoryQueryService, TimescaleHistoryQueryService>();
         }
 
         RegisterQuoteSource(services, quoteMode);
@@ -103,10 +121,13 @@ public static class GatewaySourceRegistration
 
     private static void RegisterHistorySource(IServiceCollection services, GatewayDataSourceMode mode)
     {
-        // History intentionally stays on stub/legacy only — Timescale-backed
-        // history lands in C3. `redis` is not a valid history mode here.
+        // History supports stub / legacy / timescale. `redis` is not valid
+        // here (the history source selection resolver never emits it).
         switch (mode)
         {
+            case GatewayDataSourceMode.Timescale:
+                services.AddSingleton<IHistorySource, TimescaleHistorySource>();
+                break;
             case GatewayDataSourceMode.Legacy:
                 services.AddSingleton<IHistorySource, LegacyHttpHistorySource>();
                 break;

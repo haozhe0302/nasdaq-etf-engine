@@ -7,6 +7,7 @@ public enum GatewayDataSourceMode
     Stub,
     Legacy,
     Redis,
+    Timescale,
 }
 
 /// <summary>
@@ -30,14 +31,22 @@ public sealed record ResolvedSourceModes(
 /// <summary>
 /// Per-endpoint source-mode overrides. Each property is optional; when
 /// <c>null</c>/empty the endpoint falls back to the global
-/// <see cref="GatewayOptions.DataSource"/>. Only <c>Quote</c> and
-/// <c>Constituents</c> are currently exposed — history and system-health
-/// remain on the global mode until later phases (C3 / observability).
+/// <see cref="GatewayOptions.DataSource"/>. <c>Quote</c>, <c>Constituents</c>,
+/// and <c>History</c> support per-endpoint overrides;
+/// system-health still follows only the global switch until a later
+/// observability step.
 /// </summary>
 public sealed class GatewaySourcesOptions
 {
     public string? Quote { get; set; }
     public string? Constituents { get; set; }
+
+    /// <summary>
+    /// History source override. Supported values:
+    /// <c>stub</c>, <c>legacy</c>, <c>timescale</c>, or empty to inherit the
+    /// global <see cref="GatewayOptions.DataSource"/> (stub/legacy only).
+    /// </summary>
+    public string? History { get; set; }
 }
 
 public sealed class GatewayOptions
@@ -90,6 +99,15 @@ public sealed class GatewayOptions
     public GatewayDataSourceMode ResolveConstituentsMode(IHostEnvironment env)
         => ResolveEndpointMode(Sources.Constituents, env);
 
+    /// <summary>
+    /// Resolves the per-endpoint mode for <c>/api/history</c>. Accepts
+    /// <c>stub</c>, <c>legacy</c>, and <c>timescale</c> overrides; empty
+    /// falls back to the global <see cref="DataSource"/> (stub/legacy only).
+    /// <c>redis</c> is not a valid history mode.
+    /// </summary>
+    public GatewayDataSourceMode ResolveHistoryMode(IHostEnvironment env)
+        => ResolveEndpointMode(Sources.History, env);
+
     private GatewayDataSourceMode ResolveEndpointMode(string? perEndpoint, IHostEnvironment env)
     {
         if (!string.IsNullOrWhiteSpace(perEndpoint))
@@ -97,6 +115,8 @@ public sealed class GatewayOptions
             var trimmed = perEndpoint.Trim();
             if (trimmed.Equals("redis", StringComparison.OrdinalIgnoreCase))
                 return GatewayDataSourceMode.Redis;
+            if (trimmed.Equals("timescale", StringComparison.OrdinalIgnoreCase))
+                return GatewayDataSourceMode.Timescale;
             if (trimmed.Equals("legacy", StringComparison.OrdinalIgnoreCase))
                 return GatewayDataSourceMode.Legacy;
             if (trimmed.Equals("stub", StringComparison.OrdinalIgnoreCase))

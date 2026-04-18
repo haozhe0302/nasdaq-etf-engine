@@ -3,6 +3,13 @@
 This document is the single place for setup/startup commands, validation
 commands, and shutdown procedures.
 
+Sections 1–10 cover the Phase 1 monolith (`hqqq-api` + `hqqq-ui`), which is
+still the running reference system. Section 11 covers the Phase 2 services
+(gateway, quote-engine, persistence, analytics, reference-data) and
+assumes Phase 2 infra + Kafka topics are already up. See also
+[phase2/local-dev.md](phase2/local-dev.md) for a richer Phase 2 operator
+walkthrough.
+
 ---
 
 ## 1) Prerequisites
@@ -233,7 +240,165 @@ docker compose down -v     # stop containers and remove volumes
 
 ---
 
-## 9) Live demo endpoints
+## 9) Container deployments
+
+- `QuoteEngine:CheckpointPath` (default `./data/quote-engine/checkpoint.json`) must map to a persistent volume in container deployments so checkpoint state survives restarts.
+
+---
+
+## 10) Live demo endpoints
 
 - Frontend live: <https://delightful-dune-08a7a390f.1.azurestaticapps.net/>
 - Backend live health: <https://app-hqqq-api-mvp-cdgffghwf8c4hgdh.eastus-01.azurewebsites.net/api/system/health>
+
+---
+
+## 11) Phase 2 local runbook (services split)
+
+This section covers the Phase 2 services. The legacy monolith is still the
+source of Tiingo ingestion, basket refresh, corp-action adjustment, and
+`/api/system/health` aggregation today.
+
+### 11.1 Infra startup
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+Wait for `db`, `cache`, and `kafka` to report healthy. Kafka has a 30-second
+start period.
+
+### 11.2 Bootstrap Kafka topics
+
+Topic auto-creation is **disabled** in the broker config. Topics must be
+created explicitly (idempotent):
+
+```powershell
+.\scripts\bootstrap-kafka-topics.ps1
+```
+
+```bash
+./scripts/bootstrap-kafka-topics.sh
+```
+
+Expected partitions:
+
+| Topic | Partitions | Cleanup |
+|-------|-----------:|---------|
+| `market.raw_ticks.v1` | 3 | delete |
+| `market.latest_by_symbol.v1` | 3 | compact |
+| `refdata.basket.active.v1` | 1 | compact |
+| `refdata.basket.events.v1` | 1 | delete |
+| `pricing.snapshots.v1` | 1 | delete |
+| `ops.incidents.v1` | 1 | delete |
+
+### 11.3 Start Phase 2 services (order matters)
+
+Each command in its own terminal.
+
+```powershell
+dotnet build Hqqq.sln
+
+dotnet run --project src/services/hqqq-reference-data
+dotnet run --project src/services/hqqq-quote-engine
+dotnet run --project src/services/hqqq-ingress         # still stub
+dotnet run --project src/services/hqqq-persistence
+dotnet run --project src/services/hqqq-gateway
+```
+
+Recommended gateway mode for a C-phase end-to-end smoke:
+
+```powershell
+$env:Gateway__DataSource        = "stub"
+$env:Gateway__Sources__Quote    = "redis"
+$env:Gateway__Sources__Constituents = "redis"
+$env:Gateway__Sources__History  = "timescale"
+$env:Gateway__BasketId          = "HQQQ"
+$env:Redis__Configuration       = "localhost:6379"
+$env:Timescale__ConnectionString = "Host=localhost;Port=5432;Database=hqqq;Username=admin;Password=changeme"
+dotnet run --project src/services/hqqq-gateway
+```
+
+### 11.4 Gateway smoke checks
+
+Default gateway port is `5030`.
+
+```powershell
+$base = "http://localhost:5030"
+foreach ($ep in @("/healthz/live","/healthz/ready","/api/history?range=1D")) {
+  try {
+    $resp = Invoke-WebRequest -Uri "$base$ep" -Method GET
+    Write-Host "$ep -> HTTP $($resp.StatusCode)"
+  } catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    Write-Host "$ep -> HTTP $code"
+  }
+}
+```
+
+```bash
+base="http://localhost:5030"
+for ep in /healthz/live /healthz/ready "/api/history?range=1D"; do
+  status=$(curl -s -o /dev/null -w "%{http_code}" "$base$ep")
+  echo "$ep -> HTTP $status"
+done
+```
+
+Expected in C2 Timescale mode:
+
+| Endpoint | Expected | Notes |
+|---|---|---|
+| `/healthz/live` | `200` | Always, if process is up |
+| `/healthz/ready` | `200` | Degraded-but-ready is fine |
+| `/api/history?range=1D` (populated) | `200` | Real series data |
+| `/api/history?range=1D` (no data yet) | `200` | Render-safe empty payload: `pointCount=0`, `series=[]`, stable 21-bucket `distribution` |
+| `/api/history?range=XYZ` (bad range) | `400` | `{"error":"history_range_unsupported","range":"XYZ","supported":[...]}` |
+| `/api/history` (Timescale unreachable) | `503` | `{"error":"history_unavailable",...}` — never silently falls back |
+
+An empty history window is the expected state on a fresh local run before
+`hqqq-persistence` has written any rows.
+
+You can also run the consolidated helper:
+
+```powershell
+.\scripts\phase2-smoke.ps1
+```
+
+```bash
+./scripts/phase2-smoke.sh
+```
+
+### 11.5 Analytics report (on-demand one-shot)
+
+`hqqq-analytics` is not a long-running service. It reads persisted
+Timescale data for an explicit basket + UTC window, logs a summary, and
+exits. Run it only when you want a report.
+
+```powershell
+$env:Timescale__ConnectionString = "Host=localhost;Port=5432;Database=hqqq;Username=admin;Password=changeme"
+$env:Analytics__Mode      = "report"
+$env:Analytics__BasketId  = "HQQQ"
+$env:Analytics__StartUtc  = "2026-04-17T00:00:00Z"
+$env:Analytics__EndUtc    = "2026-04-18T00:00:00Z"
+$env:Analytics__EmitJsonPath = "artifacts/hqqq-report.json"   # optional
+$env:Analytics__IncludeRawTickAggregates = "false"            # optional
+
+dotnet run --project src/services/hqqq-analytics/hqqq-analytics.csproj
+```
+
+Exit codes: `0` success (including empty window), `1` job failure,
+`2` unsupported `Analytics:Mode`. An empty window is not a failure — the
+host logs a single `WARN`, emits `hasData=false` / zeroed numeric fields,
+and exits with `0`.
+
+### 11.6 Intentionally deferred
+
+- Gateway-native `/api/system/health` aggregation (still stub / legacy
+  forwarding).
+- SignalR Redis backplane on `/hubs/market` (Phase 2D2).
+- Multi-replica / HA infra (Phase 2D3).
+- Real Tiingo ingestion in `hqqq-ingress`; issuer feed + corp-action
+  pipeline in `hqqq-reference-data` (still live inside the legacy
+  monolith).
+- Replay / anomaly / backfill in `hqqq-analytics` (Phase 2C5+ / D).

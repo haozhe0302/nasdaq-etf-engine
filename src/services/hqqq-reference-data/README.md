@@ -5,7 +5,7 @@ basket event publishing.
 
 **Future home of current `Basket` + `CorporateActions` modules.**
 
-## Current status (Phase 2A2 — stub skeleton)
+## Current status (stub skeleton)
 
 The service compiles and runs with deterministic stub data.
 No real data-source integrations or Kafka wiring yet.

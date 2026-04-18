@@ -10,7 +10,8 @@ services over Kafka, Redis, or REST boundaries.
 - `Events/` — Kafka event record types
   - `RawTickV1` — normalized market tick (`market.raw_ticks.v1`)
   - `LatestSymbolQuoteV1` — compacted latest quote (`market.latest_by_symbol.v1`)
-  - `BasketActivatedV1` — basket version activation (`refdata.basket.active.v1`)
+  - `BasketActiveStateV1` — fully-materialized active basket (`refdata.basket.active.v1`)
+  - `BasketActivatedV1` — slim basket lifecycle signal (reserved for `refdata.basket.events.v1`)
   - `QuoteSnapshotV1` — iNAV snapshot (`pricing.snapshots.v1`)
   - `IncidentEventV1` — operational incident (`ops.incidents.v1`)
 - `Dtos/` — Shared REST / SignalR DTOs

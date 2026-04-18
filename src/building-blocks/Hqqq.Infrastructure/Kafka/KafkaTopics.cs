@@ -25,6 +25,12 @@ public static class KafkaTopics
     public const string BasketActive = "refdata.basket.active.v1";
 
     /// <summary>
+    /// Basket lifecycle events (created, activated, deactivated) from reference-data.
+    /// Key: basketId. Retention: time-based.
+    /// </summary>
+    public const string BasketEvents = "refdata.basket.events.v1";
+
+    /// <summary>
     /// iNAV snapshots produced by the quote-engine on every compute cycle.
     /// Key: basketId. Retention: time-based.
     /// </summary>

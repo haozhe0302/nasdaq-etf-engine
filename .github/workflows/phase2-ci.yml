@@ -1,0 +1,46 @@
+name: Phase 2 CI Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/building-blocks/**"
+      - "src/services/**"
+      - "tests/**"
+      - "Directory.Build.props"
+      - "Hqqq.sln"
+      - "global.json"
+      - ".github/workflows/phase2-ci.yml"
+  pull_request:
+    paths:
+      - "src/building-blocks/**"
+      - "src/services/**"
+      - "tests/**"
+      - "Directory.Build.props"
+      - "Hqqq.sln"
+      - "global.json"
+      - ".github/workflows/phase2-ci.yml"
+
+concurrency:
+  group: phase2-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Hqqq.sln
+
+      - name: Build
+        run: dotnet build Hqqq.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test Hqqq.sln --no-build --configuration Release --verbosity normal

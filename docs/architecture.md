@@ -2,16 +2,37 @@
 
 ## 1) System overview
 
-HQQQ currently runs as a full-stack MVP with two deployable units:
+HQQQ is currently running in a **transitional state** between the Phase 1
+modular monolith and the Phase 2 service split. Both code paths exist in the
+repo and both are compilable and runnable.
 
-- `hqqq-api` (ASP.NET Core 10): basket construction, market-data ingestion, iNAV
-  pricing, history aggregation, benchmark/report endpoints, and health/metrics
-- `hqqq-ui` (React + Vite): live market dashboard, constituents, history
-  analytics view, and system health view
+Two deployable "faces" coexist today:
 
-Current architecture intentionally favors speed of iteration and operational
-simplicity (single backend process, local state persistence where needed),
-while keeping module boundaries explicit for future service extraction.
+- **Phase 1 monolith** — still the reference system and the only path with
+  real Tiingo ingestion, basket refresh, corp-action adjustment, and
+  `/api/system/health` aggregation.
+  - `hqqq-api` (ASP.NET Core 10): basket construction, market-data
+    ingestion, iNAV pricing, history aggregation, benchmark endpoints, and
+    health/metrics.
+  - `hqqq-ui` (React + Vite): live market dashboard, constituents, history,
+    and system view.
+- **Phase 2 services** — real runtime today for the hot-path serving,
+  compute, persistence, and offline reporting responsibilities:
+  - `hqqq-reference-data` (web) — basket registry, in-memory seed today.
+  - `hqqq-ingress` (worker) — **stub**; Tiingo ingestion still lives in the
+    monolith.
+  - `hqqq-quote-engine` (worker) — real Kafka consumer + iNAV compute;
+    writes Redis snapshots and publishes `pricing.snapshots.v1`.
+  - `hqqq-persistence` (worker) — real Kafka → TimescaleDB writer for
+    `pricing.snapshots.v1` and `market.raw_ticks.v1`; bootstraps
+    hypertables, continuous aggregates, and retention policies.
+  - `hqqq-gateway` (web) — REST + SignalR serving edge; reads Redis for
+    quote/constituents and Timescale for history.
+  - `hqqq-analytics` (worker) — one-shot report over Timescale.
+
+The architecture intentionally favors explicit module / service boundaries
+so responsibilities can migrate out of the monolith in narrow, verifiable
+slices rather than in a single big-bang rewrite.
 
 ---
 
@@ -200,107 +221,120 @@ so endpoint schema changes are localized.
 
 ---
 
-## 4) Future architecture (in progress)
+## 4) Current transitional architecture (Phase 2 through C4)
 
-> **See Phase 2 repo restructure details here [../phase2/restructure-notes.md](phase2/restructure-notes.md)** 
+> **See Phase 2 repo restructure details here [phase2/restructure-notes.md](phase2/restructure-notes.md)** 
 
-### 4.1 Phase 2: event-driven split
+Phase 2 splits serving, compute, persistence, and offline analytics out of
+the monolith into narrow services connected by Kafka, Redis, and Timescale.
+The split is **not** all-or-nothing — each responsibility migrates when a
+cutover slice is proven stable.
 
-### Goal statement
+### 4.1 Responsibility split (today)
 
-To support replay, multiple independent consumers, traffic decoupling, and
-higher concurrency, the backend evolves from modular monolith internals toward
-an event-driven serving architecture:
+| Responsibility | Owner today | Notes |
+|---|---|---|
+| Tiingo WS / REST ingestion | `hqqq-api` (monolith) | `hqqq-ingress` is a stub host only |
+| Basket refresh + corp-action adjustment | `hqqq-api` (monolith) | `hqqq-reference-data` only serves an in-memory seed basket |
+| iNAV compute + Redis materialization | `hqqq-quote-engine` | Real Kafka consumers, writes `hqqq:snapshot:{basketId}` + `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1` |
+| `pricing.snapshots.v1` + `market.raw_ticks.v1` → Timescale | `hqqq-persistence` | Bootstraps hypertables, `quote_snapshots_1m`/`quote_snapshots_5m` continuous aggregates, and retention policies |
+| Latest-state serving (`/api/quote`, `/api/constituents`) | `hqqq-gateway` (Redis) | Per-endpoint `Gateway:Sources:Quote=redis` / `Gateway:Sources:Constituents=redis` |
+| History serving (`/api/history?range=`) | `hqqq-gateway` (Timescale) | `Gateway:Sources:History=timescale`; reads `quote_snapshots` directly |
+| System-health aggregation (`/api/system/health`) | `hqqq-api` (via gateway forwarding) | Gateway-native aggregation deferred |
+| Realtime SignalR fan-out (`/hubs/market`) | `hqqq-gateway` (single replica) | Redis backplane deferred to D2 |
+| Offline reporting over history | `hqqq-analytics` | One-shot `Analytics:Mode=report` job reads Timescale; replay/anomaly/backfill deferred |
 
-- ingress writes normalized ticks to Kafka
-- quote-engine consumes Kafka and computes iNAV
-- persistence-service independently consumes Kafka
-- latest snapshots are materialized in Redis
-- API/WebSocket gateway serves from Redis
-- Prometheus/Grafana tracks lag/stale/latency SLOs
-
-### Component diagram
+### 4.2 Data plane
 
 ```text
 Tiingo WebSocket
       |
       v
-[ingress-service]
-  - normalize provider payload
-  - attach recv_ts / provider_ts / symbol / seq
-  - publish to Kafka topic: market.raw_ticks
-      |
-      v
-==================== Kafka ====================
-topic: market.raw_ticks   key = symbol
-================================================
-      |                         |                         |
-      |                         |                         |
-      v                         v                         v
-[quote-engine]          [persistence-service]     [analytics/replay-worker]
-consumer group A        consumer group B          consumer group C
-- consume ticks         - persist raw/normalized  - basis stats
-- maintain in-memory    - write Postgres/TSDB     - anomaly checks
-  latest symbol state   - optional compact table  - backtests/replays
-- compute basket/iNAV
-- write latest outputs to Redis
-- publish snapshot-update event
-      |
-      v
-==================== Redis =====================
-keys:
-  hqqq:snapshot:latest
-  hqqq:constituents:latest
-  hqqq:metrics:latest
-channels:
-  hqqq:snapshot:updates
-================================================
-      |
-      v
-[api-gateway / websocket-gateway]
-- REST GET /api/quote reads Redis latest snapshot
-- client connect sends latest snapshot immediately
-- subscribe pub/sub or SignalR backplane
-- broadcast updates to 1000+ clients
+[hqqq-api (legacy ingestion)]  --publishes-->  market.raw_ticks.v1
+                                (today)            |
+                                                   v
+                                   +======== Kafka =========+
+                                   | market.raw_ticks.v1    |  key = symbol    (3 partitions)
+                                   | market.latest_by_symbol.v1 (3, compact)   |
+                                   | refdata.basket.active.v1 (1, compact)     |
+                                   | pricing.snapshots.v1    (1, produced by   |
+                                   |                          quote-engine)    |
+                                   +=========================+
+                                      |                 |
+                          consumer group A        consumer group B
+                                      |                 |
+                                      v                 v
+                           [hqqq-quote-engine]  [hqqq-persistence]
+                           - iNAV compute       - batched writes
+                           - Redis snapshots    - quote_snapshots
+                           - publish            - raw_ticks
+                             pricing.snapshots  - 1m / 5m CAGGs
+                                 |              - retention policies
+                                 v
+                           +===== Redis =====+
+                           | hqqq:snapshot:{basketId}   |
+                           | hqqq:constituents:{basketId}|
+                           | hqqq:basket:active:{basketId}|
+                           | hqqq:freshness:{basketId}  |
+                           +=================+
+                                 |
+                                 v
+                           [hqqq-gateway]
+                             |        |
+                             |        +--- /api/history ---> TimescaleDB (quote_snapshots)
+                             |
+                           REST /api/quote, /api/constituents (Redis)
+                           SignalR /hubs/market (in-process, no backplane yet)
+
+                           [hqqq-analytics]    (one-shot, Timescale only)
 ```
 
-### Why Kafka + Redis split
+### 4.3 Why Kafka + Redis + Timescale
 
-Kafka is the durable event log and fan-out backbone. Redis is the latest-state
-serving layer for low-latency read paths and gateway scale-out. Raw provider
-ticks should not bypass Kafka into Redis as the primary pipeline.
+- **Kafka** is the durable event log and fan-out backbone. Raw provider
+  ticks and derived pricing snapshots both land here before being
+  consumed by independent groups.
+- **Redis** is the latest-state serving layer for low-latency read paths
+  on the gateway. It is a cache: if it goes empty, the quote-engine
+  re-populates on the next compute cycle.
+- **TimescaleDB** is the history + analytics store. It is the only source
+  the gateway reads for `/api/history` in C2 mode, and the only source
+  `hqqq-analytics` reads in C4.
 
-### Target capability expansion
+### 4.4 What still lives in the monolith
 
-- 1000+ concurrent WebSocket clients
-- multiple downstream consumers (UI, persistence, alerting, analytics, replay)
-- replay/backfill/recalculation as first-class workflows
-- multiple ETF baskets (not just HQQQ)
-- pluggable multi-provider ingestion
-- rolling releases, autoscaling, and better failure isolation
+- Real Tiingo WebSocket / REST ingestion.
+- Basket refresh from external issuer feeds and corporate-action
+  adjustment.
+- `/api/system/health` aggregation (gateway currently forwards to
+  monolith in legacy mode).
+- Recorder / benchmark tooling (`Benchmark` module).
 
-### 4.2 Phase 3: Kubernetes operationalization
+These remain single-process today and are the next candidates for
+extraction.
 
-Scope and principles:
+### 4.5 Deferred to D-phase and beyond
 
-- Run stateless app tier on Kubernetes: gateway, ingress, worker deployments
-- Use `Deployment` + `Service` primitives with HPA-based scaling
-- Manage runtime config through `ConfigMap` and sensitive config through `Secret`
-- Keep stateful infra (Kafka/Redis/Postgres) independent or managed, based on
-  operational maturity and cost profile
-
-Kubernetes is used primarily for operability, elasticity, and availability of
-stateless services, not as a hot-path micro-optimization tool.
+- **D2**: Redis pub/sub SignalR backplane on `/hubs/market` so multiple
+  gateway replicas can serve the same hub.
+- **D3**: Multi-replica / HA infra (gateway scale-out, consumer-group
+  ownership).
+- **Later observability**: Gateway-native `/api/system/health`
+  aggregation.
+- **Phase 3**: Kubernetes app-tier operationalization — `Deployment` +
+  `Service` + HPA for stateless services, managed stateful infra
+  (Kafka/Redis/Postgres) kept separate.
 
 ---
 
 ## 5) Current-to-future evolution summary
 
-| Concern | MVP now | Future direction |
-|---|---|---|
-| Tick transport | Direct ingest in backend process | Kafka as primary durable event bus |
-| Serving state | In-process memory + local files | Redis latest-state serving layer |
-| History storage | Filesystem snapshots | Postgres/Timescale event/snapshot persistence |
-| Fan-out model | Single-process internal fan-out | Multi-consumer groups over Kafka |
-| Gateway scale | Single backend instance | Multi-instance API/WS gateway with backplane |
-| Deployment | Local/prototype style | Kubernetes app-tier with autoscaling |
+| Concern | Phase 1 monolith | Phase 2 now (through C4) | Still deferred |
+|---|---|---|---|
+| Tick transport | In-process ingestion | Monolith still ingests; `hqqq-quote-engine` consumes Kafka ticks produced by the monolith bridge | Real `hqqq-ingress` (Phase 2B remaining) |
+| Serving state | In-process memory | Redis (`hqqq:snapshot:*`, `hqqq:constituents:*`) | Multi-replica fan-out (D2/D3) |
+| History storage | Filesystem snapshots | TimescaleDB hypertables + 1m/5m continuous aggregates + retention policies | Rollup-first history reads (C5+) |
+| Gateway read path | Monolith endpoints | `hqqq-gateway` with layered per-endpoint source selection (`redis`/`timescale`/stub/legacy) | Gateway-native `/api/system/health` |
+| Fan-out model | Single-process internal fan-out | Multi-consumer groups over Kafka | SignalR Redis backplane (D2) |
+| Offline analytics | Ad-hoc / notebook | `hqqq-analytics` one-shot report (`Analytics:Mode=report`) | Replay / anomaly / backfill (C5+ / D) |
+| Deployment | Local/prototype style | Local compose for infra; services run as host processes | Kubernetes app-tier (Phase 3) |

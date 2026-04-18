@@ -1,17 +1,65 @@
+using Hqqq.Infrastructure.Hosting;
+using Hqqq.Observability.Health;
+using Hqqq.Observability.Logging;
+using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Endpoints;
 using Hqqq.Gateway.Hubs;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Configuration.AddLegacyFlatKeyFallback();
+
+builder.Services.AddHqqqRedis(builder.Configuration);
+builder.Services.AddHqqqRedisConnection();
+builder.Services.AddHqqqTimescale(builder.Configuration);
+builder.Services.AddHqqqObservability();
+
+builder.Services.AddGatewaySources(builder.Configuration, builder.Environment);
+
 builder.Services.AddSignalR();
+
+builder.Services.AddHealthChecks()
+    .AddCheck("self", () => HealthCheckResult.Healthy("Process is running"), tags: ["live"]);
 
 var app = builder.Build();
 
-app.MapGet("/healthz", () => Results.Ok("ok"));
+app.Services.LogConfigurationPosture(
+    "hqqq-gateway",
+    app.Logger,
+    "Redis", "Timescale", "Gateway");
 
-app.MapGet("/api/quote", () =>
-    Results.Json(new { status = "not_wired", message = "Gateway not yet connected to Redis" },
-        statusCode: 503));
+app.MapHealthChecks("/healthz/live", new()
+{
+    Predicate = check => check.Tags.Contains("live"),
+    ResponseWriter = async (ctx, report) =>
+    {
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(HealthPayloadBuilder.Build(report));
+    },
+});
 
+app.MapHealthChecks("/healthz/ready", new()
+{
+    ResponseWriter = async (ctx, report) =>
+    {
+        ctx.Response.ContentType = "application/json";
+        await ctx.Response.WriteAsync(HealthPayloadBuilder.Build(report));
+    },
+});
+
+app.MapGatewayEndpoints();
 app.MapHub<MarketHub>("/hubs/market");
 
+// Phase 2B5 — IQuoteSource and IConstituentsSource support Redis-backed
+// implementations selectable via Gateway:Sources:Quote / Gateway:Sources:Constituents.
+// Phase 2C2 — IHistorySource supports a Timescale-backed implementation
+// selectable via Gateway:Sources:History=timescale, reading quote_snapshots
+// directly. Stub/legacy remain available as fallbacks.
+// TODO: later observability step — swap ISystemHealthSource to gateway-native
+// health aggregation (system-health is intentionally still on stub/legacy).
+// TODO: Phase 2D2 — wire Redis pub/sub backplane for SignalR fan-out on /hubs/market
+
 app.Run();
+
+public partial class Program { }

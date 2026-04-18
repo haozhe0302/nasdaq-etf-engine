@@ -7,11 +7,23 @@ All topic names are defined as constants in
 
 | Topic | Key | Value type | Cleanup | Partitions | Producer | Consumer(s) |
 |-------|-----|-----------|---------|------------|----------|-------------|
-| `market.raw_ticks.v1` | symbol | `RawTickV1` | delete (time-based) | 1 (Phase 2), scale later | hqqq-ingress | hqqq-quote-engine |
-| `market.latest_by_symbol.v1` | symbol | `LatestSymbolQuoteV1` | compact | 1 | hqqq-ingress | hqqq-quote-engine (bootstrap) |
-| `refdata.basket.active.v1` | basketId | `BasketActivatedV1` | compact | 1 | hqqq-reference-data | hqqq-quote-engine, hqqq-ingress |
-| `pricing.snapshots.v1` | basketId | `QuoteSnapshotV1` | delete (time-based) | 1 | hqqq-quote-engine | hqqq-gateway, hqqq-persistence |
-| `ops.incidents.v1` | service | `IncidentEventV1` | delete (time-based) | 1 | any service | hqqq-analytics |
+| `market.raw_ticks.v1` | symbol | `RawTickV1` | delete (time-based) | 3 | hqqq-ingress _(stub today; legacy `hqqq-api` publishes in the interim)_ | hqqq-quote-engine, hqqq-persistence |
+| `market.latest_by_symbol.v1` | symbol | `LatestSymbolQuoteV1` | compact | 3 | hqqq-ingress _(stub today)_ | hqqq-quote-engine (bootstrap) |
+| `refdata.basket.active.v1` | basketId | `BasketActiveStateV1` | compact | 1 | hqqq-reference-data | hqqq-quote-engine, hqqq-ingress |
+| `refdata.basket.events.v1` | basketId | `BasketEventV1` | delete (time-based) | 1 | hqqq-reference-data | (reserved — no active consumer today) |
+| `pricing.snapshots.v1` | basketId | `QuoteSnapshotV1` | delete (time-based) | 1 | hqqq-quote-engine | hqqq-persistence |
+| `ops.incidents.v1` | service | `IncidentEventV1` | delete (time-based) | 1 | _(reserved — no active producer today)_ | _(reserved / deferred — planned for hqqq-analytics)_ |
+
+Notes:
+
+- `pricing.snapshots.v1`: `hqqq-gateway` is **not** a consumer. The gateway
+  serves `/api/history` directly from TimescaleDB (`quote_snapshots`) via
+  `Gateway:Sources:History=timescale`; `hqqq-persistence` is the only
+  runtime consumer today. Analytics reads the persisted Timescale rows
+  rather than re-subscribing to Kafka.
+- `ops.incidents.v1`: the topic is created by the bootstrap script so
+  consumers can attach without a redeploy, but no service publishes or
+  subscribes today.
 
 ## Naming conventions
 
@@ -32,6 +44,18 @@ All events are serialized as JSON using `HqqqJsonDefaults.Options` from `Hqqq.In
 
 Consumer group IDs follow the pattern `{ConsumerGroupPrefix}-{service}-{topic}`, e.g. `hqqq-quote-engine-market.raw_ticks.v1`. The prefix is configurable via `KafkaOptions.ConsumerGroupPrefix`.
 
-## Phase 2 partition strategy
+`hqqq-persistence` uses the dedicated groups `persistence-snapshots` (for
+`pricing.snapshots.v1`) and `persistence-raw-ticks` (for
+`market.raw_ticks.v1`) so the two pipelines commit offsets independently.
 
-All topics start with 1 partition for simplicity (single basket family, single ingress instance). Phase 3 scales partitions by symbol hash or basketId for multi-basket / multi-instance deployments.
+## Partition strategy (current)
+
+- `market.*` topics run at **3 partitions** already — the bootstrap
+  scripts (`scripts/bootstrap-kafka-topics.{ps1,sh}`) create them that way
+  so symbol-keyed load can scale horizontally on the ingestion and
+  quote-engine side without a topic rebuild.
+- `refdata.*`, `pricing.*`, and `ops.*` topics run at **1 partition**
+  today — these keys are coarse (basket id, service name) and per-partition
+  ordering matters more than throughput at this stage.
+- Replication factor is `1` in local dev; production multi-broker sizing
+  is a later-phase concern.

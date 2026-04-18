@@ -1,7 +1,9 @@
 # hqqq-gateway
 
-REST + SignalR serving gateway. Reads Redis for latest state and TimescaleDB
-for history. Pure serving layer with no business computation.
+REST + SignalR serving gateway. In B5, serves quote/constituents from Redis
+when configured; history and system-health remain on transitional
+stub/legacy paths until later phases. Pure serving layer with no business
+computation.
 
 **Future home of current API endpoints + MarketHub.**
 
@@ -10,7 +12,8 @@ for history. Pure serving layer with no business computation.
 - REST endpoints: `GET /api/quote`, `GET /api/constituents`,
   `GET /api/history?range=`, `GET /api/system/health`
 - WebSocket: `/hubs/market` (SignalR)
-- Data sources: Redis for latest snapshot/constituents, TimescaleDB for history
+- Data sources (B5): Redis for latest quote/constituents snapshots (optional);
+  history/system-health still served via stub or legacy forwarding
 - SignalR Redis backplane for multi-instance fan-out
 
 ## Configuration
@@ -50,6 +53,21 @@ The gateway never silently substitutes stub data when `redis` was requested.
 > `/api/history` and `/api/system/health` intentionally do **not** accept
 > `redis` in B5. History moves to Timescale in C3; system-health moves to
 > native gateway aggregation in a later observability step.
+
+### B-phase operating modes
+
+The gateway is designed to be run in one of three operating modes during the
+Phase 2B cutover. Each mode differs only in configuration.
+
+| Mode | Quote | Constituents | History | System health | Required infra | Intended use |
+|------|-------|--------------|---------|---------------|----------------|--------------|
+| **Stub mode** — `DataSource=stub` | stub | stub | stub | stub | none | UI smoke / offline dev; deterministic placeholder DTOs, no dependencies |
+| **Legacy proxy mode** — `DataSource=legacy` + `LegacyBaseUrl` | legacy | legacy | legacy | legacy (gateway-overlaid) | running `hqqq-api` | Regression parity with Phase 1 while Phase 2 services come online |
+| **Mixed B5 cutover mode** — `DataSource=legacy` (or `stub`) + `Sources:Quote=redis` + `Sources:Constituents=redis` | **redis** | **redis** | legacy or stub (follows `DataSource`) | legacy or stub (follows `DataSource`) | Redis + `hqqq-quote-engine` writing snapshots (plus `hqqq-api` if `DataSource=legacy`) | Cutover testing: live quote/constituents off the new pipeline while history/health stay on the transitional path |
+
+Per-endpoint `redis` on `Gateway:Sources:*` always wins over the global
+`Gateway:DataSource` for quote/constituents. History and system-health
+follow only the global switch until Phase 2C3 / later observability work.
 
 ### `Gateway:BasketId`
 

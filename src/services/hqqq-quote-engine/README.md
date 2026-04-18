@@ -8,7 +8,8 @@ file-based checkpoint so restarts reinstall the active basket before the
 first live message is handled, and materializes its outputs to the serving
 layer: Redis latest-state for the basket's quote + constituents snapshot,
 and `pricing.snapshots.v1` on Kafka for downstream persistence / analytics
-consumers. Gateway REST + SignalR fan-out remains deferred to B5.
+consumers. Gateway Redis readers for REST quote/constituents are now live in B5;
+SignalR live fan-out/backplane remains deferred to later D2 work.
 
 ## Internal pipeline
 
@@ -87,10 +88,9 @@ future analytics service without dragging engine state along.
 
 ### Deferred
 
-- **B5**: gateway REST + SignalR fan-out; gateway Redis readers against
-  the new `hqqq:snapshot:*` / `hqqq:constituents:*` keys; Timescale
-  persistence of `pricing.snapshots.v1` + history; corporate-action and
-  reference-anchor services.
+- **Post-B5**: gateway SignalR live fan-out/backplane (`/hubs/market`);
+  Timescale persistence of `pricing.snapshots.v1` + history; corporate-action
+  and reference-anchor services.
 
 ## Configuration
 

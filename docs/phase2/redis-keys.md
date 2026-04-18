@@ -14,9 +14,9 @@ All key patterns and builder methods are defined in
 
 ## Channels
 
-| Channel | Publisher | Subscriber(s) | Purpose |
-|---------|----------|---------------|---------|
-| `hqqq:channel:snapshot` | hqqq-quote-engine | hqqq-gateway | Notifies gateway that a new snapshot is available in Redis; gateway reads the hash and broadcasts via SignalR |
+| Channel | Publisher | Subscriber(s) | Purpose | Status |
+|---------|----------|---------------|---------|--------|
+| `hqqq:channel:snapshot` | (planned) hqqq-quote-engine | (planned) hqqq-gateway | Notify the gateway that a new snapshot is available in Redis so it can push over SignalR without polling | **Planned, not yet active** — no service publishes or subscribes today. The reserved key/channel name is still listed here so it can be wired in D2 without a rename. |
 
 ## Naming conventions
 
@@ -36,4 +36,15 @@ All hash values are JSON-serialized using `HqqqJsonDefaults.Options`. Field name
 
 ## SignalR backplane
 
-The gateway uses `AddSignalR().AddStackExchangeRedis()` for SignalR message distribution across gateway instances. This uses Redis pub/sub internally with its own key prefix (`SignalR:...`) and does not conflict with the `hqqq:` keyspace.
+> **Status: deferred to Phase 2D2 — not active today.**
+
+The gateway currently uses only `AddSignalR()` (see
+`src/services/hqqq-gateway/Program.cs`). `/hubs/market` is served in-process
+by a single gateway replica; there is **no** Redis pub/sub backplane yet and
+no `SignalR:*` keys are written.
+
+When multi-replica fan-out is introduced in Phase 2D2, the gateway will add
+`AddStackExchangeRedis(...)` on top of `AddSignalR()`, reusing the existing
+`Redis:Configuration`. SignalR's own key prefix (`SignalR:...`) does not
+conflict with the `hqqq:` keyspace documented above, so no key migration
+is required at that point.

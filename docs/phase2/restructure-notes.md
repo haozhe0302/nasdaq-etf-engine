@@ -1,10 +1,14 @@
 # Phase 2 — Repository Restructure Notes
 
-Status: Phase 2 repo layout restructure + 2A hardening complete. Phase 2B
-runtime work through B5 is in place (quote-engine real compute + Redis/Kafka
-materialization; gateway layered source selection with Redis-backed
-`/api/quote` and `/api/constituents`). History and system-health remain on the
-B1 transitional path (stub or legacy forwarding) and are not yet cut over.
+Status: Phase 2 repo layout restructure + 2A hardening + 2B through B5 +
+2C through C4 are in place. The quote-engine does real compute and
+Redis/Kafka materialization; the gateway has layered source selection with
+Redis-backed `/api/quote`/`/api/constituents` and a Timescale-backed
+`/api/history`; the persistence service consumes
+`pricing.snapshots.v1` and `market.raw_ticks.v1` into TimescaleDB with
+rollups + retention; `hqqq-analytics` runs a one-shot report over
+persisted Timescale data. Gateway-native `/api/system/health` aggregation,
+SignalR Redis backplane, and multi-replica HA remain deferred.
 
 ---
 
@@ -40,9 +44,9 @@ B1 transitional path (stub or legacy forwarding) and are not yet cut over.
 | `hqqq-reference-data` | Web | 5020 | Basket refresh, activation, corp-action adjustment | Partial — config binding + in-memory basket repository; issuer feeds / corp-action pipeline not yet implemented |
 | `hqqq-ingress` | Worker | — | Tiingo WS/REST normalization, Kafka publishing | Stub with Tiingo + Kafka options |
 | `hqqq-quote-engine` | Worker | — | Kafka tick consumption, iNAV compute, Redis write | **B4 live** — real Kafka consumers (`market.raw_ticks.v1`, `refdata.basket.active.v1`), iNAV compute, file checkpoint, Redis snapshot + constituents writers, `pricing.snapshots.v1` publish |
-| `hqqq-gateway` | Web | 5030 | REST + SignalR serving from Redis/Timescale | **B1 + B5 live** — compatibility shell routes all four REST endpoints + `/hubs/market`; layered source selection (global `Gateway:DataSource` + per-endpoint `Gateway:Sources:*`); `/api/quote` and `/api/constituents` serve from Redis when configured; `/api/history` and `/api/system/health` stay on stub or legacy forwarding |
-| `hqqq-persistence` | Worker | — | Kafka-to-TimescaleDB writer | Stub with Kafka + Timescale options |
-| `hqqq-analytics` | Worker | — | Replay, backfill, anomaly detection | Stub with Kafka + Timescale options |
+| `hqqq-gateway` | Web | 5030 | REST + SignalR serving from Redis/Timescale | **B1 + B5 + C2 live** — compatibility shell routes all four REST endpoints + `/hubs/market`; layered source selection (global `Gateway:DataSource` + per-endpoint `Gateway:Sources:*`); `/api/quote` and `/api/constituents` serve from Redis when configured; `/api/history` serves from Timescale when `Gateway:Sources:History=timescale`; `/api/system/health` still follows the global stub/legacy switch |
+| `hqqq-persistence` | Worker | — | Kafka-to-TimescaleDB writer | **C3 live** — consumes `pricing.snapshots.v1` + `market.raw_ticks.v1`; idempotent schema / rollup / retention bootstrap at startup; batched transactional writes with `ON CONFLICT DO NOTHING` |
+| `hqqq-analytics` | Worker | — | Replay, backfill, anomaly detection | **C4 one-shot report mode** — reads `quote_snapshots` (optionally `raw_ticks` aggregate) from Timescale for a requested basket + UTC window, computes a deterministic quality / tracking summary, optionally emits JSON, exits cleanly. Replay / backfill / anomaly remain deferred. |
 
 All services now:
 - Bind shared infrastructure options via `AddHqqqKafka`/`AddHqqqRedis`/`AddHqqqTimescale`
@@ -50,8 +54,9 @@ All services now:
 - Log configuration posture on startup
 - Include legacy config fallback via `LegacyConfigShim`
 - Web services expose `/healthz/live` and `/healthz/ready` with JSON payloads
-- Worker services log dependency configuration at startup and run idle loops
-- Contain explicit TODO markers for Phase 2B/C wiring points
+- Worker services log dependency configuration at startup and run real
+  Kafka consumers / writers / report jobs where implemented (quote-engine,
+  persistence, analytics) or idle loops where still stubbed (ingress)
 
 ### Test project skeletons (`tests/`)
 
@@ -97,14 +102,17 @@ metadata, and service startup where applicable.
 - `src/hqqq-api.tests/` — Phase 1 test project, fully preserved and compilable.
   Marked with legacy comment in `hqqq-api.tests.csproj`.
 
-The legacy monolith continues to serve as the running system until Phase 2B
-completes the gateway cutover.
+The legacy monolith continues to serve as the running reference system
+while Phase 2 services take over responsibilities in narrow, verifiable
+slices. The legacy API is still the only source of real Tiingo ingestion,
+basket refresh, corporate-action adjustment, and `/api/system/health`
+aggregation today.
 
-## Current Phase 2B state (as of B5)
+## Current Phase 2 state (through C4)
 
 Live in the new services:
 
-- `hqqq-quote-engine`
+- `hqqq-quote-engine` (B4)
   - Consumes `market.raw_ticks.v1` and the compacted `refdata.basket.active.v1`
     (`BasketActiveStateV1`) from Kafka; pure pricing math in `Hqqq.Domain`.
   - File-based engine checkpoint (basket identity + pricing basis + scale
@@ -118,56 +126,88 @@ Live in the new services:
   - Sink failures are isolated per-sink; one failure never blocks the others
     or crashes the worker.
 
-- `hqqq-gateway`
+- `hqqq-gateway` (B5 + C2)
   - REST routes `GET /api/quote`, `GET /api/constituents`,
     `GET /api/history?range=`, `GET /api/system/health`, plus
     `/hubs/market` (SignalR) are all mapped.
   - Layered source selection: a global `Gateway:DataSource` (`stub` or
     `legacy`, empty = auto-detect in Development) acts as the fallback,
-    and individual endpoints can be overridden via `Gateway:Sources:Quote`
-    and `Gateway:Sources:Constituents`.
-  - B5 Redis-backed serving for `/api/quote` and `/api/constituents`:
-    reads the snapshots written by `hqqq-quote-engine`. Explicit error
-    surface — missing key → HTTP 503 with
-    `{"error":"quote_unavailable"|"constituents_unavailable", ...}`;
+    and individual endpoints can be overridden via `Gateway:Sources:Quote`,
+    `Gateway:Sources:Constituents`, and `Gateway:Sources:History`.
+  - **B5 Redis-backed** serving for `/api/quote` and `/api/constituents`:
+    reads the snapshots written by `hqqq-quote-engine`. Missing key →
+    HTTP 503 with `{"error":"quote_unavailable"|"constituents_unavailable", ...}`;
     malformed payload → HTTP 502 with
     `{"error":"quote_malformed"|"constituents_malformed"}`; no silent
     fallback to stub data.
-  - `/api/history` and `/api/system/health` **intentionally** do not accept
-    `redis` in B5 — they follow only the global `Gateway:DataSource` for
-    now.
+  - **C2 Timescale-backed** `/api/history`: reads `quote_snapshots` directly
+    and composes the existing frontend response contract
+    (`range, startDate, endDate, pointCount, totalPoints, isPartial,
+    series[time,nav,marketPrice], trackingError, distribution, diagnostics`).
+    Unsupported `range` → HTTP 400; empty window → HTTP 200 with a
+    render-safe empty payload; Timescale query failure → HTTP 503 with
+    `{"error":"history_unavailable",...}`.
+  - `/api/system/health` still follows only the global `Gateway:DataSource`
+    (stub or legacy forwarding).
   - See [../../src/services/hqqq-gateway/README.md](../../src/services/hqqq-gateway/README.md)
-    for the full B-phase operating-modes matrix.
+    for the full B/C operating-modes matrix.
+
+- `hqqq-persistence` (C3)
+  - Consumes `pricing.snapshots.v1` (group `persistence-snapshots`) into
+    the `quote_snapshots` hypertable.
+  - Consumes `market.raw_ticks.v1` (group `persistence-raw-ticks`) into
+    the `raw_ticks` hypertable.
+  - Idempotent DDL at startup for both hypertables, `quote_snapshots_1m`
+    and `quote_snapshots_5m` continuous aggregates, and
+    `add_retention_policy` on all four. Toggle via
+    `Persistence:SchemaBootstrapOnStart`.
+  - Batched, transactional inserts with replay-safe
+    `ON CONFLICT ... DO NOTHING` on `(basket_id, ts)` for snapshots and
+    `(symbol, provider_timestamp, sequence)` for raw ticks.
+  - Raw-tick and snapshot pipelines are fully isolated; one write failure
+    never blocks the other.
+
+- `hqqq-analytics` (C4)
+  - One-shot `Analytics:Mode=report` job: reads `quote_snapshots` (and,
+    when opted in, a cheap `raw_ticks` count) for a requested basket +
+    UTC window from Timescale, computes a deterministic quality /
+    tracking summary, optionally writes a JSON artifact, then stops the
+    host cleanly.
+  - Does not run on the hot path: no Kafka consumption, no Redis, no
+    HTTP calls into other services, no schema ownership.
+  - Empty-window runs produce `hasData=false` with zeroed numeric fields
+    and exit successfully (exit code 0); replay / anomaly / backfill
+    remain deferred seams only.
 
 Still stubbed / transitional in the new services:
 
-- `hqqq-ingress` — no real Tiingo websocket/REST ingestion yet.
-- `hqqq-persistence` — no Kafka-to-Timescale writer yet; `pricing.snapshots.v1`
-  is not yet consumed into history storage.
-- `hqqq-analytics` — no replay/backfill/anomaly jobs yet.
+- `hqqq-ingress` — no real Tiingo websocket/REST ingestion yet; Tiingo
+  ingestion still happens inside the legacy monolith.
 - `hqqq-reference-data` — in-memory basket repository only; real issuer
-  feeds and corporate-action pipeline not wired.
-- `hqqq-gateway` — `/api/history` and `/api/system/health` still return
-  stub DTOs or forward to the legacy monolith depending on
-  `Gateway:DataSource`; there is no native gateway aggregation or
-  Timescale-backed reader yet.
+  feeds and corporate-action pipeline still live in the legacy monolith.
+- `hqqq-gateway` — `/api/system/health` still returns stub DTOs or
+  forwards to the legacy monolith depending on `Gateway:DataSource`;
+  there is no native gateway aggregation yet.
+- `/hubs/market` uses plain `AddSignalR()` only; there is no Redis
+  backplane yet (single-replica serving only).
 
-Services start, bind configuration, report their posture, and idle when
-their inputs are not wired. Dependencies report as "degraded" rather than
+Services start, bind configuration, report their posture, and consume
+or idle appropriately. Dependencies report as "degraded" rather than
 crashing when unavailable.
 
 ## Intentionally deferred
 
 | Deferred item | Target |
 |---|---|
-| Timescale-backed `/api/history` in the gateway | Phase 2C3 (history cutover) |
 | Gateway-native `/api/system/health` aggregation (instead of legacy forwarding) | Later observability step |
-| Real Tiingo ingestion in `hqqq-ingress` | Phase 2B (ingress cutover) |
-| Kafka-to-Timescale writer in `hqqq-persistence` | Phase 2C |
-| Replay / backfill / anomaly in `hqqq-analytics` | Phase 2C |
+| Real Tiingo ingestion in `hqqq-ingress` | Phase 2B (ingress cutover, remaining) |
 | Issuer-feed + corporate-action pipeline in `hqqq-reference-data` | Phase 2B/C reference-data cutover |
+| Replay / backfill / anomaly detection in `hqqq-analytics` | Phase 2C5+ / 2D |
+| `constituent_snapshots` / `basket_versions` persistence tables | Phase 2C5+ |
+| Re-pointing the gateway `/api/history` read-side at the 1m/5m rollups | Phase 2C5+ |
 | Redis pub/sub SignalR backplane on `/hubs/market` (multi-replica fan-out) | Phase 2D2 |
 | Multi-replica / HA infra (gateway scale-out, consumer-group ownership) | Phase 2D3 |
+| Kubernetes app-tier deployments | Phase 3 |
 
 ## Module-to-service mapping (planned)
 
@@ -186,14 +226,14 @@ crashing when unavailable.
 
 - **Phase 2B** (remaining): Wire real Tiingo ingestion in `hqqq-ingress`;
   complete `hqqq-reference-data` issuer feeds + corporate-action adjustment.
-- **Phase 2C**: Implement Kafka-to-Timescale persistence pipeline
-  (`pricing.snapshots.v1` → Timescale); swap gateway `IHistorySource` to a
-  Timescale-backed reader (C3 history cutover).
+- **Phase 2C5+**: Add replay, backfill, and anomaly detection in
+  `hqqq-analytics`; introduce `constituent_snapshots` / `basket_versions`;
+  optionally re-point gateway `/api/history` at the 1m/5m continuous
+  aggregates for long-range queries.
 - **Later observability**: Replace gateway `/api/system/health` legacy
   forwarding with native aggregation over shared observability health
   payloads.
-- **Phase 2C**: Add replay, backfill, and anomaly detection in
-  `hqqq-analytics`.
 - **Phase 2D2**: Redis pub/sub SignalR backplane for `/hubs/market`
   multi-instance fan-out.
 - **Phase 2D3**: Multi-replica / HA deployment topology.
+- **Phase 3**: Kubernetes app-tier operationalization.

@@ -56,7 +56,9 @@ Topics are **not** auto-created. Run the bootstrap script after Kafka is healthy
 ```powershell
 # PowerShell
 .\scripts\bootstrap-kafka-topics.ps1
+```
 
+```bash
 # Bash
 ./scripts/bootstrap-kafka-topics.sh
 ```
@@ -101,69 +103,162 @@ Or open in browser:
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (admin / changeme)
 
-## Running Phase 2 services
+## 5. Build and service startup order
 
-Build the entire solution first:
+Build the entire solution once:
 
 ```powershell
 dotnet build Hqqq.sln
 ```
 
-Run individual services:
+Run the Phase 2 services in the order below. Each step is an independent
+terminal / process — no single orchestrator starts them all today.
 
 ```powershell
-# Web services (with ports from launchSettings or override)
+# 1. Reference data (basket registry; in-memory seed today)
 dotnet run --project src/services/hqqq-reference-data
+
+# 2. Quote engine (Kafka consumer + iNAV compute + Redis + pricing.snapshots.v1)
+dotnet run --project src/services/hqqq-quote-engine
+
+# 3. Ingress (still stub; run only when exercising the host)
+dotnet run --project src/services/hqqq-ingress
+
+# 4. Persistence (pricing.snapshots.v1 + market.raw_ticks.v1 → TimescaleDB)
+dotnet run --project src/services/hqqq-persistence
+
+# 5. Gateway (REST + SignalR; source selection via Gateway:Sources:*)
 dotnet run --project src/services/hqqq-gateway
 
-# Worker services
-dotnet run --project src/services/hqqq-ingress
-dotnet run --project src/services/hqqq-quote-engine
-dotnet run --project src/services/hqqq-persistence
+# 6. Analytics — one-shot report job, run on demand, not continuously
+#    See Section 7 for the required Analytics__* env vars.
 dotnet run --project src/services/hqqq-analytics
 ```
 
-Each service will:
-1. Log its configuration posture (which config sections are set vs defaults)
-2. Report dependency health as degraded if infra is unreachable
-3. Enter an idle loop (no business logic is wired yet)
+Startup order rationale:
 
-### Running the legacy API
+1. `hqqq-reference-data` publishes/holds the active basket that downstream
+   services key off.
+2. `hqqq-quote-engine` starts before the gateway so that, in B5 Redis mode,
+   the first `/api/quote` / `/api/constituents` request can find a snapshot
+   in Redis. It also produces `pricing.snapshots.v1`.
+3. `hqqq-ingress` is a placeholder — live Tiingo ingestion today is still
+   done by the legacy `hqqq-api` monolith.
+4. `hqqq-persistence` consumes both Kafka topics and is the only writer of
+   Timescale history that the gateway's C2 mode reads.
+5. `hqqq-gateway` is the serving edge and is last so its probes come up
+   against a populated Redis / Timescale state.
+6. `hqqq-analytics` is a one-shot job; run it only when you actually want
+   a report.
 
-The Phase 1 monolith still works independently:
+## 6. Operating modes for the gateway
+
+The gateway supports three realistic local-dev modes, all configured via
+`Gateway:DataSource` plus per-endpoint `Gateway:Sources:*` overrides.
+See [../../src/services/hqqq-gateway/README.md](../../src/services/hqqq-gateway/README.md)
+for the full matrix.
+
+### Legacy proxy mode (parity with Phase 1)
+
+Requires `hqqq-api` running.
+
+```powershell
+$env:Gateway__DataSource = "legacy"
+$env:Gateway__LegacyBaseUrl = "http://localhost:5000"
+dotnet run --project src/services/hqqq-gateway
+```
+
+### Mixed B5 + C2 cutover mode (recommended)
+
+Serve live quote/constituents from Redis and history from Timescale. Requires
+Redis + `hqqq-quote-engine` running (for Redis snapshots) and TimescaleDB +
+`hqqq-persistence` running (for history rows). System-health still stays on
+stub or legacy forwarding.
+
+```powershell
+$env:Gateway__DataSource = "legacy"                # or "stub"
+$env:Gateway__LegacyBaseUrl = "http://localhost:5000"  # only if DataSource=legacy
+$env:Gateway__Sources__Quote = "redis"
+$env:Gateway__Sources__Constituents = "redis"
+$env:Gateway__Sources__History = "timescale"
+$env:Gateway__BasketId = "HQQQ"
+$env:Redis__Configuration = "localhost:6379"
+$env:Timescale__ConnectionString = "Host=localhost;Port=5432;Database=hqqq;Username=admin;Password=changeme"
+dotnet run --project src/services/hqqq-gateway
+```
+
+### Stub mode (UI smoke / offline)
+
+```powershell
+$env:Gateway__DataSource = "stub"
+dotnet run --project src/services/hqqq-gateway
+```
+
+## 7. Running an analytics report
+
+`hqqq-analytics` is a **one-shot job**, not a long-running service. It
+reads persisted Timescale data, prints a summary, optionally writes a JSON
+artifact, and exits. The required env vars are `StartUtc` and `EndUtc`.
+
+```powershell
+$env:Timescale__ConnectionString = "Host=localhost;Port=5432;Database=hqqq;Username=admin;Password=changeme"
+$env:Analytics__Mode      = "report"
+$env:Analytics__BasketId  = "HQQQ"
+$env:Analytics__StartUtc  = "2026-04-17T00:00:00Z"
+$env:Analytics__EndUtc    = "2026-04-18T00:00:00Z"
+$env:Analytics__EmitJsonPath = "artifacts/hqqq-report.json"   # optional
+$env:Analytics__IncludeRawTickAggregates = "false"            # optional
+
+dotnet run --project src/services/hqqq-analytics/hqqq-analytics.csproj
+```
+
+Exit codes: `0` success (including empty-window), `1` job failure, `2`
+unsupported `Analytics:Mode`. An empty window is **not** a failure — the
+host logs a single `WARN`, emits `hasData=false`, and exits cleanly.
+
+## 8. Running the legacy API
+
+The Phase 1 monolith still works independently and is currently the only
+source of real Tiingo ingestion, basket refresh, and `/api/system/health`
+aggregation:
 
 ```powershell
 dotnet run --project src/hqqq-api
 ```
 
-## Running tests
+## 9. Running tests
 
 ```powershell
 dotnet test Hqqq.sln
 ```
 
-## What works now vs. what is stubbed
+## 10. What is current vs. what is still deferred
 
-### Working now (Phase 2A)
-- Infrastructure containers start and are healthy
-- Kafka topics are bootstrapped with correct partition/compaction settings
-- All services compile, bind configuration, and start without crashing
-- Health endpoints return structured JSON (`/healthz/live`, `/healthz/ready`)
-- Shared libraries provide real connection factories and config builders
-- Configuration uses hierarchical .NET config (`Tiingo__ApiKey`, `Kafka__BootstrapServers`, etc.)
-- Legacy flat env vars are auto-mapped with deprecation warnings
+### Current (Phase 2 through C4)
+- Infrastructure containers start healthy; topics bootstrapped at 3/3/1/1/1/1
+  partitions.
+- `hqqq-reference-data` exposes an in-memory HQQQ basket via its REST surface.
+- `hqqq-quote-engine` consumes `market.raw_ticks.v1` + `refdata.basket.active.v1`,
+  computes iNAV, writes Redis snapshot + constituents, publishes
+  `pricing.snapshots.v1`.
+- `hqqq-persistence` consumes `pricing.snapshots.v1` + `market.raw_ticks.v1`
+  into `quote_snapshots` and `raw_ticks`; bootstraps hypertables, rollups,
+  and retention policies at startup.
+- `hqqq-gateway` serves `/api/quote` + `/api/constituents` from Redis and
+  `/api/history?range=` from Timescale when configured.
+- `hqqq-analytics` runs a deterministic one-shot report over Timescale.
+- Health endpoints (`/healthz/live`, `/healthz/ready`) return structured JSON
+  on every web service.
 
-### Intentionally stubbed (Phase 2B/C)
-- No real Tiingo websocket or REST data ingestion
-- No Kafka message publishing or consumption
-- No iNAV quote calculation
-- No Redis snapshot writes or reads
-- No TimescaleDB data persistence
-- No replay, backfill, or anomaly detection jobs
-- Gateway `/api/quote` returns 503 "not yet wired"
-- Workers idle in 5-second delay loops
-
-These stubs will be replaced incrementally in Phase 2B and 2C.
+### Still deferred
+- Real Tiingo ingestion in `hqqq-ingress` (still served by the legacy
+  monolith).
+- Real issuer-feed + corporate-action pipeline in `hqqq-reference-data`.
+- Gateway-native `/api/system/health` aggregation (still stub / legacy
+  forwarding).
+- SignalR Redis backplane on `/hubs/market` — Phase 2D2.
+- Multi-replica / HA infra — Phase 2D3.
+- Replay / backfill / anomaly detection in `hqqq-analytics` — Phase 2C5+.
 
 ## Troubleshooting
 

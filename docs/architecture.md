@@ -8,19 +8,16 @@ repo and both are compilable and runnable.
 
 Two deployable "faces" coexist today:
 
-- **Phase 1 monolith** — still the reference system and the only path with
-  real Tiingo ingestion, basket refresh, corp-action adjustment, and
-  `/api/system/health` aggregation.
-  - `hqqq-api` (ASP.NET Core 10): basket construction, market-data
-    ingestion, iNAV pricing, history aggregation, benchmark endpoints, and
-    health/metrics.
-  - `hqqq-ui` (React + Vite): live market dashboard, constituents, history,
-    and system view.
-- **Phase 2 services** — real runtime today for the hot-path serving,
-  compute, persistence, and offline reporting responsibilities:
-  - `hqqq-reference-data` (web) — basket registry, in-memory seed today.
-  - `hqqq-ingress` (worker) — **stub**; Tiingo ingestion still lives in the
-    monolith.
+- **Phase 2 services (current app tier)** — real runtime today for the
+  hot-path serving, compute, persistence, and offline reporting
+  responsibilities. Runnable locally via Docker Compose and deployable
+  to Azure Container Apps.
+  - `hqqq-gateway` (web) — REST + SignalR serving edge; reads Redis for
+    quote/constituents and Timescale for history; native
+    `/api/system/health` aggregator (D1); subscribes to
+    `hqqq:channel:quote-update` and broadcasts each `QuoteUpdate`
+    locally to its connected SignalR clients (D2 / D5
+    multi-replica-safe).
   - `hqqq-quote-engine` (worker) — real Kafka consumer + iNAV compute;
     writes Redis snapshots, publishes `pricing.snapshots.v1`, and
     publishes live `QuoteUpdate` envelopes to the Redis pub/sub channel
@@ -28,13 +25,31 @@ Two deployable "faces" coexist today:
   - `hqqq-persistence` (worker) — real Kafka → TimescaleDB writer for
     `pricing.snapshots.v1` and `market.raw_ticks.v1`; bootstraps
     hypertables, continuous aggregates, and retention policies.
-  - `hqqq-gateway` (web) — REST + SignalR serving edge; reads Redis for
-    quote/constituents and Timescale for history; native
-    `/api/system/health` aggregator (D1); subscribes to
-    `hqqq:channel:quote-update` and broadcasts each `QuoteUpdate`
-    locally to its connected SignalR clients (D2 / D5
-    multi-replica-safe).
   - `hqqq-analytics` (worker) — one-shot report over Timescale.
+  - `hqqq-reference-data` (web) — basket registry, in-memory seed today.
+  - `hqqq-ingress` (worker) — **stub**; Tiingo ingestion still lives in
+    the monolith.
+- **Phase 1 monolith (legacy / reference, still present)** — preserved
+  and still compilable; still the only path with real Tiingo ingestion,
+  basket refresh from external issuer feeds, and corporate-action
+  adjustment. It also currently backs the public live demo links in
+  the root `README.md`.
+  - `hqqq-api` (ASP.NET Core 10): basket construction, market-data
+    ingestion, iNAV pricing, history aggregation, benchmark endpoints, and
+    health/metrics.
+  - `hqqq-ui` (React + Vite): live market dashboard, constituents, history,
+    and system view. The same UI is consumed by both phases.
+
+Role split inside the Phase 2 app tier:
+
+- **Gateway** = serving edge (REST + SignalR + native health aggregator).
+- **Quote-engine** = live compute (Kafka consume → iNAV → Redis writes
+  + live pub/sub publish).
+- **Redis** = latest-state serving cache *and* the live `/hubs/market`
+  fan-out trigger channel.
+- **Persistence + Timescale** = historical write side (hypertables +
+  1m/5m continuous aggregates + retention).
+- **Analytics** = one-shot / offline report path over Timescale.
 
 The architecture intentionally favors explicit module / service boundaries
 so responsibilities can migrate out of the monolith in narrow, verifiable
@@ -42,7 +57,13 @@ slices rather than in a single big-bang rewrite.
 
 ---
 
-## 2) Current backend architecture (`src/hqqq-api`)
+## 2) Phase 1 monolith backend (legacy / reference, still present)
+
+`src/hqqq-api` is preserved unchanged and still runnable. It is **not**
+the current Phase 2 app tier; it is the legacy reference path that
+still owns real Tiingo ingestion, basket refresh, corporate-action
+adjustment, and the legacy `/api/system/health` probe path. The public
+live demo linked from the root README is served by this code.
 
 ### 2.1 Module map
 
@@ -188,7 +209,11 @@ checks remain consistent.
 
 ---
 
-## 3) Current frontend architecture (`src/hqqq-ui`)
+## 3) Frontend (`src/hqqq-ui`, consumed by both phases)
+
+The React + Vite frontend is shared. The same `hqqq-ui` is the demo
+client today and is the intended client of the Phase 2 gateway as
+well; routes and adapters do not change between phases.
 
 ### 3.1 Structure
 
@@ -227,7 +252,7 @@ so endpoint schema changes are localized.
 
 ---
 
-## 4) Current transitional architecture (Phase 2 through D5)
+## 4) Phase 2 service-based runtime (current app tier)
 
 > **See Phase 2 repo restructure details here [phase2/restructure-notes.md](phase2/restructure-notes.md)**
 >
@@ -237,10 +262,20 @@ so endpoint schema changes are localized.
 > [phase2/rollback.md](phase2/rollback.md),
 > [phase2/config-matrix.md](phase2/config-matrix.md).
 
-Phase 2 splits serving, compute, persistence, and offline analytics out of
-the monolith into narrow services connected by Kafka, Redis, and Timescale.
-The split is **not** all-or-nothing — each responsibility migrates when a
-cutover slice is proven stable.
+Phase 2 is the **current app tier**: hot-path serving, compute,
+persistence, and offline analytics each live in their own service,
+connected by Kafka, Redis, and TimescaleDB. The split is **not**
+all-or-nothing — Tiingo ingestion, basket refresh, and
+corporate-action adjustment still run inside the Phase 1 monolith
+described in §2 and migrate out in narrow, verifiable slices.
+
+Role split (recap from §1):
+
+- **Gateway** = serving edge.
+- **Quote-engine** = live compute and live `QuoteUpdate` publisher.
+- **Redis** = latest-state cache + live `/hubs/market` fan-out trigger.
+- **Persistence + Timescale** = historical write side.
+- **Analytics** = one-shot / offline report path.
 
 ### 4.1 Responsibility split (today)
 

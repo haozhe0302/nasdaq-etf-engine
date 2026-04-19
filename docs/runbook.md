@@ -1,23 +1,28 @@
 # HQQQ Runbook (Local Run + Smoke Test)
 
 This document is the single place for setup/startup commands, validation
-commands, and shutdown procedures.
+commands, and shutdown procedures across both phases.
 
-Sections 1–10 cover the Phase 1 monolith (`hqqq-api` + `hqqq-ui`), which is
-still the running reference system. Section 11 covers the Phase 2 services
-running as host processes (`dotnet run`), and assumes Phase 2 infra + Kafka
-topics are already up. Sections 12–17 cover the rest of the Phase 2
-operator surface: containerized app tier (D3), multi-gateway replica smoke
-(D5), Azure deployment (D4), health URL matrix, expected degraded
-behaviors, and common failure modes.
+## 0) Read this first
 
-Companion docs:
+The repo is in a transitional state. Pick the path that matches what
+you want to do and jump directly to the relevant section.
 
-- [phase2/local-dev.md](phase2/local-dev.md) — richer Phase 2 operator walkthrough
-- [phase2/azure-deploy.md](phase2/azure-deploy.md) — Azure deploy walkthrough
-- [phase2/release-checklist.md](phase2/release-checklist.md) — release gate
-- [phase2/rollback.md](phase2/rollback.md) — rollback playbook
-- [phase2/config-matrix.md](phase2/config-matrix.md) — per-service config surface
+| I want to … | Go here |
+|-------------|---------|
+| Run the **Phase 1 reference** monolith locally (still backs the public demo) | §§1–10 of this file |
+| Run the **Phase 2 stack locally on host** (`dotnet run` per service) | §11 of this file, plus [`phase2/local-dev.md`](phase2/local-dev.md) for the deeper walkthrough |
+| Run the **containerized Phase 2 app tier** (D3) | §12 of this file, `scripts/phase2-up.{ps1,sh}` |
+| Run the **multi-gateway replica-smoke** (D5) | §13 of this file, `scripts/replica-smoke-up.{ps1,sh}` |
+| Deploy the **Phase 2 app tier to Azure Container Apps** (D4) | §14 of this file, plus [`phase2/azure-deploy.md`](phase2/azure-deploy.md) |
+| Walk a release through pre/post-deploy gates | [`phase2/release-checklist.md`](phase2/release-checklist.md) |
+| Roll back a Phase 2 release | [`phase2/rollback.md`](phase2/rollback.md) |
+| Look up per-service configuration surface | [`phase2/config-matrix.md`](phase2/config-matrix.md) |
+| Cross-replica health check URLs | §15 of this file |
+| Expected degraded behaviors / failure-mode triage | §§16–17 of this file |
+
+Phase 1 sections (§§1–10) and Phase 2 sections (§§11–17) are
+self-contained; you do not need to run both.
 
 ---
 

@@ -1,5 +1,12 @@
 # Phase 2 — Azure deploy walkthrough
 
+This is the **Phase 2 Azure Container Apps surface** listed in the
+root [`README.md`](../../README.md) "Current deployment surfaces"
+section. It is distinct from the Phase 1 reference demo (the public
+live demo links in the README still point at the legacy
+`hqqq-api` Web App on Azure App Service, not at this Container Apps
+deployment).
+
 Operator-facing companion to
 [`infra/azure/README.md`](../../infra/azure/README.md). The README
 explains *what* gets provisioned and *how to bootstrap* it; this

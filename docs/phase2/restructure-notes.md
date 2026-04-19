@@ -1,25 +1,43 @@
 # Phase 2 — Repository Restructure Notes
 
-Status: Phase 2 repo layout restructure + 2A hardening + 2B through B5 +
-2C through C4 + 2D through D6 are in place. The quote-engine does real
-compute and Redis/Kafka materialization; the gateway has layered source
-selection with Redis-backed `/api/quote`/`/api/constituents`, a
-Timescale-backed `/api/history`, and a **native** aggregating
-`/api/system/health` (D1); the persistence service consumes
-`pricing.snapshots.v1` and `market.raw_ticks.v1` into TimescaleDB with
-rollups + retention; `hqqq-analytics` runs a one-shot report over
-persisted Timescale data. Live `QuoteUpdate` fan-out is real (D2:
-`hqqq:channel:quote-update` Redis pub/sub, multi-replica-safe by
-construction); the Phase 2 app tier is containerized (D3:
-`docker-compose.phase2.yml`); Azure Container Apps deployment assets
-exist under `infra/azure/` with GitHub OIDC workflows (D4); a
-multi-gateway replica-smoke topology + harness is in place (D5:
-`docker-compose.replica-smoke.yml`,
-`tests/Hqqq.Gateway.ReplicaSmoke/`); and operator docs are closed out
-(D6: refreshed architecture / runbook / Phase 2 docs +
-[release-checklist.md](release-checklist.md), [rollback.md](rollback.md),
-[config-matrix.md](config-matrix.md)). Phase 3 Kubernetes app-tier
-operationalization remains deferred.
+## Current status (D6.5)
+
+- **D1–D5 are real in-repo runtime/operator slices**, not plans.
+  Gateway-native `/api/system/health` aggregator (D1), live
+  `QuoteUpdate` fan-out via Redis pub/sub `hqqq:channel:quote-update`
+  (D2, multi-replica-safe by construction), containerized Phase 2
+  app tier (D3, `docker-compose.phase2.yml`), Azure Container Apps
+  deploy assets under `infra/azure/` with GitHub OIDC workflows (D4),
+  and the multi-gateway replica-smoke topology + harness (D5,
+  `docker-compose.replica-smoke.yml`,
+  `tests/Hqqq.Gateway.ReplicaSmoke/`) are all shipped.
+- **D6 closed out the operator docs** (refreshed architecture /
+  runbook / Phase 2 docs + new
+  [release-checklist.md](release-checklist.md),
+  [rollback.md](rollback.md), [config-matrix.md](config-matrix.md)).
+- **D6.5 closed out the public-facing repo narrative** so the
+  outward-facing entrypoints match the actual transitional state:
+  the root [`README.md`](../../README.md) now leads with both phases
+  and an operator entrypoint matrix, [`docs/architecture.md`](../architecture.md)
+  reframes the Phase 1 monolith as legacy/still-present and the
+  Phase 2 services as the current app tier, [`docs/runbook.md`](../runbook.md)
+  has a §0 "Read this first" pointer block, and this status block
+  itself is the canonical D6.5 marker.
+- **Phase 3 (Kubernetes app-tier operationalization) remains
+  deferred.** D5 only duplicates the gateway; quote-engine /
+  persistence / ingress / reference-data are still singletons by
+  design today, and stateful infra (Kafka / Redis / Timescale) is
+  single-instance in the demo environment.
+
+Status one-liner: Phase 2 repo layout restructure + 2A hardening + 2B
+through B5 + 2C through C4 + 2D through D6 + D6.5 public-narrative
+closeout are in place. The quote-engine does real compute and
+Redis/Kafka materialization; the gateway has layered source selection
+with Redis-backed `/api/quote`/`/api/constituents`, a Timescale-backed
+`/api/history`, and a **native** aggregating `/api/system/health` (D1);
+the persistence service consumes `pricing.snapshots.v1` and
+`market.raw_ticks.v1` into TimescaleDB with rollups + retention;
+`hqqq-analytics` runs a one-shot report over persisted Timescale data.
 
 ---
 
@@ -244,6 +262,7 @@ D-phase items that were on this list and are now delivered:
 | Azure Container Apps deployment assets (`infra/azure/` Bicep + `phase2-images.yml` + `phase2-deploy.yml` GitHub OIDC workflows) | D4 |
 | Multi-gateway replica smoke (`docker-compose.replica-smoke.yml` + `tests/Hqqq.Gateway.ReplicaSmoke/`) | D5 |
 | Operator docs closeout (release checklist, rollback, config matrix; refreshed architecture / runbook / Phase 2 docs) | D6 |
+| Public-facing repo narrative closeout (root README operator entrypoint matrix, architecture framing as Phase 1 legacy + Phase 2 current app tier, runbook §0 prelude, this status block) | D6.5 |
 
 ## Module-to-service mapping (planned)
 

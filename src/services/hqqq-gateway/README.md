@@ -6,7 +6,7 @@ Phase 2D1 `/api/system/health` is served by a native aggregator that scrapes
 each Phase 2 service's `/healthz/ready` plus the local Redis/Timescale
 probes. Pure serving layer with no business computation.
 
-**Future home of current API endpoints + MarketHub.**
+**Serving edge for the Phase 2 app tier (REST + SignalR).**
 
 ## Responsibilities (Phase 2)
 
@@ -209,20 +209,22 @@ Bound only when `Gateway:Sources:SystemHealth` resolves to `aggregated`.
 | `IncludeTimescale` | `true` | Include the local Timescale health check in the payload. |
 | `Services:{Key}:BaseUrl` | _empty_ | Base URL of each downstream service's management endpoint. Keys: `ReferenceData`, `Ingress`, `QuoteEngine`, `Persistence`, `Analytics`. Empty/missing → reported as `idle` (not configured). |
 
-### B-phase operating modes
+### Phase-cutover operating profiles
 
-The gateway is designed to be run in one of three operating modes during the
-Phase 2B cutover. Each mode differs only in configuration.
+The gateway supports multiple configuration-only profiles during the
+Phase 2 cutover. These profiles are additive: per-endpoint overrides can
+be layered on top of the global source posture.
 
-| Mode | Quote | Constituents | History | System health | Required infra | Intended use |
-|------|-------|--------------|---------|---------------|----------------|--------------|
+| Profile | Quote | Constituents | History | System health | Required infra | Intended use |
+|---------|-------|--------------|---------|---------------|----------------|--------------|
 | **Stub mode** — `DataSource=stub` + `Sources:SystemHealth=stub` | stub | stub | stub | stub | none | UI smoke / offline dev; deterministic placeholder DTOs, no dependencies |
 | **Legacy proxy mode** — `DataSource=legacy` + `LegacyBaseUrl` + `Sources:SystemHealth=legacy` | legacy | legacy | legacy | legacy (gateway-overlaid) | running `hqqq-api` | Regression parity with Phase 1 while Phase 2 services come online |
 | **D1 native mode (default)** — anything above without an explicit `Sources:SystemHealth` override | (as configured) | (as configured) | (as configured) | **aggregated** | Phase 2 service `/healthz/ready` endpoints reachable on `Gateway:Health:Services:*:BaseUrl` (plus Redis/Timescale for the local probes) | Standard Phase 2 posture: native system-health off the new pipeline; missing services surface as `unknown`/`idle` without crashing |
 | **Mixed B5 cutover mode** — `Sources:Quote=redis` + `Sources:Constituents=redis` | **redis** | **redis** | (as configured) | (as configured) | Redis + `hqqq-quote-engine` writing snapshots | Cutover testing: live quote/constituents off the new pipeline |
 | **Mixed C2 cutover mode** — add `Sources:History=timescale` on top of any row above | (as above) | (as above) | **timescale** | (as above) | Timescale + `hqqq-persistence` writing `quote_snapshots` | Cutover testing: serve history directly from Timescale |
 
-Per-endpoint overrides always win over the global `Gateway:DataSource`:
+Override precedence is explicit: per-endpoint sources always win over the
+global `Gateway:DataSource`:
 `redis` for quote/constituents, `timescale` for history, `aggregated` /
 `legacy` / `stub` for system-health.
 

@@ -16,6 +16,10 @@ public class LegacyForwardingTests : IDisposable
         _factory = new GatewayAppFactory()
             .WithConfig("Gateway:DataSource", "legacy")
             .WithConfig("Gateway:LegacyBaseUrl", "http://legacy.test")
+            // Phase 2D1 defaulted system-health to `aggregated`; this fixture
+            // covers the legacy-forwarding contract so we opt back in
+            // explicitly.
+            .WithConfig("Gateway:Sources:SystemHealth", "legacy")
             .WithFakeHandler(_fakeHandler);
         _client = _factory.CreateClient();
     }

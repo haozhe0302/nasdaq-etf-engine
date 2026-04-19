@@ -4,7 +4,7 @@ namespace Hqqq.Observability.Metrics;
 
 /// <summary>
 /// Shared meter and instrument instances that services can use directly.
-/// Call <see cref="Logging.LoggingExtensions.AddHqqqObservability"/> to register.
+/// Call <see cref="Hosting.ObservabilityRegistration.AddHqqqObservability"/> to register.
 /// </summary>
 public sealed class HqqqMetrics
 {

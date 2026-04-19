@@ -12,7 +12,11 @@ public class StubModeEndpointTests : IDisposable
     public StubModeEndpointTests()
     {
         _factory = new GatewayAppFactory()
-            .WithConfig("Gateway:DataSource", "stub");
+            .WithConfig("Gateway:DataSource", "stub")
+            // Stay on the legacy `stub` system-health source for this fixture so
+            // the deterministic placeholder payload assertions still hold; the
+            // new aggregated default is exercised by AggregatedSystemHealthTests.
+            .WithConfig("Gateway:Sources:SystemHealth", "stub");
         _client = _factory.CreateClient();
     }
 

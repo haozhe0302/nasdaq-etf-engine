@@ -14,6 +14,10 @@ public class LegacyModeRegistrationTests : IDisposable
         _factory = new GatewayAppFactory()
             .WithConfig("Gateway:DataSource", "legacy")
             .WithConfig("Gateway:LegacyBaseUrl", "http://legacy.test")
+            // Phase 2D1 defaulted system-health to `aggregated`; this fixture
+            // verifies the legacy-mode registration so we opt back in
+            // explicitly for the system-health source assertion.
+            .WithConfig("Gateway:Sources:SystemHealth", "legacy")
             .WithFakeHandler(new FakeHttpMessageHandler());
     }
 

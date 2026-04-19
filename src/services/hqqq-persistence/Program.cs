@@ -1,5 +1,6 @@
 using Hqqq.Infrastructure.Hosting;
 using Hqqq.Infrastructure.Timescale;
+using Hqqq.Observability.Hosting;
 using Hqqq.Observability.Logging;
 using Hqqq.Persistence.Abstractions;
 using Hqqq.Persistence.Consumers;
@@ -17,7 +18,13 @@ builder.Logging.AddHqqqDefaults();
 
 builder.Services.AddHqqqKafka(builder.Configuration);
 builder.Services.AddHqqqTimescale(builder.Configuration);
-builder.Services.AddHqqqObservability();
+
+// Phase 2D1 — shared observability + Kafka/Timescale dependency probes;
+// management host serves /healthz/* and /metrics on Management:Port.
+builder.Services.AddHqqqObservability("hqqq-persistence", builder.Environment)
+    .AddKafkaHealthCheck()
+    .AddTimescaleHealthCheck();
+builder.Services.AddHqqqManagementHost(builder.Configuration);
 
 builder.Services.Configure<PersistenceOptions>(builder.Configuration.GetSection("Persistence"));
 
@@ -65,6 +72,8 @@ var host = builder.Build();
 host.Services.LogConfigurationPosture(
     "hqqq-persistence",
     host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup"),
-    "Kafka", "Timescale", "Persistence");
+    "Kafka", "Timescale", "Persistence", "Management");
 
 host.Run();
+
+public partial class Program { }

@@ -5,6 +5,7 @@ using Hqqq.Analytics.Timescale;
 using Hqqq.Analytics.Workers;
 using Hqqq.Infrastructure.Hosting;
 using Hqqq.Infrastructure.Timescale;
+using Hqqq.Observability.Hosting;
 using Hqqq.Observability.Logging;
 using Microsoft.Extensions.Options;
 
@@ -14,9 +15,13 @@ builder.Configuration.AddLegacyFlatKeyFallback();
 builder.Logging.AddHqqqDefaults();
 
 // C4 analytics is a one-shot report job off the persisted Timescale tables.
-// It intentionally does NOT participate in Kafka, Redis, or any HTTP wiring.
+// It intentionally does NOT participate in Kafka or Redis.
+// Phase 2D1 — gains a small management HTTP surface so the gateway can
+// scrape /healthz/ready and /metrics while the job is running.
 builder.Services.AddHqqqTimescale(builder.Configuration);
-builder.Services.AddHqqqObservability();
+builder.Services.AddHqqqObservability("hqqq-analytics", builder.Environment)
+    .AddTimescaleHealthCheck();
+builder.Services.AddHqqqManagementHost(builder.Configuration);
 
 builder.Services.Configure<AnalyticsOptions>(builder.Configuration.GetSection("Analytics"));
 builder.Services.AddSingleton<IValidateOptions<AnalyticsOptions>, AnalyticsOptionsValidator>();
@@ -46,10 +51,12 @@ var host = builder.Build();
 host.Services.LogConfigurationPosture(
     "hqqq-analytics",
     host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup"),
-    "Analytics", "Timescale");
+    "Analytics", "Timescale", "Management");
 
 // Fail fast on bad options: resolve once so the validator runs before the
 // dispatcher starts.
 _ = host.Services.GetRequiredService<IOptions<AnalyticsOptions>>().Value;
 
 await host.RunAsync().ConfigureAwait(false);
+
+public partial class Program { }

@@ -1,4 +1,5 @@
 using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Services.Adapters.Aggregated;
 using Hqqq.Gateway.Services.Infrastructure;
 using Hqqq.Gateway.Services.Sources;
 using Microsoft.AspNetCore.Hosting;
@@ -18,8 +19,10 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
 {
     private readonly Dictionary<string, string?> _config = new();
     private FakeHttpMessageHandler? _fakeHandler;
+    private FakeHttpMessageHandler? _fakeHealthHandler;
     private FakeGatewayRedisReader? _fakeRedisReader;
     private ITimescaleHistoryQueryService? _fakeHistoryQuery;
+    private IServiceHealthClient? _fakeServiceHealthClient;
 
     public GatewayAppFactory WithConfig(string key, string value)
     {
@@ -45,6 +48,28 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
         return this;
     }
 
+    /// <summary>
+    /// Routes the named <c>health-aggregator</c> HttpClient through a fake
+    /// handler so the AggregatedSystemHealthSource probes go to a stub
+    /// instead of real downstream services. Used by AggregatedSystemHealthTests.
+    /// </summary>
+    public GatewayAppFactory WithFakeHealthHandler(FakeHttpMessageHandler handler)
+    {
+        _fakeHealthHandler = handler;
+        return this;
+    }
+
+    /// <summary>
+    /// Replaces the registered <see cref="IServiceHealthClient"/> outright
+    /// (last-wins). Useful when a test wants to script per-service responses
+    /// without driving them through HTTP plumbing.
+    /// </summary>
+    public GatewayAppFactory WithFakeServiceHealthClient(IServiceHealthClient client)
+    {
+        _fakeServiceHealthClient = client;
+        return this;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         if (_config.Count > 0)
@@ -66,6 +91,17 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
             {
                 services.AddHttpClient(GatewaySourceRegistration.LegacyHttpClientName)
                     .ConfigurePrimaryHttpMessageHandler(() => _fakeHandler);
+            }
+
+            if (_fakeHealthHandler is not null)
+            {
+                services.AddHttpClient(HttpServiceHealthClient.HttpClientName)
+                    .ConfigurePrimaryHttpMessageHandler(() => _fakeHealthHandler);
+            }
+
+            if (_fakeServiceHealthClient is not null)
+            {
+                services.AddSingleton(_fakeServiceHealthClient);
             }
 
             if (_fakeRedisReader is not null)

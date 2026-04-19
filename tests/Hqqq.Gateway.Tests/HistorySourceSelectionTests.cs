@@ -1,4 +1,5 @@
 using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Services.Adapters.Aggregated;
 using Hqqq.Gateway.Services.Adapters.Legacy;
 using Hqqq.Gateway.Services.Adapters.Stub;
 using Hqqq.Gateway.Services.Sources;
@@ -12,7 +13,8 @@ namespace Hqqq.Gateway.Tests;
 /// Phase 2C2. The global <c>Gateway:DataSource</c> is the fallback
 /// (stub/legacy only); per-endpoint history overrides can escalate to
 /// <c>timescale</c> or de-escalate back to <c>stub</c> / <c>legacy</c>.
-/// System-health must remain on the existing global-only path regardless.
+/// Phase 2D1: system-health defaults to native aggregation regardless of
+/// the global DataSource (verified inline in each scenario).
 /// </summary>
 public class HistorySourceSelectionTests
 {
@@ -34,8 +36,9 @@ public class HistorySourceSelectionTests
         Assert.IsType<TimescaleHistorySource>(
             scope.ServiceProvider.GetRequiredService<IHistorySource>());
 
-        // System-health must still be on the transitional path.
-        Assert.IsType<StubSystemHealthSource>(
+        // Phase 2D1 — system-health defaults to native aggregation regardless
+        // of the global DataSource.
+        Assert.IsType<AggregatedSystemHealthSource>(
             scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
     }
 
@@ -52,8 +55,9 @@ public class HistorySourceSelectionTests
 
         Assert.IsType<StubHistorySource>(
             scope.ServiceProvider.GetRequiredService<IHistorySource>());
-        // System-health follows the global Legacy switch.
-        Assert.IsType<LegacyHttpSystemHealthSource>(
+        // Phase 2D1 — system-health defaults to native aggregation; the global
+        // Legacy switch no longer drags it onto the legacy forwarder.
+        Assert.IsType<AggregatedSystemHealthSource>(
             scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
     }
 
@@ -69,7 +73,7 @@ public class HistorySourceSelectionTests
 
         Assert.IsType<LegacyHttpHistorySource>(
             scope.ServiceProvider.GetRequiredService<IHistorySource>());
-        Assert.IsType<LegacyHttpSystemHealthSource>(
+        Assert.IsType<AggregatedSystemHealthSource>(
             scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
     }
 
@@ -84,7 +88,7 @@ public class HistorySourceSelectionTests
 
         Assert.IsType<StubHistorySource>(
             scope.ServiceProvider.GetRequiredService<IHistorySource>());
-        Assert.IsType<StubSystemHealthSource>(
+        Assert.IsType<AggregatedSystemHealthSource>(
             scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
     }
 }

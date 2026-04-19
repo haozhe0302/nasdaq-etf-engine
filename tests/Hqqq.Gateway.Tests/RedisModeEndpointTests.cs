@@ -287,7 +287,10 @@ public class RedisModeEndpointTests
         Assert.Equal(HttpStatusCode.OK, healthResponse.StatusCode);
 
         using var healthDoc = await JsonDocument.ParseAsync(await healthResponse.Content.ReadAsStreamAsync());
-        Assert.Equal("stub", healthDoc.RootElement.GetProperty("sourceMode").GetString());
+        // Phase 2D1 — system-health defaults to native aggregation regardless
+        // of the global DataSource. The Redis-mode quote override does not
+        // drag system-health onto Redis.
+        Assert.Equal("aggregated", healthDoc.RootElement.GetProperty("sourceMode").GetString());
 
         var constituentsResponse = await client.GetAsync("/api/constituents");
         Assert.Equal(HttpStatusCode.OK, constituentsResponse.StatusCode);

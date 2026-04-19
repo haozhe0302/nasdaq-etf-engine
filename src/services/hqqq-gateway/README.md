@@ -36,6 +36,88 @@ bootstrap remains REST `GET /api/quote` — D2 deliberately does not add a
 replay buffer or sequence protocol. Malformed payloads are dropped
 silently and counted via `hqqq.gateway.quote_updates_malformed`.
 
+## Multi-replica fan-out (Phase 2D5)
+
+The D2 design is multi-gateway-safe by construction. Every gateway replica
+runs its own `QuoteUpdateSubscriber`, subscribes independently to
+`hqqq:channel:quote-update`, and broadcasts locally to the SignalR
+clients connected to it. There is no SignalR Redis backplane: when the
+quote-engine publishes once, every replica receives the message and
+fans out to its own clients.
+
+D5 adds a compose-based replica-smoke topology that exercises this
+property end-to-end:
+
+| Replica | Compose service | Container DNS:port | Host port |
+|---------|-----------------|--------------------|-----------|
+| gateway-a | `hqqq-gateway`   | `hqqq-gateway:8080`   | `5030` |
+| gateway-b | `hqqq-gateway-b` | `hqqq-gateway-b:8080` | `5031` |
+
+Both replicas share the single `cache` (Redis) container, the single
+`hqqq-quote-engine`, and all other Phase 2 services. Only the gateway
+is duplicated — D5 is gateway-replica correctness, not full HA.
+
+### Scale-out assumptions
+
+- **Sticky sessions are NOT required.** Because every replica receives
+  every published `QuoteUpdate`, a SignalR client connected to either
+  replica gets the full live stream. A load balancer in front of the
+  replicas does not need session affinity for `/hubs/market`.
+- **Reconnect / bootstrap is unchanged.** Initial state and
+  reconnect-time resync still come from REST `GET /api/quote`. D5 does
+  not introduce a replay buffer or sequence protocol.
+- **Per-replica config invariants.** Both replicas MUST agree on:
+  - `Redis__Configuration` — same Redis instance for the pub/sub channel
+    and the snapshot keys read by `Gateway:Sources:Quote=redis`.
+  - `Gateway__BasketId` — same basket id, so the snapshot/constituents
+    keys (`hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`)
+    resolve to the same values across replicas.
+  - `Gateway:Sources:*` — keep the source matrix in sync so a request
+    answered by either replica sees the same data shape.
+- **Contract surface is unchanged.** REST routes (`/api/quote`,
+  `/api/constituents`, `/api/history`, `/api/system/health`), the
+  SignalR hub path (`/hubs/market`), the hub event name (`QuoteUpdate`),
+  and DTO shapes are not modified by D5.
+
+### How to run it
+
+The replica-smoke topology lives in
+[../../../docker-compose.replica-smoke.yml](../../../docker-compose.replica-smoke.yml)
+and is brought up via the wrapper scripts:
+
+```powershell
+.\scripts\replica-smoke-up.ps1
+.\scripts\bootstrap-kafka-topics.ps1
+.\scripts\replica-smoke.ps1
+```
+
+```bash
+./scripts/replica-smoke-up.sh
+./scripts/bootstrap-kafka-topics.sh
+./scripts/replica-smoke.sh
+```
+
+The smoke harness lives in
+[../../../tests/Hqqq.Gateway.ReplicaSmoke](../../../tests/Hqqq.Gateway.ReplicaSmoke)
+and is a small console exe that:
+
+1. probes `GET /healthz/ready` and `GET /api/quote` on both gateways;
+2. opens a SignalR client to `5030/hubs/market` and another to
+   `5031/hubs/market`;
+3. publishes a single `QuoteUpdateEnvelope` to
+   `RedisKeys.QuoteUpdateChannel`;
+4. asserts both clients receive the same `QuoteUpdate` within the
+   configured timeout (default 15s).
+
+### Deferred beyond D5
+
+- HA Kafka / Redis / Timescale topologies.
+- Multi-instance quote-engine / persistence / ingress / reference-data.
+- Kubernetes manifests / Helm charts.
+- SignalR Redis backplane (only relevant if a future scale-out moves
+  off the "every replica receives every update" property).
+- Cross-region or multi-AZ topology.
+
 ## Configuration
 
 Gateway source selection is layered: a **global** `Gateway:DataSource` acts as

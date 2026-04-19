@@ -39,25 +39,31 @@ Companion docs: [runbook.md](../runbook.md),
 
 ## 3) Pre-flight: required secrets + variables present
 
+> Automated by the `preflight` job in
+> [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml).
+> The job fails fast with an explicit error block if any of the
+> required secrets below are missing or empty. Verify the workflow's
+> preflight job is green; you do not need to re-check these by hand.
+
 Repository **secrets** (used by both Phase 2 workflows):
 
-- [ ] `AZURE_CLIENT_ID`
-- [ ] `AZURE_TENANT_ID`
-- [ ] `AZURE_SUBSCRIPTION_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
 
 Repository **variables** (optional, defaults match the demo bicepparam
 file):
 
-- [ ] `PHASE2_ACR_NAME` (default `acrhqqqp2demo01`)
-- [ ] `PHASE2_RESOURCE_GROUP` (default `rg-hqqq-p2-demo-eus-01`)
-- [ ] `PHASE2_LOCATION` (default `eastus`)
+- `PHASE2_ACR_NAME` (default `acrhqqqp2demo01`)
+- `PHASE2_RESOURCE_GROUP` (default `rg-hqqq-p2-demo-eus-01`)
+- `PHASE2_LOCATION` (default `eastus`)
 
 GitHub Environment **`phase2-demo`** secrets (Bicep `@secure()` params):
 
-- [ ] `KAFKA_BOOTSTRAP_SERVERS`
-- [ ] `REDIS_CONFIGURATION`
-- [ ] `TIMESCALE_CONNECTION_STRING`
-- [ ] `TIINGO_API_KEY` (optional — only if exercising real ingress)
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `REDIS_CONFIGURATION`
+- `TIMESCALE_CONNECTION_STRING`
+- `TIINGO_API_KEY` (optional — only if exercising real ingress)
 
 ## 4) Pre-flight: external infra endpoints reachable
 
@@ -79,6 +85,11 @@ must already exist and be reachable from the Container Apps environment:
 
 ## 5) Deploy: dry run first
 
+> The workflow preflight already validates that the requested
+> `image_tag` is published in ACR for **all six** Phase 2 images
+> before any what-if runs, so this step is now mostly about reading
+> the what-if diff for surprise changes.
+
 - [ ] Run [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml)
       with `image_tag=vsha-<short-sha>`,
       `bicep_param_file=infra/azure/params/main.demo.bicepparam`, and
@@ -94,28 +105,41 @@ must already exist and be reachable from the Container Apps environment:
 
 - [ ] Re-run `phase2-deploy.yml` with the same `image_tag` and
       `what_if_only=false`.
-- [ ] Workflow run summary prints:
+- [ ] Workflow run summary prints a structured table with:
       - Deployment name (`phase2-YYYYMMDD-HHMMSS-<runId>`)
+      - Image tag, resource group, Container Apps environment
       - ACR login server
-      - Gateway FQDN
-      - Ready-to-paste smoke commands
+      - Gateway app name + FQDN + latest revision name
+      - Analytics job name
+      - Ready-to-paste manual smoke / analytics commands
 
 ## 7) Post-deploy: health + smoke
 
-Substitute the gateway FQDN from the run summary.
+> Automated by the `smoke` job in
+> [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml),
+> which calls
+> [`infra/azure/scripts/phase2-azure-smoke.sh`](../../infra/azure/scripts/phase2-azure-smoke.sh).
+> The job fails the workflow if any endpoint below regresses. Verify
+> the smoke job is green; you do not need to re-run these `curl`s by
+> hand for the `safe-to-demo` gate.
 
-- [ ] Liveness:
-      `curl -fsS https://<gatewayFqdn>/healthz/live` → `200`
-- [ ] Readiness:
-      `curl -fsS https://<gatewayFqdn>/healthz/ready` → `200`
-- [ ] System health (D1 native aggregator):
-      `curl -fsS https://<gatewayFqdn>/api/system/health` → `200`,
-      payload includes every configured downstream
-      (`reference-data`, `ingress`, `quote-engine`, `persistence`,
-      `analytics`) plus local Redis and Timescale probes. A missing
-      worker reports `status: "unknown"`; not-configured reports
-      `status: "idle"`. Top-level `status` may be `degraded` on a
-      fresh environment — that is acceptable.
+- Liveness: `GET /healthz/live` → `200`
+- Readiness: `GET /healthz/ready` → `200`
+- System health (D1 native aggregator): `GET /api/system/health` →
+  `200`, payload `sourceMode == "aggregated"` (the smoke asserts this
+  to catch a silent fall-back to the legacy/stub adapter). Payload
+  includes every configured downstream (`reference-data`, `ingress`,
+  `quote-engine`, `persistence`, `analytics`) plus local Redis and
+  Timescale probes. A missing worker reports `status: "unknown"`;
+  not-configured reports `status: "idle"`. Top-level `status` may be
+  `degraded` on a fresh environment — that is acceptable.
+- `GET /api/quote` → `200` OR documented `503 quote_unavailable`
+  (cold-start state).
+- `GET /api/constituents` → `200` OR documented
+  `503 constituents_unavailable`.
+- `GET /api/history?range=1D` → `200` with render-safe JSON shape
+  (`pointCount`, `series` array, 21-bucket `distribution`). Empty
+  data is fine; `503` is a regression.
 
 ## 8) Post-deploy: live data flowing
 
@@ -142,6 +166,15 @@ These checks confirm the data plane, not just the process plane.
       having warm state.
 
 ## 9) Post-deploy: analytics dry run
+
+> Automated when `phase2-deploy.yml` is dispatched with
+> `run_analytics_smoke=true`. The smoke job kicks the analytics
+> Container Apps Job over a tight one-hour window ending at "now",
+> polls the execution (~5 min cap), and requires `Succeeded`. Empty
+> windows producing `hasData=false` still exit `0` by design.
+
+The manual fallback (e.g. for a real, populated window before
+promoting beyond demo):
 
 - [ ] Trigger a short-window analytics report:
 
@@ -190,3 +223,36 @@ deploy, follow [rollback.md](rollback.md):
   comparable local stack (or against gateway-a + a temporary
   gateway-b in Azure if available); a SignalR-wait timeout means
   fan-out broke.
+
+If smoke fails inside the workflow itself, optionally re-dispatch
+`phase2-deploy.yml` with `rollback_on_smoke_failure=true` to attempt a
+gateway-only revision flip; see [rollback.md](rollback.md) §1.5.
+
+---
+
+## 11) Promotion gates: "safe to demo" vs. "safe to promote beyond demo"
+
+**Safe to demo** — green check on `phase2-deploy.yml` with the target
+`image_tag`:
+
+- `preflight` job green (secrets, RG, ACR, 6-image tag check).
+- `deploy` job green (`bicep build`, `what-if`, `create`).
+- `smoke` job green (gateway HTTPS probes incl.
+  `sourceMode=="aggregated"` and `/api/history` JSON shape).
+
+That is the minimum gate the workflow now enforces automatically.
+
+**Safe to promote beyond demo** — additionally requires:
+
+- §4 Pre-flight: external infra reachable (Kafka topics present, Redis
+  reachable, Timescale reachable from the Container Apps environment).
+- §8 Post-deploy: live data flowing — `/api/quote` and
+  `/api/constituents` returning HTTP 200 with non-empty payload (not
+  the documented cold-start `503 quote_unavailable` /
+  `503 constituents_unavailable`); SignalR fan-out emitting
+  `QuoteUpdate` events.
+- §9 Post-deploy: analytics dry-run on a real, populated window
+  (the workflow's `run_analytics_smoke` covers an empty/synthetic
+  window only).
+- Replica-smoke green against a multi-instance gateway when at least
+  two gateway replicas are deployed.

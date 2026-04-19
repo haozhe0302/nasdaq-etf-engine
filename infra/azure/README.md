@@ -177,9 +177,38 @@ Tags pushed:
 
 ### 4.2 [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml)
 
-Manual-only Bicep deploy via OIDC. Validates with `bicep build` and
-`what-if` before `create`. Prints the gateway FQDN and the smoke
-commands in the run summary.
+Manual-only Bicep deploy via OIDC, with a workflow-enforced
+release-hardening gate. The pipeline shape is:
+
+```
+preflight  →  deploy  →  smoke  →  rollback-assist (opt, on failure)
+```
+
+- **preflight** (`needs: -`) — fails fast before any what-if. Validates
+  required secrets are present, the bicep param file exists on disk,
+  the resource group exists, the ACR exists, and the requested
+  `image_tag` is published in ACR for **all six** Phase 2 images
+  (`hqqq-gateway`, `hqqq-reference-data`, `hqqq-ingress`,
+  `hqqq-quote-engine`, `hqqq-persistence`, `hqqq-analytics`). Missing
+  tags are aggregated into a single error block.
+- **deploy** (`needs: preflight`) — `bicep build` + `what-if` + `create`.
+  Publishes a structured `outputs:` block (deployment name, image tag,
+  RG, Container Apps env, gateway app name, gateway FQDN, gateway
+  latest revision name, analytics job name) and a machine-readable
+  table to the run summary.
+- **smoke** (`needs: deploy`, runs only when `what_if_only=false`) —
+  HTTPS probes via [`infra/azure/scripts/phase2-azure-smoke.sh`](scripts/phase2-azure-smoke.sh).
+  Validates `/healthz/live`, `/healthz/ready`, `/api/system/health`
+  (asserts `sourceMode == "aggregated"` so a fall-back to legacy/stub
+  is caught), `/api/quote`, `/api/constituents`, and
+  `/api/history?range=1D` (JSON shape: `pointCount`, `series` array,
+  21-bucket `distribution`). On failure, the workflow emits the failing
+  endpoint plus copy-paste `az` commands for revision listing, log
+  tailing, and (if applicable) the analytics execution.
+- **rollback-assist** (optional, runs only on smoke failure when
+  `rollback_on_smoke_failure=true`) — gateway-only revision flip:
+  identifies the previous revision, activates it, and shifts 100%
+  traffic. Workers and the analytics job are not touched by design.
 
 Inputs:
 
@@ -187,7 +216,17 @@ Inputs:
   services. For reproducibility prefer `vsha-...`.
 - `bicep_param_file` (default `infra/azure/params/main.demo.bicepparam`)
   — swap this when adding additional environments.
-- `what_if_only` (boolean, default `false`) — dry-run.
+- `what_if_only` (boolean, default `false`) — dry-run; skips
+  deploy create, smoke, and rollback-assist.
+- `run_analytics_smoke` (boolean, default `false`) — when true, the
+  smoke job also kicks the analytics Container Apps Job over a tight
+  one-hour window, polls execution status (bounded ~5 min), and
+  requires exit code 0. Empty windows are still expected to succeed
+  by design.
+- `rollback_on_smoke_failure` (boolean, default `false`) — when true,
+  the rollback-assist job runs on smoke failure. When false, smoke
+  failure simply fails the workflow and prints the manual `az`
+  commands needed to inspect or roll back.
 
 ---
 
@@ -213,14 +252,27 @@ az deployment group what-if \
 
 ## 6) Smoke validation
 
-After a successful deploy, the workflow run summary contains
-ready-to-paste commands. The same commands locally:
+The primary post-deploy smoke gate is the `smoke` job inside
+[`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml). On a
+green deploy it runs automatically; if it fails, the workflow fails
+and the run summary lists the failing endpoint plus diagnostic `az`
+commands.
+
+The same probe is re-runnable locally (or against any environment) via
+the helper script:
 
 ```bash
 RG=rg-hqqq-p2-demo-eus-01
 GATEWAY=$(az containerapp show -g $RG -n ca-hqqq-p2-gateway-demo-01 \
   --query properties.configuration.ingress.fqdn -o tsv)
 
+GATEWAY_FQDN="$GATEWAY" \
+  ./infra/azure/scripts/phase2-azure-smoke.sh
+```
+
+Bare `curl` fallback (single-endpoint check):
+
+```bash
 curl -fsS https://$GATEWAY/healthz/ready
 curl -fsS https://$GATEWAY/api/system/health
 ```
@@ -260,5 +312,7 @@ infra/azure/
 ├── params/
 │   ├── main.demo.bicepparam                 Concrete demo names
 │   └── main.example.bicepparam              Placeholder reference
+├── scripts/
+│   └── phase2-azure-smoke.sh                Post-deploy HTTPS smoke probe
 └── README.md                                this file
 ```

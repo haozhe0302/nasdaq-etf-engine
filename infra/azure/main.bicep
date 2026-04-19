@@ -462,6 +462,10 @@ output managedIdentityClientId string = miModule.outputs.clientId
 
 output gatewayFqdn string = gatewayApp.outputs.fqdn
 output gatewayUrl string = 'https://${gatewayApp.outputs.fqdn}'
+// Surfaced so the deploy workflow's gateway rollback-assist job can
+// distinguish "the revision this run created" from "the revision to
+// fall back to" without re-parsing revision lists.
+output gatewayLatestRevisionName string = gatewayApp.outputs.latestRevisionName
 output referenceDataInternalFqdn string = refDataApp.outputs.fqdn
 output ingressInternalFqdn string = ingressApp.outputs.fqdn
 output quoteEngineInternalFqdn string = quoteEngineApp.outputs.fqdn

@@ -191,5 +191,13 @@ jobs:
 
       - name: Summary
         if: steps.gate.outputs.selected == 'true'
+        env:
+          REGISTRY: ${{ env.PHASE2_ACR_NAME }}.azurecr.io
+          IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
         run: |
-          echo "Pushed ${{ steps.tags.outputs.primary }}" >> "$GITHUB_STEP_SUMMARY"
+          # Machine-parseable per-leg line so an operator (and
+          # phase2-deploy.yml's preflight) can see in one glance which
+          # services were actually pushed in this run.
+          {
+            echo "phase2-image | service=${{ matrix.service }} | image_tag=${IMAGE_TAG} | ref=${REGISTRY}/${{ matrix.service }}:${IMAGE_TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"

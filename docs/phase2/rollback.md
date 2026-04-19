@@ -70,6 +70,44 @@ az containerapp ingress traffic set \
 
 ---
 
+## 1.5) Workflow-assisted gateway rollback
+
+The same gateway-only revision flip in §1 is also available as an
+optional automatic step inside
+[`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml).
+
+**How to opt in:** dispatch `phase2-deploy.yml` with
+`rollback_on_smoke_failure=true`. If the post-deploy `smoke` job
+fails, the `rollback-assist` job runs and:
+
+1. Identifies the previous gateway revision (most-recent revision on
+   the gateway app whose name is not the one this run created — the
+   workflow knows which revision its own deploy created via the
+   `gatewayLatestRevisionName` output of `main.bicep`).
+2. Activates that previous revision.
+3. Shifts 100% of gateway traffic back to it.
+4. Prints the resulting active-revision table to the run summary.
+
+**Scope guarantees:**
+
+- Gateway-only. Worker apps (`hqqq-reference-data`, `hqqq-ingress`,
+  `hqqq-quote-engine`, `hqqq-persistence`) and the analytics job are
+  **not** touched. Use §2 (image-tag redeploy) for an all-services
+  rollback.
+- If no retained previous revision exists, the workflow does **not**
+  shift traffic; it only prints the manual `az` commands an operator
+  should run after building a known-good image set. This avoids
+  destructive action with an empty fallback.
+- The workflow's preflight + deploy outputs (image tag, RG, gateway
+  app name, gateway latest revision) are persisted to the run summary
+  so the rollback decision is auditable from the workflow run alone.
+
+When `rollback_on_smoke_failure=false` (default), smoke failure simply
+fails the workflow and the run summary prints the manual `az`
+commands needed to inspect or roll back. No rollback is attempted.
+
+---
+
 ## 2) Image-tag rollback via the deploy workflow
 
 When you want a clean, auditable redeploy of a known-good image set —

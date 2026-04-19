@@ -43,12 +43,15 @@ sequenceDiagram
     GH->>ACR: az acr login (OIDC)
     GH->>ACR: docker push hqqq-*:vsha-XXXX
     Dev->>GH: workflow_dispatch phase2-deploy.yml<br/>image_tag=vsha-XXXX
+    GH->>GH: preflight (secrets, RG, ACR, 6-image tag check)
     GH->>Azure: az login (OIDC)
     GH->>Azure: az bicep build
     GH->>Azure: az deployment group what-if
     GH->>Azure: az deployment group create
-    Azure-->>Dev: gatewayFqdn (in run summary)
-    Dev->>Azure: curl https://<gatewayFqdn>/healthz/ready
+    GH->>Azure: post-deploy smoke (HTTPS) against gatewayFqdn
+    GH->>Azure: optional analytics dry-run
+    GH->>Azure: optional gateway rollback assist (on smoke failure)
+    Azure-->>Dev: structured deploy + smoke summary
 ```
 
 ---
@@ -139,7 +142,57 @@ No Bicep template changes required.
 
 ---
 
-## 7) Explicitly deferred (D5 / D6 / Phase 3)
+## 7) What the workflow validates automatically vs. what stays manual
+
+The `phase2-deploy.yml` pipeline now enforces a release-hardening gate.
+Be honest about what it covers and what it does not:
+
+**Automated (workflow-enforced):**
+
+- Required GitHub repo + environment secrets are present and non-empty.
+- Bicep param file exists on disk.
+- Resource group exists.
+- ACR exists and is reachable.
+- Requested `image_tag` is published in ACR for **all six** Phase 2
+  images (one aggregated error if any are missing).
+- `az bicep build` + `az deployment group what-if` + `az deployment
+  group create`.
+- Structured deployment summary (deployment name, image tag, RG,
+  Container Apps env, gateway app + FQDN, gateway latest revision,
+  analytics job).
+- Post-deploy gateway smoke: `/healthz/live`, `/healthz/ready`,
+  `/api/system/health` with `sourceMode=="aggregated"` assertion (so a
+  silent fall-back to the legacy/stub adapter is caught), `/api/quote`,
+  `/api/constituents`, `/api/history?range=1D` with JSON-shape
+  assertion.
+- Optional analytics dry-run over a tight one-hour window (when
+  `run_analytics_smoke=true`).
+- Optional gateway-only revision rollback assist (when
+  `rollback_on_smoke_failure=true`).
+
+**Still manual (after this step):**
+
+- Live SignalR fan-out validation (use `replica-smoke.{ps1,sh}` or any
+  minimal SignalR client against `wss://<gatewayFqdn>/hubs/market`).
+- Confirming `/api/quote` and `/api/constituents` are returning live
+  data (HTTP 200 with non-empty payload), not just the documented cold-start
+  `503 quote_unavailable` / `503 constituents_unavailable`.
+- External-infra reachability validation (Kafka topics present, Redis
+  reachable, TimescaleDB reachable from the Container Apps environment).
+- Multi-environment promotion (e.g. demo → prod) — currently a
+  bicepparam swap done by hand.
+- Custom domain + TLS binding on the gateway external ingress.
+
+**"Safe to demo" =** preflight + deploy + smoke jobs all green on the
+target `image_tag`.
+
+**"Safe to promote beyond demo"** still additionally requires the
+manual checks above plus a successful analytics dry-run against a
+real, populated window.
+
+---
+
+## 8) Explicitly deferred (D5 / D6 / Phase 3)
 
 - Custom domain + TLS cert binding on the gateway external ingress.
 - Bicep provisioning of Azure Cache for Redis, Azure Database for

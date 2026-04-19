@@ -368,42 +368,6 @@ extraction. `/api/system/health` aggregation has already moved to the
 gateway (D1 native aggregator); the monolith path is now only used as a
 `legacy`/`stub` fallback per `Gateway:Sources:SystemHealth`.
 
-### 4.5 D-phase delivered, and what is still deferred
-
-D-phase summary (now in place):
-
-- **D1** — Gateway-native `/api/system/health` aggregator: scrapes
-  `/healthz/ready` on each Phase 2 worker plus the local Redis /
-  Timescale probes; rolls up to `degraded` instead of crashing when a
-  dependency is missing.
-- **D2** — Live `QuoteUpdate` fan-out via Redis pub/sub
-  (`hqqq:channel:quote-update`): the quote-engine publishes envelopes,
-  every gateway replica runs its own subscriber and broadcasts the
-  inner DTO to its SignalR clients. SignalR Redis backplane is
-  deliberately NOT enabled — the per-replica subscribe + local
-  broadcast keeps multi-replica fan-out correct without it.
-- **D3** — Containerized Phase 2 app tier: per-service Dockerfiles
-  (non-root, pinned `mcr.microsoft.com/dotnet/aspnet:10.0`),
-  `docker-compose.phase2.yml` overlay on top of the existing infra
-  compose, `phase2-up`/`phase2-smoke`/`phase2-down` wrapper scripts.
-- **D4** — Azure Container Apps deployment assets: Bicep under
-  `infra/azure/` (ACR + LAW + UAMI + CAE + 5 apps + 1 Manual job),
-  GitHub OIDC workflows
-  ([phase2-images.yml](../.github/workflows/phase2-images.yml),
-  [phase2-deploy.yml](../.github/workflows/phase2-deploy.yml)),
-  walkthrough in [phase2/azure-deploy.md](phase2/azure-deploy.md).
-- **D5** — Multi-gateway replica smoke: `docker-compose.replica-smoke.yml`
-  adds a second gateway replica, `tests/Hqqq.Gateway.ReplicaSmoke/`
-  asserts both replicas receive the same `QuoteUpdate` over the shared
-  Redis pub/sub channel. Scope is gateway-replica correctness, not full
-  HA.
-- **D6** — Operator docs closeout: refreshed architecture / runbook /
-  Phase 2 docs plus new
-  [release-checklist.md](phase2/release-checklist.md),
-  [rollback.md](phase2/rollback.md), and
-  [config-matrix.md](phase2/config-matrix.md).
-
-Still deferred:
 
 - **Phase 3** — Kubernetes app-tier operationalization (`Deployment` +
   `Service` + HPA for stateless services, managed stateful infra

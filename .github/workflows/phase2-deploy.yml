@@ -3,14 +3,27 @@
 #
 # Pipeline shape (manual trigger only):
 #
-#   preflight  →  deploy  →  smoke  →  rollback-assist (opt, on failure)
+#   preflight  →  [provision-data]  →  deploy  →  smoke  →  rollback-assist
+#                  (opt, gated by                                  (opt, on failure)
+#                  provision_data_tier)
 #
 #   - preflight       : strict pre-create validation. Required secrets
 #                       present, RG exists, ACR exists, requested
 #                       image_tag exists for ALL 6 Phase 2 images.
-#   - deploy          : bicep build + what-if + create. Publishes a
-#                       structured `outputs:` block + a machine-readable
-#                       run summary.
+#                       When provision_data_tier=true the data-side
+#                       secrets (KAFKA_*, REDIS_CONFIGURATION,
+#                       TIMESCALE_CONNECTION_STRING) are NOT required —
+#                       they will be produced by the provision-data
+#                       job — but POSTGRES_ADMIN_PASSWORD is.
+#   - provision-data  : optional. When provision_data_tier=true,
+#                       deploys infra/azure/data.bicep (Managed Redis,
+#                       PostgreSQL Flexible Server, Event Hubs +
+#                       topics) and exports its connection-string
+#                       outputs as MASKED job outputs that the deploy
+#                       job consumes in lieu of the env secrets.
+#   - deploy          : bicep build + what-if + create of the app tier
+#                       (main.bicep). Publishes a structured `outputs:`
+#                       block + a machine-readable run summary.
 #   - smoke           : HTTPS probes against the deployed gateway FQDN
 #                       (healthz/live, healthz/ready, /api/system/health
 #                       with sourceMode=aggregated assertion, /api/quote,
@@ -30,10 +43,19 @@
 #   AZURE_TENANT_ID
 #   AZURE_SUBSCRIPTION_ID
 #
-# Required environment ('phase2-demo') secrets:
+# Required environment ('phase2-demo') secrets — when
+# provision_data_tier=false (default):
 #   KAFKA_BOOTSTRAP_SERVERS
+#   KAFKA_SECURITY_PROTOCOL
+#   KAFKA_SASL_MECHANISM
+#   KAFKA_SASL_USERNAME
+#   KAFKA_SASL_PASSWORD
 #   REDIS_CONFIGURATION
 #   TIMESCALE_CONNECTION_STRING
+# Required environment secret — when provision_data_tier=true:
+#   POSTGRES_ADMIN_PASSWORD   (used as the Postgres Flexible Server
+#                              admin password; must satisfy Azure
+#                              complexity rules)
 # Optional environment secret:
 #   TIINGO_API_KEY
 #
@@ -52,9 +74,18 @@ on:
         required: true
         default: "latest"
       bicep_param_file:
-        description: "Path to the .bicepparam file to use."
+        description: "Path to the .bicepparam file to use for the app tier (main.bicep)."
         required: true
         default: "infra/azure/params/main.demo.bicepparam"
+      provision_data_tier:
+        description: "If true, deploy infra/azure/data.bicep (Managed Redis + PostgreSQL Flexible Server + Event Hubs) before the app tier and pipe its outputs into main.bicep. Off by default so the common app-tier-only redeploy path is unchanged."
+        type: boolean
+        required: false
+        default: false
+      data_bicep_param_file:
+        description: "Path to the .bicepparam file to use for the data tier (data.bicep). Only consumed when provision_data_tier=true."
+        required: false
+        default: "infra/azure/params/data.demo.bicepparam"
       what_if_only:
         description: "If true, only run `what-if` and skip the actual deployment + smoke + rollback-assist."
         type: boolean
@@ -107,15 +138,24 @@ jobs:
           KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
           REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
           TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          PROVISION_DATA_TIER: ${{ github.event.inputs.provision_data_tier }}
         run: |
           set -uo pipefail
           # Aggregate every missing secret in one error block so an
           # operator with a fresh environment sees every gap at once.
+          # The set of required secrets depends on whether the
+          # data tier will be provisioned in this run.
           missing=()
-          for s in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
-                   KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL \
-                   KAFKA_SASL_MECHANISM KAFKA_SASL_USERNAME KAFKA_SASL_PASSWORD \
-                   REDIS_CONFIGURATION TIMESCALE_CONNECTION_STRING; do
+          required_repo=( AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID )
+          if [[ "$PROVISION_DATA_TIER" == "true" ]]; then
+            required_env=( POSTGRES_ADMIN_PASSWORD )
+          else
+            required_env=( KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL \
+                           KAFKA_SASL_MECHANISM KAFKA_SASL_USERNAME KAFKA_SASL_PASSWORD \
+                           REDIS_CONFIGURATION TIMESCALE_CONNECTION_STRING )
+          fi
+          for s in "${required_repo[@]}" "${required_env[@]}"; do
             v="${!s:-}"
             if [[ -z "$v" ]]; then
               missing+=("$s")
@@ -124,21 +164,41 @@ jobs:
           if (( ${#missing[@]} > 0 )); then
             echo "::error::Required secrets are missing or empty: ${missing[*]}"
             echo "::error::Repo-level: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID."
-            echo "::error::Environment 'phase2-demo': KAFKA_BOOTSTRAP_SERVERS, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISM, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD, REDIS_CONFIGURATION, TIMESCALE_CONNECTION_STRING."
+            if [[ "$PROVISION_DATA_TIER" == "true" ]]; then
+              echo "::error::Environment 'phase2-demo' (provision_data_tier=true mode): POSTGRES_ADMIN_PASSWORD."
+              echo "::error::KAFKA_*/REDIS_CONFIGURATION/TIMESCALE_CONNECTION_STRING are NOT required in this mode — they will be produced by the data-tier deployment."
+            else
+              echo "::error::Environment 'phase2-demo': KAFKA_BOOTSTRAP_SERVERS, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISM, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD, REDIS_CONFIGURATION, TIMESCALE_CONNECTION_STRING."
+              echo "::error::To bootstrap a brand-new environment without these secrets, re-run with provision_data_tier=true (and set POSTGRES_ADMIN_PASSWORD)."
+            fi
             exit 1
           fi
           echo "All required secrets present (values not logged)."
 
-      - name: Validate bicep param file exists
+      - name: Validate bicep param files exist
+        env:
+          PROVISION_DATA_TIER: ${{ github.event.inputs.provision_data_tier }}
+          DATA_PARAM: ${{ github.event.inputs.data_bicep_param_file }}
         run: |
           set -euo pipefail
           PARAM="${{ github.event.inputs.bicep_param_file }}"
           if [[ ! -f "$PARAM" ]]; then
-            echo "::error::Bicep param file not found at '$PARAM'."
-            echo "::error::Inputs.bicep_param_file must point to an existing file in the repo (e.g. infra/azure/params/main.demo.bicepparam)."
+            echo "::error::App-tier bicep param file not found at '$PARAM'."
+            echo "::error::inputs.bicep_param_file must point to an existing file in the repo (e.g. infra/azure/params/main.demo.bicepparam)."
             exit 1
           fi
-          echo "Param file '$PARAM' OK."
+          echo "App-tier param file '$PARAM' OK."
+
+          if [[ "$PROVISION_DATA_TIER" == "true" ]]; then
+            if [[ ! -f "$DATA_PARAM" ]]; then
+              echo "::error::Data-tier bicep param file not found at '$DATA_PARAM'."
+              echo "::error::inputs.data_bicep_param_file must point to an existing file in the repo (e.g. infra/azure/params/data.demo.bicepparam)."
+              exit 1
+            fi
+            echo "Data-tier param file '$DATA_PARAM' OK."
+          else
+            echo "provision_data_tier=false; data-tier param file not validated."
+          fi
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -210,17 +270,173 @@ jobs:
             echo ""
             echo "- Resource group: \`$RESOURCE_GROUP\`"
             echo "- ACR: \`$PHASE2_ACR_NAME\`"
-            echo "- Param file: \`${{ github.event.inputs.bicep_param_file }}\`"
+            echo "- App-tier param file: \`${{ github.event.inputs.bicep_param_file }}\`"
             echo "- Image tag: \`${{ github.event.inputs.image_tag }}\` (verified across all 6 services)"
+            echo "- provision_data_tier: \`${{ github.event.inputs.provision_data_tier }}\`"
+            if [[ "${{ github.event.inputs.provision_data_tier }}" == "true" ]]; then
+              echo "- Data-tier param file: \`${{ github.event.inputs.data_bicep_param_file }}\`"
+            fi
             echo "- what_if_only: \`${{ github.event.inputs.what_if_only }}\`"
             echo "- run_analytics_smoke: \`${{ github.event.inputs.run_analytics_smoke }}\`"
             echo "- rollback_on_smoke_failure: \`${{ github.event.inputs.rollback_on_smoke_failure }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # ── Provision data tier: optional, only when bootstrapping. ──────
+  # Deploys infra/azure/data.bicep (Managed Redis + Postgres Flexible
+  # Server + Event Hubs namespace + the six HQQQ topics + Send,Listen
+  # SAS rule), then captures every connection string the app tier
+  # needs as MASKED job outputs. The deploy job consumes them through
+  # `needs.provision-data.outputs.*` instead of the env secrets.
+  #
+  # When provision_data_tier=false this job is skipped and the deploy
+  # job falls back to the historic env-secret pathway, leaving the
+  # app-tier-only fast path completely unchanged.
+  provision-data:
+    name: Provision data tier
+    needs: preflight
+    if: ${{ github.event.inputs.provision_data_tier == 'true' }}
+    runs-on: ubuntu-latest
+    environment: phase2-demo
+    env:
+      RESOURCE_GROUP: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2-demo-eus-01' }}
+      LOCATION: ${{ vars.PHASE2_LOCATION != '' && vars.PHASE2_LOCATION || 'eastus' }}
+    outputs:
+      kafka_bootstrap_servers: ${{ steps.deploy_data.outputs.kafka_bootstrap_servers }}
+      kafka_security_protocol: ${{ steps.deploy_data.outputs.kafka_security_protocol }}
+      kafka_sasl_mechanism: ${{ steps.deploy_data.outputs.kafka_sasl_mechanism }}
+      kafka_sasl_username: ${{ steps.deploy_data.outputs.kafka_sasl_username }}
+      kafka_sasl_password: ${{ steps.deploy_data.outputs.kafka_sasl_password }}
+      redis_configuration: ${{ steps.deploy_data.outputs.redis_configuration }}
+      timescale_connection_string: ${{ steps.deploy_data.outputs.timescale_connection_string }}
+      postgres_fqdn: ${{ steps.deploy_data.outputs.postgres_fqdn }}
+      postgres_database: ${{ steps.deploy_data.outputs.postgres_database }}
+      postgres_admin_login: ${{ steps.deploy_data.outputs.postgres_admin_login }}
+      event_hubs_namespace: ${{ steps.deploy_data.outputs.event_hubs_namespace }}
+      redis_host: ${{ steps.deploy_data.outputs.redis_host }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Bicep build (validate data-tier template syntax)
+        run: az bicep build --file infra/azure/data.bicep
+
+      - name: Data-tier what-if
+        env:
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/azure/data.bicep \
+            --parameters "${{ github.event.inputs.data_bicep_param_file }}" \
+            --parameters \
+              postgresAdministratorPassword="$POSTGRES_ADMIN_PASSWORD"
+
+      - name: Data-tier deployment create
+        id: deploy_data
+        env:
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          DEPLOY_NAME="phase2-data-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}"
+          OUT_FILE="$(mktemp)"
+          az deployment group create \
+            --name "$DEPLOY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/azure/data.bicep \
+            --parameters "${{ github.event.inputs.data_bicep_param_file }}" \
+            --parameters \
+              postgresAdministratorPassword="$POSTGRES_ADMIN_PASSWORD" \
+            --query properties.outputs \
+            --output json > "$OUT_FILE"
+
+          # Pull every output. The four secret outputs are masked
+          # before being written to GITHUB_OUTPUT so they do not
+          # appear in any subsequent log line.
+          KAFKA_BOOTSTRAP=$(jq -r '.kafkaBootstrapServers.value // empty' "$OUT_FILE")
+          KAFKA_SEC=$(jq -r '.kafkaSecurityProtocol.value // empty' "$OUT_FILE")
+          KAFKA_MECH=$(jq -r '.kafkaSaslMechanism.value // empty' "$OUT_FILE")
+          KAFKA_USER=$(jq -r '.kafkaSaslUsername.value // empty' "$OUT_FILE")
+          KAFKA_PASS=$(jq -r '.kafkaSaslPassword.value // empty' "$OUT_FILE")
+          REDIS_CONFIG=$(jq -r '.redisConfiguration.value // empty' "$OUT_FILE")
+          TIMESCALE_CS=$(jq -r '.timescaleConnectionString.value // empty' "$OUT_FILE")
+          PG_FQDN=$(jq -r '.postgresFqdn.value // empty' "$OUT_FILE")
+          PG_DB=$(jq -r '.postgresDatabaseName.value // empty' "$OUT_FILE")
+          PG_USER=$(jq -r '.postgresAdministratorLogin.value // empty' "$OUT_FILE")
+          EH_NS=$(jq -r '.eventHubsNamespaceName.value // empty' "$OUT_FILE")
+          REDIS_HOST=$(jq -r '.redisHost.value // empty' "$OUT_FILE")
+
+          # Mask the four real secrets BEFORE any echo touches them.
+          # The kafka_bootstrap value is also masked because it is
+          # surfaced from a @secure() output even though the host
+          # itself is not strictly sensitive.
+          for v in "$KAFKA_BOOTSTRAP" "$KAFKA_PASS" "$REDIS_CONFIG" "$TIMESCALE_CS"; do
+            if [[ -n "$v" ]]; then
+              echo "::add-mask::$v"
+            fi
+          done
+
+          {
+            echo "kafka_bootstrap_servers=$KAFKA_BOOTSTRAP"
+            echo "kafka_security_protocol=$KAFKA_SEC"
+            echo "kafka_sasl_mechanism=$KAFKA_MECH"
+            echo "kafka_sasl_username=$KAFKA_USER"
+            echo "kafka_sasl_password=$KAFKA_PASS"
+            echo "redis_configuration=$REDIS_CONFIG"
+            echo "timescale_connection_string=$TIMESCALE_CS"
+            echo "postgres_fqdn=$PG_FQDN"
+            echo "postgres_database=$PG_DB"
+            echo "postgres_admin_login=$PG_USER"
+            echo "event_hubs_namespace=$EH_NS"
+            echo "redis_host=$REDIS_HOST"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Data-tier deployment '$DEPLOY_NAME' complete."
+
+      - name: Data-tier summary
+        run: |
+          {
+            echo "## Phase 2 data tier: provisioned"
+            echo ""
+            echo "| Resource | Value |"
+            echo "|----------|-------|"
+            echo "| Postgres FQDN | \`${{ steps.deploy_data.outputs.postgres_fqdn }}\` |"
+            echo "| Postgres database | \`${{ steps.deploy_data.outputs.postgres_database }}\` |"
+            echo "| Postgres admin login | \`${{ steps.deploy_data.outputs.postgres_admin_login }}\` |"
+            echo "| Event Hubs namespace | \`${{ steps.deploy_data.outputs.event_hubs_namespace }}\` |"
+            echo "| Redis host | \`${{ steps.deploy_data.outputs.redis_host }}\` |"
+            echo ""
+            echo "### Manual post-provision step (REQUIRED before app smoke)"
+            echo ""
+            echo "TimescaleDB is allow-listed at the server level but the extension is NOT created. Run once against the new database:"
+            echo ""
+            echo '```bash'
+            echo "PGPASSWORD='<POSTGRES_ADMIN_PASSWORD>' psql \\"
+            echo "  --host=${{ steps.deploy_data.outputs.postgres_fqdn }} \\"
+            echo "  --port=5432 \\"
+            echo "  --username=${{ steps.deploy_data.outputs.postgres_admin_login }} \\"
+            echo "  --dbname=${{ steps.deploy_data.outputs.postgres_database }} \\"
+            echo "  --command='CREATE EXTENSION IF NOT EXISTS timescaledb;'"
+            echo '```'
+            echo ""
+            echo "If your workstation IP is not in \`postgresFirewallAllowedIpRanges\`, append it to the data-tier param file and re-run with \`provision_data_tier=true\` (idempotent), or add a one-off rule via \`az postgres flexible-server firewall-rule create\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ── Deploy: bicep build + what-if + create, structured outputs. ───
   deploy:
     name: Deploy (${{ github.event.inputs.image_tag }})
-    needs: preflight
+    needs: [preflight, provision-data]
+    # Run when preflight succeeded AND (provision-data succeeded OR
+    # was skipped because provision_data_tier=false). The default
+    # job-level success() condition would skip deploy whenever
+    # provision-data is skipped, so spell the condition out.
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.provision-data.result == 'success' || needs.provision-data.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: phase2-demo
     env:
@@ -250,15 +466,92 @@ jobs:
       - name: Bicep build (validate template syntax)
         run: az bicep build --file infra/azure/main.bicep
 
+      # ── Resolve connection strings from either (a) the upstream
+      # provision-data job's MASKED outputs when provision_data_tier
+      # was true this run, or (b) the historic env-secret pathway
+      # otherwise. Doing the selection in a single step keeps both
+      # what-if and create steps reading the same env block.
+      - name: Resolve data-tier secrets for app-tier deploy
+        id: resolve_secrets
+        env:
+          PROVISION_DATA_TIER: ${{ github.event.inputs.provision_data_tier }}
+          # provision-data outputs (empty when the job was skipped)
+          PD_KAFKA_BOOTSTRAP_SERVERS: ${{ needs.provision-data.outputs.kafka_bootstrap_servers }}
+          PD_KAFKA_SECURITY_PROTOCOL: ${{ needs.provision-data.outputs.kafka_security_protocol }}
+          PD_KAFKA_SASL_MECHANISM: ${{ needs.provision-data.outputs.kafka_sasl_mechanism }}
+          PD_KAFKA_SASL_USERNAME: ${{ needs.provision-data.outputs.kafka_sasl_username }}
+          PD_KAFKA_SASL_PASSWORD: ${{ needs.provision-data.outputs.kafka_sasl_password }}
+          PD_REDIS_CONFIGURATION: ${{ needs.provision-data.outputs.redis_configuration }}
+          PD_TIMESCALE_CONNECTION_STRING: ${{ needs.provision-data.outputs.timescale_connection_string }}
+          # env-secret pathway (empty when caller is in the provision_data_tier=true mode)
+          ES_KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          ES_KAFKA_SECURITY_PROTOCOL: ${{ secrets.KAFKA_SECURITY_PROTOCOL }}
+          ES_KAFKA_SASL_MECHANISM: ${{ secrets.KAFKA_SASL_MECHANISM }}
+          ES_KAFKA_SASL_USERNAME: ${{ secrets.KAFKA_SASL_USERNAME }}
+          ES_KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
+          ES_REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
+          ES_TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+        run: |
+          set -uo pipefail
+          if [[ "$PROVISION_DATA_TIER" == "true" ]]; then
+            echo "Sourcing app-tier secrets from upstream provision-data job outputs."
+            KAFKA_BOOTSTRAP="$PD_KAFKA_BOOTSTRAP_SERVERS"
+            KAFKA_SEC="$PD_KAFKA_SECURITY_PROTOCOL"
+            KAFKA_MECH="$PD_KAFKA_SASL_MECHANISM"
+            KAFKA_USER="$PD_KAFKA_SASL_USERNAME"
+            KAFKA_PASS="$PD_KAFKA_SASL_PASSWORD"
+            REDIS_CONFIG="$PD_REDIS_CONFIGURATION"
+            TIMESCALE_CS="$PD_TIMESCALE_CONNECTION_STRING"
+          else
+            echo "Sourcing app-tier secrets from phase2-demo environment secrets."
+            KAFKA_BOOTSTRAP="$ES_KAFKA_BOOTSTRAP_SERVERS"
+            KAFKA_SEC="$ES_KAFKA_SECURITY_PROTOCOL"
+            KAFKA_MECH="$ES_KAFKA_SASL_MECHANISM"
+            KAFKA_USER="$ES_KAFKA_SASL_USERNAME"
+            KAFKA_PASS="$ES_KAFKA_SASL_PASSWORD"
+            REDIS_CONFIG="$ES_REDIS_CONFIGURATION"
+            TIMESCALE_CS="$ES_TIMESCALE_CONNECTION_STRING"
+          fi
+
+          # Defence in depth: the provision-data outputs are already
+          # masked but the env-secret values picked up via the
+          # secrets context are masked automatically only on the FIRST
+          # use; explicitly re-mask either way before they hit the
+          # GITHUB_ENV file used by the next steps.
+          for v in "$KAFKA_BOOTSTRAP" "$KAFKA_PASS" "$REDIS_CONFIG" "$TIMESCALE_CS"; do
+            if [[ -n "$v" ]]; then
+              echo "::add-mask::$v"
+            fi
+          done
+
+          # Surface as plain env vars on the runner so the az calls
+          # below stay readable. GITHUB_ENV does NOT log values.
+          {
+            echo "KAFKA_BOOTSTRAP_SERVERS<<__EOF__"
+            echo "$KAFKA_BOOTSTRAP"
+            echo "__EOF__"
+            echo "KAFKA_SECURITY_PROTOCOL<<__EOF__"
+            echo "$KAFKA_SEC"
+            echo "__EOF__"
+            echo "KAFKA_SASL_MECHANISM<<__EOF__"
+            echo "$KAFKA_MECH"
+            echo "__EOF__"
+            echo "KAFKA_SASL_USERNAME<<__EOF__"
+            echo "$KAFKA_USER"
+            echo "__EOF__"
+            echo "KAFKA_SASL_PASSWORD<<__EOF__"
+            echo "$KAFKA_PASS"
+            echo "__EOF__"
+            echo "REDIS_CONFIGURATION<<__EOF__"
+            echo "$REDIS_CONFIG"
+            echo "__EOF__"
+            echo "TIMESCALE_CONNECTION_STRING<<__EOF__"
+            echo "$TIMESCALE_CS"
+            echo "__EOF__"
+          } >> "$GITHUB_ENV"
+
       - name: Deployment what-if
         env:
-          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
-          KAFKA_SECURITY_PROTOCOL: ${{ secrets.KAFKA_SECURITY_PROTOCOL }}
-          KAFKA_SASL_MECHANISM: ${{ secrets.KAFKA_SASL_MECHANISM }}
-          KAFKA_SASL_USERNAME: ${{ secrets.KAFKA_SASL_USERNAME }}
-          KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
-          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
-          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
         run: |
           set -euo pipefail
@@ -281,13 +574,6 @@ jobs:
         if: ${{ github.event.inputs.what_if_only != 'true' }}
         id: deploy
         env:
-          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
-          KAFKA_SECURITY_PROTOCOL: ${{ secrets.KAFKA_SECURITY_PROTOCOL }}
-          KAFKA_SASL_MECHANISM: ${{ secrets.KAFKA_SASL_MECHANISM }}
-          KAFKA_SASL_USERNAME: ${{ secrets.KAFKA_SASL_USERNAME }}
-          KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
-          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
-          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
         run: |
           set -euo pipefail

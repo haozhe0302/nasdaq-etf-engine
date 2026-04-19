@@ -39,12 +39,11 @@ to the template logic.
 
 ---
 
-## 2) What is NOT provisioned
+## 2) What is NOT provisioned by `main.bicep`
 
-- Kafka cluster (managed Kafka surface or self-hosted)
-- Redis (Azure Cache for Redis or equivalent)
-- PostgreSQL with the TimescaleDB extension
+- Kafka cluster, Redis, PostgreSQL/TimescaleDB
 - Custom domain + TLS cert on the gateway
+- Key Vault for secret resolution
 
 These are passed in via `@secure()` deploy-time parameters
 (`kafkaBootstrapServers`, `redisConfiguration`,
@@ -54,16 +53,23 @@ already speak generic .NET hierarchical config keys
 `Timescale__ConnectionString`, `Tiingo__ApiKey`) so any provider
 that emits a wire-compatible endpoint works without code changes.
 
-Persistent storage for the `hqqq-quote-engine` checkpoint is now an
-**opt-in** part of this template (off in `main.example.bicepparam`,
+The data + messaging tier (Kafka, Redis, Postgres) **does** have a
+sibling Bicep template in this directory —
+[`data.bicep`](data.bicep) — that provisions Azure Managed Redis,
+PostgreSQL Flexible Server (with the TimescaleDB extension
+allow-listed), and an Event Hubs namespace + the six HQQQ topics.
+It is opt-in via the `provision_data_tier` workflow input so the
+common app-tier-only redeploy path stays fast and never touches
+stateful resources. See [§2b](#2b-data--messaging-tier-opt-in-via-databicep)
+and the operator walkthrough in
+[`docs/phase2/azure-deploy.md` §11](../../docs/phase2/azure-deploy.md).
+
+Persistent storage for the `hqqq-quote-engine` checkpoint is also
+an **opt-in** part of `main.bicep` (off in `main.example.bicepparam`,
 on in `main.demo.bicepparam`). See
 [§2a Persistent checkpoint storage](#2a-persistent-checkpoint-storage-opt-in)
 below and the operator walkthrough in
 [`docs/phase2/azure-deploy.md` §9](../../docs/phase2/azure-deploy.md).
-
-For Azure-native paths to fill in the remaining external dependencies,
-see the deferred-work notes in
-[`docs/phase2/azure-deploy.md`](../../docs/phase2/azure-deploy.md).
 
 ### 2a) Persistent checkpoint storage (opt-in)
 
@@ -88,6 +94,37 @@ param quoteEngineFileShareQuotaGiB     = 100
 
 The toggle is fully orthogonal to local dev: `dotnet run` and
 `docker-compose.phase2.yml` keep their existing checkpoint paths.
+
+### 2b) Data + messaging tier (opt-in via `data.bicep`)
+
+[`data.bicep`](data.bicep) is a sibling RG-scope template that
+provisions everything `main.bicep` deliberately leaves to deploy-time
+secrets. It is invoked by `phase2-deploy.yml` only when the workflow
+is dispatched with `provision_data_tier=true`; the resulting
+connection strings are forwarded into `main.bicep` as masked job
+outputs. Two-template separation is intentional so the common
+app-tier-only redeploy path (the inner-loop case) is unchanged.
+
+| Resource | Default name (demo) | Default SKU | Notes |
+|----------|---------------------|-------------|-------|
+| Azure Managed Redis | `redis-hqqq-p2-demo-eus-01` | `Balanced_B0` | Smallest GA Managed Redis tier. Single database, port 10000, TLS-only, `EnterpriseCluster` policy. |
+| PostgreSQL Flexible Server | `psql-hqqq-p2-demo-eus-01` | `Standard_B1ms` Burstable, 32 GiB | PG 16, password auth, public network access on, single firewall rule allows all Azure services (required because the CAE has no VNet integration). |
+| Postgres database | `hqqq` (on the server above) | — | Created empty. The TIMESCALEDB extension is allow-listed at the server level via the `azure.extensions` server parameter; `CREATE EXTENSION` itself is left as the operator's explicit step (see `azure-deploy.md` §11.4). |
+| Event Hubs namespace | `evhns-hqqq-p2-demo-eus-01` | `Standard`, 1 TU | Kafka surface enabled on `:9093`. Auto-inflate off. |
+| Event Hubs (Kafka topics) | 6 hubs matching `docs/phase2/topics.md` | partition counts 3/3/1/1/1/1 | Compaction is **not** supported on Standard; the two compacted HQQQ topics fall back to time-based retention. Override `eventHubsSku=Premium` per environment for compaction parity. |
+| Namespace SAS rule | `hqqq-services` | `Send,Listen` | Single namespace-scoped key — used as the Kafka SASL password by every HQQQ client. |
+
+Required additional `phase2-demo` GitHub environment secret when
+`provision_data_tier=true`:
+
+| Secret | Required | Purpose |
+|--------|----------|---------|
+| `POSTGRES_ADMIN_PASSWORD` | yes (data-tier mode only) | Admin password for the new PostgreSQL Flexible Server. Must satisfy Azure complexity rules (8–128 chars, 3 of {upper, lower, digits, symbols}). |
+
+In bring-your-own mode (`provision_data_tier=false`, the default),
+`POSTGRES_ADMIN_PASSWORD` is unused and the historic
+`KAFKA_*` / `REDIS_CONFIGURATION` / `TIMESCALE_CONNECTION_STRING`
+secrets remain required.
 
 ---
 
@@ -180,16 +217,24 @@ GitHub **environment** `phase2-demo` secrets (used only by the
 deploy workflow; environment scope keeps blast radius small and
 allows future approval gates):
 
-| Secret                          | Required | Purpose                                                         |
-| ------------------------------- | -------- | --------------------------------------------------------------- |
-| `KAFKA_BOOTSTRAP_SERVERS`       | yes      | All Kafka producers/consumers                                   |
-| `KAFKA_SECURITY_PROTOCOL`       | yes      | Kafka SASL/SSL protocol (e.g. `SaslSsl` for Event Hubs)         |
-| `KAFKA_SASL_MECHANISM`          | yes      | Kafka SASL mechanism (e.g. `Plain` for Event Hubs)              |
-| `KAFKA_SASL_USERNAME`           | yes      | Kafka SASL username (`$ConnectionString` literal for Event Hubs) |
-| `KAFKA_SASL_PASSWORD`           | yes      | Kafka SASL password (Event Hubs namespace connection string)    |
-| `REDIS_CONFIGURATION`           | yes      | Gateway, quote-engine                                           |
-| `TIMESCALE_CONNECTION_STRING`   | yes      | Gateway, persistence, analytics                                 |
-| `TIINGO_API_KEY`                | no       | Ingress only                                                    |
+| Secret                          | Required when                                            | Purpose                                                         |
+| ------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------- |
+| `KAFKA_BOOTSTRAP_SERVERS`       | `provision_data_tier=false` (the default; bring-your-own data tier) | All Kafka producers/consumers                                   |
+| `KAFKA_SECURITY_PROTOCOL`       | `provision_data_tier=false`                              | Kafka SASL/SSL protocol (e.g. `SaslSsl` for Event Hubs)         |
+| `KAFKA_SASL_MECHANISM`          | `provision_data_tier=false`                              | Kafka SASL mechanism (e.g. `Plain` for Event Hubs)              |
+| `KAFKA_SASL_USERNAME`           | `provision_data_tier=false`                              | Kafka SASL username (`$ConnectionString` literal for Event Hubs) |
+| `KAFKA_SASL_PASSWORD`           | `provision_data_tier=false`                              | Kafka SASL password (Event Hubs namespace connection string)    |
+| `REDIS_CONFIGURATION`           | `provision_data_tier=false`                              | Gateway, quote-engine                                           |
+| `TIMESCALE_CONNECTION_STRING`   | `provision_data_tier=false`                              | Gateway, persistence, analytics                                 |
+| `POSTGRES_ADMIN_PASSWORD`       | `provision_data_tier=true` (data-tier bootstrap mode)    | Admin password for the new PostgreSQL Flexible Server. Must satisfy Azure complexity rules (8–128 chars, 3 of {upper, lower, digits, symbols}). |
+| `TIINGO_API_KEY`                | optional                                                 | Ingress only                                                    |
+
+The two columns of secrets are mutually exclusive per run: in
+data-tier-bootstrap mode (`provision_data_tier=true`) the seven
+KAFKA/REDIS/TIMESCALE secrets are produced by `data.bicep` and
+forwarded as masked job outputs, so only `POSTGRES_ADMIN_PASSWORD`
+needs to be set ahead of time. In bring-your-own mode the seven
+secrets stay required and `POSTGRES_ADMIN_PASSWORD` is unused.
 
 ---
 
@@ -253,6 +298,16 @@ Inputs:
   services. For reproducibility prefer `vsha-...`.
 - `bicep_param_file` (default `infra/azure/params/main.demo.bicepparam`)
   — swap this when adding additional environments.
+- `provision_data_tier` (boolean, default `false`) — when true, runs
+  an extra `provision-data` job before `deploy` that deploys
+  [`infra/azure/data.bicep`](data.bicep) (Managed Redis + PostgreSQL
+  Flexible Server + Event Hubs) and pipes its connection-string
+  outputs into `main.bicep` as masked job outputs. Defaults to
+  `false` so app-tier-only redeploys keep their existing fast path.
+  See [§2b](#2b-data--messaging-tier-opt-in-via-databicep) and
+  [`docs/phase2/azure-deploy.md` §11](../../docs/phase2/azure-deploy.md).
+- `data_bicep_param_file` (default `infra/azure/params/data.demo.bicepparam`)
+  — only consumed when `provision_data_tier=true`.
 - `what_if_only` (boolean, default `false`) — dry-run; skips
   deploy create, smoke, and rollback-assist.
 - `run_analytics_smoke` (boolean, default `false`) — when true, the
@@ -270,10 +325,11 @@ Inputs:
 ## 5) Local validation (no deploy)
 
 ```bash
-# Lint + compile the template
+# Lint + compile both templates
 az bicep build --file infra/azure/main.bicep
+az bicep build --file infra/azure/data.bicep
 
-# What-if against a real RG (read-only, but requires Azure auth):
+# What-if the app tier against a real RG (read-only, but requires Azure auth):
 az deployment group what-if \
   --resource-group rg-hqqq-p2-demo-eus-01 \
   --template-file infra/azure/main.bicep \
@@ -287,6 +343,14 @@ az deployment group what-if \
     kafkaSaslPassword='<event-hubs-connection-string>' \
     redisConfiguration='<...>' \
     timescaleConnectionString='<...>'
+
+# What-if the data tier (only postgresAdministratorPassword is required):
+az deployment group what-if \
+  --resource-group rg-hqqq-p2-demo-eus-01 \
+  --template-file infra/azure/data.bicep \
+  --parameters infra/azure/params/data.demo.bicepparam \
+  --parameters \
+    postgresAdministratorPassword='<a-strong-password>'
 ```
 
 ---
@@ -341,7 +405,8 @@ az containerapp job execution list \
 
 ```text
 infra/azure/
-├── main.bicep                               RG-scope orchestrator
+├── main.bicep                               RG-scope orchestrator (app tier)
+├── data.bicep                               RG-scope orchestrator (data + messaging tier, opt-in)
 ├── modules/
 │   ├── acr.bicep                            ACR (no admin user)
 │   ├── logAnalytics.bicep                   Workspace + retention
@@ -351,10 +416,15 @@ infra/azure/
 │   ├── containerApp.bicep                   Generic app module (now supports volumes)
 │   ├── containerAppJob.bicep                Generic job module
 │   ├── storageAccount.bicep                 Storage account + Azure Files share (opt-in)
-│   └── managedEnvironmentStorage.bicep      CAE storage definition for Azure Files (opt-in)
+│   ├── managedEnvironmentStorage.bicep      CAE storage definition for Azure Files (opt-in)
+│   ├── managedRedis.bicep                   Azure Managed Redis cluster + database (data tier)
+│   ├── postgresFlexible.bicep               PostgreSQL Flexible Server + hqqq DB + firewall + azure.extensions allow-list (data tier)
+│   └── eventHubsNamespace.bicep             Event Hubs namespace + 6 hubs + Send,Listen SAS rule (data tier)
 ├── params/
-│   ├── main.demo.bicepparam                 Concrete demo names
-│   └── main.example.bicepparam              Placeholder reference
+│   ├── main.demo.bicepparam                 Concrete demo names (app tier)
+│   ├── main.example.bicepparam              Placeholder reference (app tier)
+│   ├── data.demo.bicepparam                 Concrete demo names (data tier)
+│   └── data.example.bicepparam              Placeholder reference (data tier)
 ├── scripts/
 │   └── phase2-azure-smoke.sh                Post-deploy HTTPS smoke probe
 └── README.md                                this file

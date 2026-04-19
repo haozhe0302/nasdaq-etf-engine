@@ -16,12 +16,18 @@
 //       ingress / quote-engine / persistence (internal :8081)
 //   - 1 Container Apps Job: hqqq-analytics (Manual trigger)
 //
-// What this template does NOT provision (assumed external, passed
-// in via @secure() params):
-//   - Kafka cluster (managed Kafka surface or self-hosted)
-//   - Redis (Azure Cache for Redis or equivalent)
-//   - PostgreSQL/TimescaleDB
-//   See "Explicitly deferred" in the D4 plan for the rationale.
+// What this template does NOT provision directly:
+//   - Kafka cluster, Redis, PostgreSQL/TimescaleDB.
+// These now live in the sibling data-tier template
+// `infra/azure/data.bicep`, which provisions Azure Managed Redis,
+// PostgreSQL Flexible Server (with TIMESCALEDB allow-listed), and
+// an Event Hubs namespace + the six HQQQ topics. Two-template
+// separation is intentional so app-tier-only redeploys never
+// touch stateful resources. The connection strings still flow
+// in here as @secure() parameters; whether they come from
+// pre-existing infra or from a `data.bicep` deployment is
+// transparent to this template. See `phase2-deploy.yml`'s
+// `provision_data_tier` input for the chained-deploy path.
 //
 // Naming: every resource name is a parameter. Concrete names live
 // only in the .bicepparam files under params/. To work around an

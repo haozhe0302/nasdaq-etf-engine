@@ -24,9 +24,18 @@ document explains *how to use* the resulting workflows day-to-day.
   workflow keeps using `ACR_USERNAME` / `ACR_PASSWORD` against
   the legacy ACR — intentionally left alone so Phase 1 stays
   demoable while Phase 2 hardens.)
-- **External dependencies**: Kafka, Redis, TimescaleDB are assumed
-  to already exist somewhere reachable from the Container Apps
-  environment. Their connection strings are deploy-time secrets.
+- **External dependencies**: Kafka, Redis, TimescaleDB. Their
+  connection strings reach the Container Apps environment as
+  deploy-time secrets. Two provisioning paths are supported:
+  (a) **bring-your-own** — point the workflow at any reachable
+  Kafka / Redis / Postgres and supply connection strings via
+  `phase2-demo` GitHub environment secrets (the historic posture);
+  (b) **bootstrap from Bicep** — set `provision_data_tier=true`
+  and the workflow first runs [`infra/azure/data.bicep`](../../infra/azure/data.bicep)
+  to provision Azure Managed Redis, Azure Database for PostgreSQL
+  Flexible Server (with the TimescaleDB extension allow-listed),
+  and an Event Hubs namespace + the six HQQQ topics — then pipes
+  the resulting connection strings into the app tier. See §11.
 
 ---
 
@@ -409,17 +418,160 @@ that don't want any storage cost can keep the historic posture.
 ## 10) Explicitly deferred (D5 / D6 / Phase 3)
 
 - Custom domain + TLS cert binding on the gateway external ingress.
-- Bicep provisioning of Azure Cache for Redis, Azure Database for
-  PostgreSQL Flexible Server with the TimescaleDB extension, and a
-  managed Kafka surface (Confluent Cloud or Event Hubs Kafka).
-  Note: Kafka **auth** (SecurityProtocol / SaslMechanism /
-  SaslUsername / SaslPassword) is now deploy-time wired (see §8);
-  what remains deferred is provisioning the Event Hubs / Confluent
-  namespace itself from Bicep, plus threading
-  `Kafka__EnableTopicBootstrap` through the template if that toggle
-  needs to vary per environment.
+- **Premium Event Hubs** (i.e., Kafka **log compaction** parity for
+  `market.latest_by_symbol.v1` and `refdata.basket.active.v1`).
+  `data.bicep` defaults to Standard tier; the two compacted topics
+  run with time-based retention only on Standard. Operators who
+  need true OSS-Kafka compaction parity can override `eventHubsSku`
+  to `Premium` per environment.
+- **Postgres / Redis / Event Hubs private endpoints** and VNet
+  integration of the Container Apps environment. `data.bicep`
+  currently uses public endpoints with `AllowAllAzureServices`
+  firewall rules — adequate for the demo, not for production.
+- **Key Vault**-backed secret resolution for the connection strings.
+  The current pipeline stages Bicep `@secure()` outputs as masked
+  GitHub Actions job outputs and forwards them into the app-tier
+  deployment. A Key Vault round-trip would let the data-tier deploy
+  store every secret at provision time and let the app-tier deploy
+  reference them by `keyVaultReference` instead of receiving them
+  as parameters.
+- **AAD auth** to Postgres + AcrPush for the existing UAMI to data
+  resources (today only ACR is granted). Prerequisite for removing
+  password auth on Postgres.
+- `Kafka__EnableTopicBootstrap` threading through the template (no
+  longer needed for Event Hubs since `data.bicep` creates the hubs
+  declaratively, but the toggle would matter for self-hosted
+  Kafka).
 - Scheduled trigger for the analytics job (currently Manual only).
 - Dapr / service-mesh wiring inside the Container Apps environment.
 - Migrating the legacy `hqqq-api` workflow to OIDC.
 - Migrating `hqqq-ui` off Static Web Apps if a unified deployment
   posture is later required.
+
+---
+
+## 11) Bootstrapping a brand-new environment with `data.bicep`
+
+This is the one-command path for standing up an HQQQ environment
+from scratch — i.e., the operator does **not** already have a
+Kafka / Redis / Postgres reachable from the new resource group.
+
+### 11.1 What it provisions
+
+| Resource | Default name (demo) | Default SKU |
+|---|---|---|
+| Azure Managed Redis cluster + database | `redis-hqqq-p2-demo-eus-01` | `Balanced_B0` (smallest GA Managed Redis) |
+| PostgreSQL Flexible Server + `hqqq` database | `psql-hqqq-p2-demo-eus-01` | `Standard_B1ms` Burstable, 32 GiB |
+| Event Hubs namespace + 6 hubs + Send,Listen SAS rule | `evhns-hqqq-p2-demo-eus-01` | `Standard`, 1 throughput unit |
+
+Topics provisioned (matches `docs/phase2/topics.md` exactly):
+`market.raw_ticks.v1` (3 partitions), `market.latest_by_symbol.v1`
+(3), `refdata.basket.active.v1` (1), `refdata.basket.events.v1`
+(1), `pricing.snapshots.v1` (1), `ops.incidents.v1` (1).
+
+Every SKU/capacity is a parameter — see
+[`infra/azure/params/data.demo.bicepparam`](../../infra/azure/params/data.demo.bicepparam)
+and [`data.example.bicepparam`](../../infra/azure/params/data.example.bicepparam).
+
+### 11.2 Pre-flight (one-time, per environment)
+
+1. Resource group exists:
+   ```bash
+   az group create --name rg-hqqq-p2-demo-eus-01 --location eastus
+   ```
+2. The OIDC federated identity (per
+   [`infra/azure/README.md`](../../infra/azure/README.md) §3.2)
+   has Contributor on the RG.
+3. GitHub environment `phase2-demo` has secret
+   `POSTGRES_ADMIN_PASSWORD` set to a value that satisfies Azure's
+   Postgres complexity rules (8–128 chars, 3 of {upper, lower,
+   digits, symbols}). When `provision_data_tier=true` the workflow
+   does **not** require any of `KAFKA_*`, `REDIS_CONFIGURATION`,
+   `TIMESCALE_CONNECTION_STRING` — those will be produced by the
+   data-tier deployment and forwarded to the app tier as masked
+   job outputs.
+
+### 11.3 Run
+
+Trigger `phase2-deploy.yml` manually with:
+
+- `image_tag` = your `vsha-...` tag (must already exist in ACR; if
+  the ACR itself does not exist yet, run `phase2-images.yml` first
+  with manual ACR creation per `infra/azure/README.md` §3.4).
+- `provision_data_tier` = **true**
+- `data_bicep_param_file` = `infra/azure/params/data.demo.bicepparam`
+  (or your fork)
+- Everything else at defaults.
+
+Pipeline shape this run:
+
+```
+preflight  →  provision-data  →  deploy  →  smoke
+```
+
+The `provision-data` job runs `data.bicep`, captures every
+connection string as a **masked** job output, and the `deploy` job
+forwards those outputs into `main.bicep`'s `@secure()` parameters
+instead of reading from `phase2-demo` env secrets.
+
+### 11.4 Manual post-provision steps
+
+These remain **operator-driven by design** (the IaC contract is
+"do not auto-run destructive DB initialization without explicit
+control"):
+
+1. **Enable the TimescaleDB extension on the new database.** The
+   `data.bicep` template allow-lists `TIMESCALEDB` at the server
+   level via the `azure.extensions` server parameter, but it does
+   not run `CREATE EXTENSION` itself. Run once per environment:
+
+   ```bash
+   PGPASSWORD='<value of POSTGRES_ADMIN_PASSWORD>' psql \
+     --host=psql-hqqq-p2-demo-eus-01.postgres.database.azure.com \
+     --port=5432 \
+     --username=hqqqadmin \
+     --dbname=hqqq \
+     --command='CREATE EXTENSION IF NOT EXISTS timescaledb;'
+   ```
+
+   The exact host / username / database to use are echoed in the
+   `Phase 2 data tier: provisioned` summary block of the
+   `provision-data` job for copy-paste.
+
+2. **Run the existing Phase 2 schema bootstrap** (unchanged from
+   the bring-your-own path) once the extension exists. See
+   `docs/runbook.md` for the schema-bootstrap commands the
+   `hqqq-persistence` service expects on first run.
+
+3. **Allow your workstation IP** through the Postgres firewall if
+   you intend to run `psql` from outside Azure. Two equivalent
+   ways:
+   - Append a rule to `postgresFirewallAllowedIpRanges` in
+     `data.demo.bicepparam` and re-run with
+     `provision_data_tier=true` (idempotent).
+   - One-off: `az postgres flexible-server firewall-rule create
+     --resource-group $RG --name <server> --rule-name
+     OperatorOneOff --start-ip-address <ip> --end-ip-address <ip>`.
+
+### 11.5 Re-running and idempotency
+
+- `provision_data_tier=true` is idempotent. Re-running with the
+  same param file is a no-op except where `azure.extensions` or
+  firewall rules changed; Bicep what-if previews any drift.
+- Once the data tier is up, **do not** keep `provision_data_tier=true`
+  for routine app-tier redeploys — set it back to `false` and the
+  workflow takes the historic env-secret pathway. To avoid having
+  to also paste connection strings into `phase2-demo` secrets at
+  that point, run a one-off `gh secret set` populated from the
+  data-tier deployment outputs (a Key Vault round-trip is the
+  recommended D5 cleanup; see §10).
+
+### 11.6 Cost note (smallest dev SKUs)
+
+The defaults above are roughly **USD 60–80/month** at current
+public list pricing for the data tier alone (Managed Redis
+`Balanced_B0` ≈ $40, Postgres `Standard_B1ms` ≈ $13 + storage,
+Event Hubs Standard 1 TU ≈ $11). Standby / HA is off, geo-redundant
+backup is off, and Event Hubs auto-inflate is off, so the bill is
+predictable. Override per environment via
+`data.<env>.bicepparam` when prod sizing is needed.

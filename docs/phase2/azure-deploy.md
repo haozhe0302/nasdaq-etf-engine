@@ -280,6 +280,60 @@ under that GitHub Environment and pass the corresponding
 
 ---
 
+## 8b) Frontend (Static Web Apps) build-time variables
+
+The `hqqq-ui` SWA workflow
+([`.github/workflows/azure-static-web-apps-delightful-dune-08a7a390f.yml`](../../.github/workflows/azure-static-web-apps-delightful-dune-08a7a390f.yml))
+builds the React + Vite bundle through Oryx and then uploads it to
+Azure Static Web Apps. The frontend's API base URL is inlined into
+the bundle at build time, so it must be supplied as a GitHub Actions
+variable (not a runtime app setting).
+
+**Variable:**
+
+- Name: `VITE_API_BASE_URL`
+- Type: GitHub Actions **repository variable** — set it at
+  Repo → Settings → Secrets and variables → Actions → **Variables**
+  tab → "New repository variable".
+- Value: the FQDN of the Phase 2 gateway you want the built UI to
+  call (for example, the `gatewayFqdn` output emitted by the Bicep
+  deploy in §3). Include the scheme, e.g. `https://<gateway-fqdn>`.
+
+**How it flows:**
+
+The workflow forwards the variable into the `Azure/static-web-apps-deploy@v1`
+step's `env:` block, Oryx exposes it to Vite during `npm run build`,
+and Vite statically replaces `import.meta.env.VITE_API_BASE_URL` in
+[`src/hqqq-ui/src/lib/api.ts`](../../src/hqqq-ui/src/lib/api.ts).
+A "Show frontend build target" step in the workflow logs whether
+the variable was set (it logs the length only, not the value, so
+the URL never appears in PR diffs).
+
+**Unset behavior:**
+
+If the variable is missing or empty the build still succeeds, the
+workflow emits a warning, and the deployed UI falls back to
+same-origin requests (`fetch("/api/...")` against the SWA host
+itself). This keeps PR previews from forks — where repository
+variables may not flow — non-fatal.
+
+**Local development:**
+
+Do **not** set `VITE_API_BASE_URL` locally. With it unset, `BASE_URL`
+resolves to `""` and the Vite dev server's proxy in
+[`src/hqqq-ui/vite.config.ts`](../../src/hqqq-ui/vite.config.ts)
+forwards `/api` and `/hubs` to `http://localhost:5015` unchanged.
+
+**Repointing dev / staging / prod:**
+
+To retarget the deployed UI at a different gateway, change the
+`VITE_API_BASE_URL` variable value (or, when a second environment
+is added, move it under the matching GitHub Environment and attach
+the SWA job to that environment) and re-run the workflow. No
+code change is required.
+
+---
+
 ## 9) Explicitly deferred (D5 / D6 / Phase 3)
 
 - Custom domain + TLS cert binding on the gateway external ingress.

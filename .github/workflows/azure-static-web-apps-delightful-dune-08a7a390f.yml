@@ -19,11 +19,20 @@ jobs:
         with:
           submodules: true
           lfs: false
+      - name: Show frontend build target
+        env:
+          URL: ${{ vars.VITE_API_BASE_URL }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::warning::VITE_API_BASE_URL is not set; frontend will use same-origin API calls."
+          else
+            echo "Building hqqq-ui against VITE_API_BASE_URL (length=${#URL})"
+          fi
       - name: Build And Deploy
         id: builddeploy
         uses: Azure/static-web-apps-deploy@v1
         env:
-          VITE_API_BASE_URL: https://app-hqqq-api-mvp-cdgffghwf8c4hgdh.eastus-01.azurewebsites.net
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_DELIGHTFUL_DUNE_08A7A390F }}
           repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e. PR comments)

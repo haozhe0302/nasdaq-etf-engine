@@ -1,0 +1,165 @@
+# Phase 2 — deploy / update the Azure app tier via Bicep.
+#
+# Manual-only trigger. Gated on a GitHub Environment so the
+# connection-string secrets stay scoped (and approval can be added
+# later without rewriting the workflow).
+#
+# Auth: GitHub OIDC -> Azure (azure/login@v2). The federated app
+# registration must have:
+#   - Contributor on the Phase 2 resource group
+#   - AcrPush on the Phase 2 ACR (only needed by phase2-images.yml,
+#     but the same SP typically owns both)
+#
+# Required repository secrets:
+#   AZURE_CLIENT_ID
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+#
+# Required environment ('phase2-demo') secrets:
+#   KAFKA_BOOTSTRAP_SERVERS
+#   REDIS_CONFIGURATION
+#   TIMESCALE_CONNECTION_STRING
+# Optional environment secret:
+#   TIINGO_API_KEY
+#
+# Optional repository variables (defaults baked in):
+#   PHASE2_RESOURCE_GROUP   (default: rg-hqqq-p2-demo-eus-01)
+#   PHASE2_LOCATION         (default: eastus)
+
+name: Phase 2 — deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. vsha-abcdef0). 'latest' is allowed but discouraged for reproducibility."
+        required: true
+        default: "latest"
+      bicep_param_file:
+        description: "Path to the .bicepparam file to use."
+        required: true
+        default: "infra/azure/params/main.demo.bicepparam"
+      what_if_only:
+        description: "If true, only run `what-if` and skip the actual deployment."
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: phase2-deploy-${{ github.event.inputs.bicep_param_file }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Bicep deploy (${{ github.event.inputs.image_tag }})
+    runs-on: ubuntu-latest
+    environment: phase2-demo
+    env:
+      RESOURCE_GROUP: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2-demo-eus-01' }}
+      LOCATION: ${{ vars.PHASE2_LOCATION != '' && vars.PHASE2_LOCATION || 'eastus' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify resource group exists
+        run: |
+          set -euo pipefail
+          if ! az group show --name "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::Resource group '$RESOURCE_GROUP' does not exist. Create it first:"
+            echo "  az group create --name $RESOURCE_GROUP --location $LOCATION"
+            exit 1
+          fi
+          echo "Resource group '$RESOURCE_GROUP' OK."
+
+      - name: Bicep build (validate template syntax)
+        run: az bicep build --file infra/azure/main.bicep
+
+      - name: Deployment what-if
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
+          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/azure/main.bicep \
+            --parameters "${{ github.event.inputs.bicep_param_file }}" \
+            --parameters \
+              imageTag="${{ github.event.inputs.image_tag }}" \
+              kafkaBootstrapServers="$KAFKA_BOOTSTRAP_SERVERS" \
+              redisConfiguration="$REDIS_CONFIGURATION" \
+              timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
+              tiingoApiKey="${TIINGO_API_KEY:-}"
+
+      - name: Deployment create
+        if: ${{ github.event.inputs.what_if_only != 'true' }}
+        id: deploy
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
+          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+        run: |
+          set -euo pipefail
+          DEPLOY_NAME="phase2-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}"
+          OUT_FILE="$(mktemp)"
+          az deployment group create \
+            --name "$DEPLOY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/azure/main.bicep \
+            --parameters "${{ github.event.inputs.bicep_param_file }}" \
+            --parameters \
+              imageTag="${{ github.event.inputs.image_tag }}" \
+              kafkaBootstrapServers="$KAFKA_BOOTSTRAP_SERVERS" \
+              redisConfiguration="$REDIS_CONFIGURATION" \
+              timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
+              tiingoApiKey="${TIINGO_API_KEY:-}" \
+            --query properties.outputs \
+            --output json > "$OUT_FILE"
+          echo "deployment_name=$DEPLOY_NAME" >> "$GITHUB_OUTPUT"
+          GATEWAY_FQDN=$(jq -r '.gatewayFqdn.value' "$OUT_FILE")
+          ANALYTICS_JOB=$(jq -r '.analyticsJobName.value' "$OUT_FILE")
+          ACR_LOGIN_SERVER=$(jq -r '.acrLoginServer.value' "$OUT_FILE")
+          echo "gateway_fqdn=$GATEWAY_FQDN" >> "$GITHUB_OUTPUT"
+          echo "analytics_job_name=$ANALYTICS_JOB" >> "$GITHUB_OUTPUT"
+          echo "acr_login_server=$ACR_LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke instructions
+        if: ${{ github.event.inputs.what_if_only != 'true' }}
+        run: |
+          {
+            echo "## Phase 2 deployment complete"
+            echo ""
+            echo "- Deployment name: \`${{ steps.deploy.outputs.deployment_name }}\`"
+            echo "- Image tag deployed: \`${{ github.event.inputs.image_tag }}\`"
+            echo "- ACR: \`${{ steps.deploy.outputs.acr_login_server }}\`"
+            echo "- Gateway FQDN: \`${{ steps.deploy.outputs.gateway_fqdn }}\`"
+            echo ""
+            echo "### Smoke"
+            echo ""
+            echo '```bash'
+            echo "curl -fsS https://${{ steps.deploy.outputs.gateway_fqdn }}/healthz/ready"
+            echo "curl -fsS https://${{ steps.deploy.outputs.gateway_fqdn }}/api/system/health"
+            echo '```'
+            echo ""
+            echo "### Run analytics on demand"
+            echo ""
+            echo '```bash'
+            echo "az containerapp job start \\"
+            echo "  --name ${{ steps.deploy.outputs.analytics_job_name }} \\"
+            echo "  --resource-group $RESOURCE_GROUP \\"
+            echo "  --env-vars Analytics__StartUtc=2026-04-17T00:00:00Z Analytics__EndUtc=2026-04-18T00:00:00Z"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

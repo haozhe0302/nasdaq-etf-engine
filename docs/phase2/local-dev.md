@@ -260,6 +260,141 @@ dotnet test Hqqq.sln
 - Multi-replica / HA infra — Phase 2D3.
 - Replay / backfill / anomaly detection in `hqqq-analytics` — Phase 2C5+.
 
+## 11. Containerized Phase 2 stack (D3)
+
+In addition to running each service via `dotnet run`, the entire Phase 2
+app tier can be brought up as containers on top of the existing infra
+compose. This is the deployment-shaped local path; the host-`dotnet run`
+path remains supported for hot-reload and native debugging.
+
+### Layout
+
+| File | Role |
+|------|------|
+| `docker-compose.yml` | Infra base: TimescaleDB, Redis, Kafka, Kafka UI, Prometheus, Grafana. |
+| `docker-compose.phase2.yml` | App-tier overlay: reference-data, ingress, quote-engine, persistence, gateway, analytics (profile). |
+| `.dockerignore` | Trims the build context (excludes `bin/`, `obj/`, `node_modules/`, `src/hqqq-ui/`, `data/`, `.env`, etc.). |
+
+Each service Dockerfile is multi-stage (`mcr.microsoft.com/dotnet/sdk:10.0`
+build → `mcr.microsoft.com/dotnet/aspnet:10.0` runtime), runs as a
+non-root `app` user (uid 10001), and exposes a single port (`8080` for
+web services, `8081` for worker management hosts).
+
+### One-line bring-up
+
+```powershell
+.\scripts\phase2-up.ps1
+.\scripts\bootstrap-kafka-topics.ps1
+.\scripts\phase2-smoke.ps1
+```
+
+```bash
+./scripts/phase2-up.sh
+./scripts/bootstrap-kafka-topics.sh
+./scripts/phase2-smoke.sh
+```
+
+The `phase2-up` script is a thin wrapper around:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.phase2.yml up -d --build
+```
+
+`phase2-smoke.ps1` / `.sh` already honor `HQQQ_GATEWAY_BASE_URL` (default
+`http://localhost:5030`) and work unchanged against the containerized
+gateway.
+
+### Container DNS, ports, and health
+
+| Service | Container DNS:port | Host port | Health endpoint |
+|---------|--------------------|-----------|-----------------|
+| `hqqq-reference-data` | `hqqq-reference-data:8080` | `5020` | `GET /healthz/ready` |
+| `hqqq-ingress`        | `hqqq-ingress:8081`        | `5081` | `GET /healthz/ready` |
+| `hqqq-quote-engine`   | `hqqq-quote-engine:8081`   | `5082` | `GET /healthz/ready` |
+| `hqqq-persistence`    | `hqqq-persistence:8081`    | `5083` | `GET /healthz/ready` |
+| `hqqq-gateway`        | `hqqq-gateway:8080`        | `5030` | `GET /healthz/ready` |
+| `hqqq-analytics` (profile=`analytics`) | `hqqq-analytics:8081` | `5084` | n/a — exit code is the signal |
+
+Worker services run only the management host inside the container and
+are configured with `Management__BindAddress=0.0.0.0` so the gateway
+aggregator can reach `/healthz/ready` and `/metrics` across the docker
+network. The gateway aggregator's downstream URLs are wired in
+`docker-compose.phase2.yml`:
+
+```
+Gateway__Health__Services__ReferenceData__BaseUrl = http://hqqq-reference-data:8080
+Gateway__Health__Services__Ingress__BaseUrl       = http://hqqq-ingress:8081
+Gateway__Health__Services__QuoteEngine__BaseUrl   = http://hqqq-quote-engine:8081
+Gateway__Health__Services__Persistence__BaseUrl   = http://hqqq-persistence:8081
+Gateway__Health__Services__Analytics__BaseUrl     = http://hqqq-analytics:8081
+```
+
+### Quote-engine checkpoint volume
+
+`hqqq-quote-engine` writes its crash-recovery checkpoint to
+`/data/quote-engine/checkpoint.json`, mapped to the named volume
+`quote_engine_data`. The checkpoint **survives container restart and
+recreate**. It is removed only when the volume is explicitly dropped:
+
+```powershell
+.\scripts\phase2-down.ps1 -RemoveVolumes
+```
+
+### Analytics — one-shot job
+
+The analytics container is gated behind the `analytics` profile so it is
+**not** started by the default `up`. Run a single report on demand:
+
+```powershell
+$env:Analytics__StartUtc = '2026-04-17T00:00:00Z'
+$env:Analytics__EndUtc   = '2026-04-18T00:00:00Z'
+$env:Analytics__EmitJsonPath = '/artifacts/hqqq-report.json'   # optional
+docker compose -f docker-compose.yml -f docker-compose.phase2.yml `
+    --profile analytics run --rm hqqq-analytics
+```
+
+```bash
+Analytics__StartUtc=2026-04-17T00:00:00Z \
+Analytics__EndUtc=2026-04-18T00:00:00Z \
+docker compose -f docker-compose.yml -f docker-compose.phase2.yml \
+    --profile analytics run --rm hqqq-analytics
+```
+
+When `Analytics__EmitJsonPath` is set, the container writes the artifact
+to `/artifacts` inside the container, which is bind-mounted to
+`./artifacts/` in the repo root. Exit codes follow Section 7.
+
+### Image build commands (single image at a time)
+
+For CI or one-off rebuilds outside compose, build from the repo root:
+
+```bash
+docker build -f src/services/hqqq-reference-data/Dockerfile -t hqqq-reference-data:dev .
+docker build -f src/services/hqqq-ingress/Dockerfile        -t hqqq-ingress:dev        .
+docker build -f src/services/hqqq-quote-engine/Dockerfile   -t hqqq-quote-engine:dev   .
+docker build -f src/services/hqqq-persistence/Dockerfile    -t hqqq-persistence:dev    .
+docker build -f src/services/hqqq-gateway/Dockerfile        -t hqqq-gateway:dev        .
+docker build -f src/services/hqqq-analytics/Dockerfile      -t hqqq-analytics:dev      .
+```
+
+### Legacy monolith
+
+The Phase 1 `hqqq-api` monolith is intentionally **not** part of the
+Phase 2 compose stack. To run it for parity testing, build/run it
+independently via `scripts/build-hqqq-api-docker.ps1` and either point
+the gateway at it (`Gateway__DataSource=legacy` +
+`Gateway__LegacyBaseUrl=http://host.docker.internal:5000`) or run both
+on the host.
+
+### What is intentionally deferred to D4+
+
+- Azure-specific assets (ACR push, Bicep/ARM, App Service / Container Apps).
+- Kubernetes manifests / Helm charts.
+- Multi-replica gateway + SignalR Redis backplane.
+- HA Kafka / Redis / Timescale topologies.
+- Image signing, SBOMs, vulnerability scans in CI.
+- Distroless / chiselled .NET base images.
+
 ## Troubleshooting
 
 **Kafka topics not creating:** Ensure the Kafka container is fully healthy

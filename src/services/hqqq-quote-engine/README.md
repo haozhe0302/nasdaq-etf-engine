@@ -126,6 +126,19 @@ Redis connection settings come from the shared `Redis` section
 fast at startup if Redis is unreachable, so a missing cache is surfaced
 before the first materialize cycle writes silently into the void.
 
+`QuoteEngine:CheckpointPath` is the seam used to point the checkpoint
+file at a persistent volume in container deployments. The default
+(`./data/quote-engine/checkpoint.json`) suits local `dotnet run`;
+`docker-compose.phase2.yml` overrides it to `/data/quote-engine/checkpoint.json`
+on a named volume; on Azure the deploy template overrides it to
+`/mnt/quote-engine/checkpoint.json` when the
+`quoteEngineCheckpointPersistence` bicepparam toggle is on (Azure Files
+mount, durable across revision swaps), and to
+`/tmp/quote-engine/checkpoint.json` when the toggle is off (ephemeral,
+matches the original D4 posture). Engine code is unchanged across all
+four cases — see [`docs/phase2/azure-deploy.md` §9](../../../docs/phase2/azure-deploy.md)
+for the Azure operator walkthrough.
+
 ## HA model
 
 Single logical owner per basket family in Phase 2 — no cross-instance

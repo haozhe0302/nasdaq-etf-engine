@@ -99,6 +99,12 @@ param maxReplicas int = 2
 @description('Resource tags.')
 param tags object = {}
 
+@description('Storage volumes to attach to the container template (e.g. AzureFile mounts). Empty array = no volumes.')
+param volumes array = []
+
+@description('Volume mounts applied to the single container. Empty array = no mounts.')
+param volumeMounts array = []
+
 // Build the platform "secrets" block from whichever per-secret params
 // were actually populated. Each entry maps a Container App secret
 // name (kebab-case) to the secret value.
@@ -200,12 +206,14 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           }
           env: concat(envVars, secretEnvVars)
           probes: probes
+          volumeMounts: empty(volumeMounts) ? null : volumeMounts
         }
       ]
       scale: {
         minReplicas: minReplicas
         maxReplicas: maxReplicas
       }
+      volumes: empty(volumes) ? null : volumes
     }
   }
 }

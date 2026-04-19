@@ -334,7 +334,79 @@ code change is required.
 
 ---
 
-## 9) Explicitly deferred (D5 / D6 / Phase 3)
+## 9) Persistent checkpoint storage for `hqqq-quote-engine`
+
+The Container Apps file system is ephemeral per replica, so a
+checkpoint written under `/tmp` is lost on every revision swap or
+replica restart. The deploy template has an opt-in Azure Files mount
+that promotes the checkpoint to durable storage without changing any
+quote-engine code or local-dev behaviour.
+
+The toggle lives in the Bicep param file:
+
+```bicep
+// infra/azure/params/main.demo.bicepparam
+param quoteEngineCheckpointPersistence = true
+param quoteEngineStorageAccountName = 'sthqqqp2demoeus01'   // <=24 chars, lowercase alnum, globally unique
+param quoteEngineFileShareName       = 'quote-engine-checkpoint'
+param quoteEngineEnvStorageName      = 'quote-engine-storage'
+param quoteEngineMountPath           = '/mnt/quote-engine'
+param quoteEngineFileShareQuotaGiB   = 100
+```
+
+| Mode | What gets provisioned | `QuoteEngine__CheckpointPath` |
+|---|---|---|
+| `quoteEngineCheckpointPersistence=true` (demo default) | `Microsoft.Storage/storageAccounts` (Standard_LRS, StorageV2, TLS 1.2+, public blob access disabled) + Azure Files share + `Microsoft.App/managedEnvironments/storages` definition + `volumes` / `volumeMounts` on the quote-engine Container App. | `/mnt/quote-engine/checkpoint.json` (durable across revisions/restarts). |
+| `quoteEngineCheckpointPersistence=false` | Nothing extra. Backward-compatible with pre-existing demo deploys. | `/tmp/quote-engine/checkpoint.json` (ephemeral, lost on restart). |
+
+How the wiring works:
+
+- The storage modules
+  ([`infra/azure/modules/storageAccount.bicep`](../../infra/azure/modules/storageAccount.bicep)
+  and [`infra/azure/modules/managedEnvironmentStorage.bicep`](../../infra/azure/modules/managedEnvironmentStorage.bicep))
+  are conditional on `quoteEngineCheckpointPersistence`; when the
+  flag is `false` they are not deployed at all and a `what-if` against
+  an existing `false` deploy is a no-op.
+- The storage account key is read inside Bicep via `listKeys()` and
+  flows into the Container Apps environment storage definition as a
+  `@secure()` value; it never appears as a deploy-workflow secret and
+  is never echoed to logs. Rotating the key is a Bicep re-deploy.
+- The quote-engine app stays single-replica (`quoteEngineMaxReplicas=1`),
+  so there is no concurrent-writer concern on the shared file.
+- The quote-engine itself reads the path from
+  `QuoteEngine__CheckpointPath` (already env-bound via
+  [`QuoteEngineOptions.CheckpointPath`](../../src/services/hqqq-quote-engine/Services/QuoteEngineOptions.cs))
+  — no service code change, no Dockerfile change.
+
+Operator decisions:
+
+- **Disable persistence** in any environment by setting
+  `quoteEngineCheckpointPersistence = false` in that environment's
+  bicepparam file and re-running `phase2-deploy.yml`. The next deploy
+  will detach the volume and revert the env var to `/tmp/...`. The
+  storage account + share are not auto-deleted (Bicep `complete` mode
+  is not used); remove them manually with `az storage account delete`
+  if no longer needed.
+- **Standing up a second environment** (e.g. `prod`): copy
+  `main.demo.bicepparam` and pick a different
+  `quoteEngineStorageAccountName` (the storage account name is
+  globally unique). Everything else (share name, env storage name,
+  mount path) can stay the same — they are scoped to the env / app.
+- **Local dev is unaffected**: `dotnet run` keeps using
+  `./data/quote-engine/checkpoint.json` from `appsettings.json`, and
+  `docker-compose.phase2.yml` keeps using the named volume
+  `quote_engine_data` mounted at `/data/quote-engine`.
+
+Cost note: a Standard_LRS storage account with a single
+TransactionOptimized 100 GiB SMB file share holding a few-KB JSON
+checkpoint is dominated by the per-GiB-month base price (well under
+USD 1/month at current public pricing) plus negligible transactions
+from the 10-second write cadence. The toggle stays opt-in so forks
+that don't want any storage cost can keep the historic posture.
+
+---
+
+## 10) Explicitly deferred (D5 / D6 / Phase 3)
 
 - Custom domain + TLS cert binding on the gateway external ingress.
 - Bicep provisioning of Azure Cache for Redis, Azure Database for
@@ -346,8 +418,6 @@ code change is required.
   namespace itself from Bicep, plus threading
   `Kafka__EnableTopicBootstrap` through the template if that toggle
   needs to vary per environment.
-- Persistent storage for the quote-engine checkpoint
-  (Azure Files mount on the Container App).
 - Scheduled trigger for the analytics job (currently Manual only).
 - Dapr / service-mesh wiring inside the Container Apps environment.
 - Migrating the legacy `hqqq-api` workflow to OIDC.

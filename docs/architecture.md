@@ -380,9 +380,11 @@ gateway (D1 native aggregator); the monolith path is now only used as a
   corporate-action pipeline in `hqqq-reference-data`; both still served
   by the legacy monolith.
 - Replay / anomaly / backfill in `hqqq-analytics`.
-- Custom domain + TLS, Azure Files mount for the quote-engine
-  checkpoint, scheduled trigger for the analytics job, image signing /
-  SBOMs / vulnerability scans in CI.
+- Custom domain + TLS, scheduled trigger for the analytics job, image
+  signing / SBOMs / vulnerability scans in CI. (Azure Files mount for
+  the quote-engine checkpoint is now opt-in via the
+  `quoteEngineCheckpointPersistence` bicepparam toggle — see
+  [`docs/phase2/azure-deploy.md` §9](phase2/azure-deploy.md).)
 
 ---
 

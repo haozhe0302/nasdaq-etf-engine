@@ -28,6 +28,8 @@ Kubernetes is explicitly out of scope.
 | App      | `ca-hqqq-p2-quote-engine-demo-01`    | Internal ingress :8081. Single replica (checkpoint state).  |
 | App      | `ca-hqqq-p2-persist-demo-01`         | Internal ingress :8081.                                     |
 | Job      | `caj-hqqq-p2-analytics-demo-01`      | `triggerType=Manual`. 30-min timeout, 1 retry.              |
+| Storage  | `sthqqqp2demoeus01` *(opt-in)*       | Standard_LRS StorageV2. Provisioned only when `quoteEngineCheckpointPersistence=true`. |
+| Share    | `quote-engine-checkpoint` *(opt-in)* | Azure Files share mounted into the quote-engine container.  |
 
 Every name above is a **parameter** in `main.bicep`. Concrete values
 live in [`params/main.demo.bicepparam`](params/main.demo.bicepparam).
@@ -43,7 +45,6 @@ to the template logic.
 - Redis (Azure Cache for Redis or equivalent)
 - PostgreSQL with the TimescaleDB extension
 - Custom domain + TLS cert on the gateway
-- Persistent storage for the quote-engine checkpoint (currently `/tmp`)
 
 These are passed in via `@secure()` deploy-time parameters
 (`kafkaBootstrapServers`, `redisConfiguration`,
@@ -53,8 +54,40 @@ already speak generic .NET hierarchical config keys
 `Timescale__ConnectionString`, `Tiingo__ApiKey`) so any provider
 that emits a wire-compatible endpoint works without code changes.
 
-For Azure-native paths to fill these in, see the deferred-work
-notes in [`docs/phase2/azure-deploy.md`](../../docs/phase2/azure-deploy.md).
+Persistent storage for the `hqqq-quote-engine` checkpoint is now an
+**opt-in** part of this template (off in `main.example.bicepparam`,
+on in `main.demo.bicepparam`). See
+[§2a Persistent checkpoint storage](#2a-persistent-checkpoint-storage-opt-in)
+below and the operator walkthrough in
+[`docs/phase2/azure-deploy.md` §9](../../docs/phase2/azure-deploy.md).
+
+For Azure-native paths to fill in the remaining external dependencies,
+see the deferred-work notes in
+[`docs/phase2/azure-deploy.md`](../../docs/phase2/azure-deploy.md).
+
+### 2a) Persistent checkpoint storage (opt-in)
+
+The Container Apps file system is ephemeral per replica. To make the
+`hqqq-quote-engine` checkpoint survive revision swaps and restarts,
+the template provisions an Azure Files mount when the toggle is on:
+
+```bicep
+// infra/azure/params/main.demo.bicepparam
+param quoteEngineCheckpointPersistence = true
+param quoteEngineStorageAccountName    = 'sthqqqp2demoeus01'
+param quoteEngineFileShareName         = 'quote-engine-checkpoint'
+param quoteEngineEnvStorageName        = 'quote-engine-storage'
+param quoteEngineMountPath             = '/mnt/quote-engine'
+param quoteEngineFileShareQuotaGiB     = 100
+```
+
+| Mode                                       | Storage account + share | `QuoteEngine__CheckpointPath`               |
+| ------------------------------------------ | ----------------------- | ------------------------------------------- |
+| `quoteEngineCheckpointPersistence = true`  | provisioned             | `/mnt/quote-engine/checkpoint.json` (durable) |
+| `quoteEngineCheckpointPersistence = false` | not provisioned         | `/tmp/quote-engine/checkpoint.json` (ephemeral) |
+
+The toggle is fully orthogonal to local dev: `dotnet run` and
+`docker-compose.phase2.yml` keep their existing checkpoint paths.
 
 ---
 
@@ -315,8 +348,10 @@ infra/azure/
 │   ├── managedIdentity.bicep                User-assigned MI
 │   ├── acrPullRole.bicep                    AcrPull on ACR for the MI
 │   ├── containerAppsEnvironment.bicep       CAE bound to LAW
-│   ├── containerApp.bicep                   Generic app module
-│   └── containerAppJob.bicep                Generic job module
+│   ├── containerApp.bicep                   Generic app module (now supports volumes)
+│   ├── containerAppJob.bicep                Generic job module
+│   ├── storageAccount.bicep                 Storage account + Azure Files share (opt-in)
+│   └── managedEnvironmentStorage.bicep      CAE storage definition for Azure Files (opt-in)
 ├── params/
 │   ├── main.demo.bicepparam                 Concrete demo names
 │   └── main.example.bicepparam              Placeholder reference

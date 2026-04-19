@@ -59,6 +59,19 @@ param quoteEngineAppName = 'ca-hqqq-p2-quote-engine-demo-01'
 param persistenceAppName = 'ca-hqqq-p2-persist-demo-01'
 param analyticsJobName = 'caj-hqqq-p2-analytics-demo-01'
 
+// ── Quote-engine checkpoint persistence (Azure Files mount) ─────
+// Enabled for the demo so the public Container Apps environment
+// keeps a production-like checkpoint posture across revision swaps.
+// Set quoteEngineCheckpointPersistence=false in a forked param file
+// to disable the storage account/share entirely and fall back to
+// the historic ephemeral /tmp/quote-engine/checkpoint.json path.
+param quoteEngineCheckpointPersistence = true
+param quoteEngineStorageAccountName = 'sthqqqp2demoeus01'
+param quoteEngineFileShareName = 'quote-engine-checkpoint'
+param quoteEngineEnvStorageName = 'quote-engine-storage'
+param quoteEngineMountPath = '/mnt/quote-engine'
+param quoteEngineFileShareQuotaGiB = 100
+
 // ── Image tag ────────────────────────────────────────────────────
 // Overridden by the deploy workflow's `image_tag` input. `latest`
 // is the safe default for first-time stand-up; pin to vsha-XXXXX

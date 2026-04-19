@@ -249,7 +249,7 @@ D-phase delivered (no longer transitional):
 | Re-pointing the gateway `/api/history` read-side at the 1m/5m rollups | Phase 2C5+ |
 | HA topologies for Kafka / Redis / Timescale themselves | Phase 3+ |
 | Multi-instance quote-engine / persistence / ingress / reference-data | Phase 3+ |
-| Custom domain + TLS, Azure Files mount for quote-engine checkpoint, scheduled analytics trigger, image signing / SBOMs / vulnerability scans | Phase 3+ |
+| Custom domain + TLS, scheduled analytics trigger, image signing / SBOMs / vulnerability scans | Phase 3+ |
 | Kubernetes app-tier deployments | Phase 3 |
 
 D-phase items that were on this list and are now delivered:
@@ -263,6 +263,7 @@ D-phase items that were on this list and are now delivered:
 | Multi-gateway replica smoke (`docker-compose.replica-smoke.yml` + `tests/Hqqq.Gateway.ReplicaSmoke/`) | D5 |
 | Operator docs closeout (release checklist, rollback, config matrix; refreshed architecture / runbook / Phase 2 docs) | D6 |
 | Public-facing repo narrative closeout (root README operator entrypoint matrix, architecture framing as Phase 1 legacy + Phase 2 current app tier, runbook §0 prelude, this status block) | D6.5 |
+| Opt-in Azure Files mount for the `hqqq-quote-engine` checkpoint (durable across revision swaps; toggle `quoteEngineCheckpointPersistence` in the bicepparam file, off in `main.example`, on in `main.demo`; local dev paths unchanged) | D6.6 |
 
 ## Module-to-service mapping (planned)
 
@@ -289,5 +290,4 @@ D-phase items that were on this list and are now delivered:
   `Service` + HPA for stateless services); HA Kafka / Redis / Timescale
   topologies; multi-instance quote-engine / persistence / ingress /
   reference-data; image signing, SBOMs, vulnerability scans in CI;
-  distroless / chiselled .NET base images; persistent storage for the
-  quote-engine checkpoint on Azure (Azure Files mount).
+  distroless / chiselled .NET base images.

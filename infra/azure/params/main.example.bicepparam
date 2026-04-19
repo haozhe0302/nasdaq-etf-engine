@@ -39,6 +39,19 @@ param quoteEngineAppName = '<your-quote-engine-app-name>'
 param persistenceAppName = '<your-persistence-app-name>'
 param analyticsJobName = '<your-analytics-job-name>'
 
+// Optional persistent-checkpoint mount for the quote-engine. Off by
+// default in this template — flip to true and set a globally-unique
+// storage account name to provision a Standard_LRS storage account +
+// Azure Files share, attach it to the Container Apps environment,
+// and mount it inside the quote-engine container so checkpoint state
+// survives revision swaps and replica restarts.
+param quoteEngineCheckpointPersistence = false
+param quoteEngineStorageAccountName = '<your-storage-account-name>'
+param quoteEngineFileShareName = 'quote-engine-checkpoint'
+param quoteEngineEnvStorageName = 'quote-engine-storage'
+param quoteEngineMountPath = '/mnt/quote-engine'
+param quoteEngineFileShareQuotaGiB = 100
+
 param imageTag = 'latest'
 
 param kafkaClientId = 'hqqq-azure'

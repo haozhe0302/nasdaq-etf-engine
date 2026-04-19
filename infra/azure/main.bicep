@@ -85,6 +85,39 @@ param persistenceAppName string
 @description('Container Apps Job name for analytics.')
 param analyticsJobName string
 
+// ── Quote-engine checkpoint persistence (optional Azure Files mount) ──
+//
+// When true, provisions a Storage Account + Azure Files share, attaches it
+// to the Container Apps environment as a managed-environment storage
+// definition, mounts it inside the quote-engine container at
+// `quoteEngineMountPath`, and points `QuoteEngine__CheckpointPath` at
+// `${quoteEngineMountPath}/checkpoint.json` so the checkpoint survives
+// revision swaps and replica restarts.
+//
+// When false (default), no storage resources are provisioned and
+// quote-engine keeps the historic ephemeral `/tmp/quote-engine/checkpoint.json`
+// path (lost on every revision/replica restart).
+
+@description('If true, provision an Azure Files mount and point QuoteEngine__CheckpointPath at it. If false, keep the historic ephemeral /tmp path.')
+param quoteEngineCheckpointPersistence bool = false
+
+@description('Globally-unique storage account name backing the quote-engine Azure Files share. Required when quoteEngineCheckpointPersistence=true (3-24 chars, lowercase alphanumerics).')
+param quoteEngineStorageAccountName string = ''
+
+@description('Azure Files share name for the quote-engine checkpoint.')
+param quoteEngineFileShareName string = 'quote-engine-checkpoint'
+
+@description('Container Apps environment storage definition name referenced by the quote-engine app volume.')
+param quoteEngineEnvStorageName string = 'quote-engine-storage'
+
+@description('In-container mount path for the Azure Files share. The checkpoint file is written at <mountPath>/checkpoint.json.')
+param quoteEngineMountPath string = '/mnt/quote-engine'
+
+@description('File share quota (GiB) for the quote-engine checkpoint share.')
+@minValue(1)
+@maxValue(102400)
+param quoteEngineFileShareQuotaGiB int = 100
+
 // ── Image tag ────────────────────────────────────────────────────
 
 @description('Image tag applied to every Phase 2 service image (e.g. vsha-abcdef0 or latest). All six services share one tag in D4 to keep deploys atomic.')
@@ -241,6 +274,46 @@ module caeModule 'modules/containerAppsEnvironment.bicep' = {
   }
 }
 
+// ── Optional quote-engine checkpoint persistence ─────────────────
+//
+// Storage account + Azure Files share, then a managed-environment
+// storage definition that the quote-engine app references as a
+// volume. Both modules are conditional on
+// `quoteEngineCheckpointPersistence` so a `false` deploy is
+// byte-identical to the historic ephemeral posture.
+
+module quoteEngineStorageModule 'modules/storageAccount.bicep' = if (quoteEngineCheckpointPersistence) {
+  name: 'phase2-quote-engine-storage'
+  params: {
+    name: quoteEngineStorageAccountName
+    location: location
+    fileShareName: quoteEngineFileShareName
+    fileShareQuotaGiB: quoteEngineFileShareQuotaGiB
+    tags: tags
+  }
+}
+
+module quoteEngineEnvStorageModule 'modules/managedEnvironmentStorage.bicep' = if (quoteEngineCheckpointPersistence) {
+  name: 'phase2-quote-engine-env-storage'
+  params: {
+    containerAppsEnvName: caeModule.outputs.name
+    storageName: quoteEngineEnvStorageName
+    // Both storage modules share the same `quoteEngineCheckpointPersistence`
+    // condition, so when this module deploys the parent storage module
+    // is guaranteed to be deployed too. The two BCP318 nullable-module
+    // warnings the analyzer would otherwise raise across that conditional
+    // boundary are suppressed inline; the secure key output (BCP426)
+    // forces a direct module reference, which is exactly what we use.
+    #disable-next-line BCP318
+    storageAccountName: quoteEngineStorageModule.outputs.name
+    #disable-next-line BCP318
+    fileShareName: quoteEngineStorageModule.outputs.fileShareName
+    #disable-next-line BCP318
+    storageAccountKey: quoteEngineStorageModule.outputs.primaryKey
+    accessMode: 'ReadWrite'
+  }
+}
+
 // ── Pre-compute image references and shared env ──────────────────
 
 var acrLoginServer = acrModule.outputs.loginServer
@@ -335,6 +408,29 @@ module ingressApp 'modules/containerApp.bicep' = {
   ]
 }
 
+// Checkpoint path follows the persistence toggle:
+//   - quoteEngineCheckpointPersistence=true  -> mounted Azure Files share
+//     at quoteEngineMountPath; checkpoint survives revision swaps.
+//   - false                                  -> historic ephemeral /tmp
+//     path; checkpoint is lost on every revision/replica restart.
+var quoteEngineVolumeName = 'quote-engine-checkpoint'
+var quoteEngineCheckpointPathValue = quoteEngineCheckpointPersistence
+  ? '${quoteEngineMountPath}/checkpoint.json'
+  : '/tmp/quote-engine/checkpoint.json'
+var quoteEngineVolumes = quoteEngineCheckpointPersistence ? [
+  {
+    name: quoteEngineVolumeName
+    storageType: 'AzureFile'
+    storageName: quoteEngineEnvStorageName
+  }
+] : []
+var quoteEngineVolumeMounts = quoteEngineCheckpointPersistence ? [
+  {
+    volumeName: quoteEngineVolumeName
+    mountPath: quoteEngineMountPath
+  }
+] : []
+
 module quoteEngineApp 'modules/containerApp.bicep' = {
   name: 'phase2-app-quote-engine'
   params: {
@@ -348,11 +444,7 @@ module quoteEngineApp 'modules/containerApp.bicep' = {
     targetPort: 8081
     envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, [
       { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
-      // Checkpoint path: Container Apps file system is ephemeral per
-      // replica. D4 keeps min=max=1 and accepts checkpoint loss on
-      // revision swap. Persistent state via Azure Files mount is a
-      // documented D5/D6 follow-up.
-      { name: 'QuoteEngine__CheckpointPath', value: '/tmp/quote-engine/checkpoint.json' }
+      { name: 'QuoteEngine__CheckpointPath', value: quoteEngineCheckpointPathValue }
       { name: 'QuoteEngine__CheckpointInterval', value: '00:00:10' }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
@@ -366,9 +458,15 @@ module quoteEngineApp 'modules/containerApp.bicep' = {
     minReplicas: quoteEngineMinReplicas
     maxReplicas: quoteEngineMaxReplicas
     tags: tags
+    volumes: quoteEngineVolumes
+    volumeMounts: quoteEngineVolumeMounts
   }
   dependsOn: [
     acrPullModule
+    // The env storage definition must exist before the container app
+    // references it via volumes[].storageName. dependsOn is conditional
+    // by virtue of the module itself being conditional.
+    quoteEngineEnvStorageModule
   ]
 }
 

@@ -8,12 +8,17 @@
 // (which lives in a separate ACR + App Service). Renaming requires
 // only changing this file — main.bicep takes every name as a param.
 //
-// Secrets (kafkaBootstrapServers / redisConfiguration /
-// timescaleConnectionString / tiingoApiKey) are intentionally NOT
-// set here. They are injected at deploy time by phase2-deploy.yml
-// from environment-scoped GitHub secrets, e.g.
+// Secrets (kafkaBootstrapServers / kafkaSecurityProtocol /
+// kafkaSaslMechanism / kafkaSaslUsername / kafkaSaslPassword /
+// redisConfiguration / timescaleConnectionString / tiingoApiKey)
+// are intentionally NOT set here. They are injected at deploy time
+// by phase2-deploy.yml from environment-scoped GitHub secrets, e.g.
 //   az deployment group create ... \
 //     --parameters kafkaBootstrapServers='...' \
+//                  kafkaSecurityProtocol='SASL_SSL' \
+//                  kafkaSaslMechanism='PLAIN' \
+//                  kafkaSaslUsername='$ConnectionString' \
+//                  kafkaSaslPassword='Endpoint=sb://...' \
 //                  redisConfiguration='...' \
 //                  timescaleConnectionString='...' \
 //                  tiingoApiKey='...'
@@ -102,6 +107,10 @@ param gatewayBasketId = 'HQQQ'
 // in main.bicep (no default), so use clearly-bogus placeholders
 // that the workflow always overrides. NEVER put real values here.
 param kafkaBootstrapServers = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
+param kafkaSecurityProtocol = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
+param kafkaSaslMechanism = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
+param kafkaSaslUsername = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
+param kafkaSaslPassword = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
 param redisConfiguration = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
 param timescaleConnectionString = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
 param tiingoApiKey = ''

@@ -1,6 +1,7 @@
 # HQQQ — Nasdaq-100 ETF Engine
 
-**Frontend Live Demo:** <https://delightful-dune-08a7a390f.1.azurestaticapps.net/> 
+**Frontend Live Demo:** <https://delightful-dune-08a7a390f.1.azurestaticapps.net/>
+
 Backend Live Demo: <https://app-hqqq-api-mvp-cdgffghwf8c4hgdh.eastus-01.azurewebsites.net/api/system/health>
 
 HQQQ is a synthetic Nasdaq-100 ETF pricing engine for real-time iNAV
@@ -18,20 +19,19 @@ keeps the displayed iNAV stable across basket transitions.
 The repository is in a **transitional architecture**:
 
 - **Phase 1 (legacy)** — the original
-  `hqqq-api` modular monolith plus the `hqqq-ui` React app. This is
-  what currently backs the public live demo.
+  `hqqq-api` modular monolith plus the `hqqq-ui` React app.
 - **Phase 2 (current service-based app tier, in-repo)** — a split into
   `hqqq-gateway`, `hqqq-ingress`, `hqqq-quote-engine`,
   `hqqq-persistence`, and `hqqq-analytics` over Kafka / Redis /
   TimescaleDB. Runnable locally via Docker Compose and deployable to
   Azure Container Apps via Bicep + GitHub OIDC. Multi-replica gateway
-  fan-out is real (D2 + D5).
+  fan-out is real.
 - **Phase 3 (under construction)** — Kubernetes app-tier operationalization,
   HA topologies for stateful infra, multi-instance workers.
 
 ---
 
-## Architecture at a glance (transitional)
+## Architecture at a glance
 
 This diagram is the quick-read view of the current repository state:
 Phase 1 and Phase 2 coexist; Phase 2 serving/compute/persistence paths
@@ -63,7 +63,7 @@ External market data provider (Tiingo)
                 |          hqqq:constituents:{basketId}
                 |          hqqq:freshness:{basketId}
                 |      - publishes live QuoteUpdateEnvelope to Redis pub/sub:
-                |          hqqq:channel:quote-update           (D2)
+                |          hqqq:channel:quote-update
                 |      - publishes pricing snapshots to Kafka:
                 |          pricing.snapshots.v1
                 |
@@ -84,9 +84,9 @@ External market data provider (Tiingo)
          hqqq-gateway (REST + SignalR edge, 1..N replicas)
            - /api/quote, /api/constituents      <- Redis snapshots
            - /api/history?range=                <- TimescaleDB
-           - /api/system/health                 <- native aggregator (D1 default)
+           - /api/system/health                 <- native aggregator
            - /hubs/market                       <- per-replica Redis subscribe +
-                                                    local SignalR broadcast (D2/D5)
+                                                    local SignalR broadcast
                                                     (no SignalR Redis backplane)
 ```
 
@@ -164,7 +164,7 @@ Service tier (under `src/services/`):
 
 | Service | Role today |
 |---------|------------|
-| `hqqq-gateway` | REST + SignalR serving edge. Reads Redis for `/api/quote` and `/api/constituents`, Timescale for `/api/history`. Native `/api/system/health` aggregator (D1, default). Subscribes to `hqqq:channel:quote-update` and broadcasts `QuoteUpdate` locally per replica (D2 + D5; no SignalR Redis backplane). |
+| `hqqq-gateway` | REST + SignalR serving edge. Reads Redis for `/api/quote` and `/api/constituents`, Timescale for `/api/history`. Native `/api/system/health` aggregator. Subscribes to `hqqq:channel:quote-update` and broadcasts `QuoteUpdate` locally per replica (no SignalR Redis backplane). |
 | `hqqq-ingress` | **Stub today.** Real Tiingo ingestion still lives in the Phase 1 monolith. |
 | `hqqq-quote-engine` | Consumes `market.raw_ticks.v1` + `refdata.basket.active.v1`, runs iNAV compute, writes `hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, and publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update`. |
 | `hqqq-persistence` | Consumes `pricing.snapshots.v1` + `market.raw_ticks.v1` into TimescaleDB hypertables; bootstraps `quote_snapshots_1m` / `quote_snapshots_5m` continuous aggregates and retention policies. |
@@ -261,14 +261,14 @@ Frontend pages (`hqqq-ui`):
    exchange. Premium/discount is computed versus live QQQ as a
    reference.
 
-3. **Phase 2 is not an HA platform.** The D5 replica-smoke verifies
+3. **Phase 2 is not an HA platform.** The replica-smoke verifies
    gateway-replica correctness, not full high-availability. Stateful
    infra (Kafka / Redis / Timescale) and non-gateway workers are
-   single-instance in the demo environment.
+   single-instance in the demo environment. This is scheduled to be resolved in future Phase 3.
 
 ---
 
-## Phase 3 (planned, deferred)
+## Phase 3 (under construction)
 
 Phase 3 focuses on Kubernetes operationalization of the **app tier**:
 run gateway, ingress, and workers on Kubernetes (`Deployment` + `Service`),

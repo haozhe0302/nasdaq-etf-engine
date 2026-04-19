@@ -147,12 +147,16 @@ GitHub **environment** `phase2-demo` secrets (used only by the
 deploy workflow; environment scope keeps blast radius small and
 allows future approval gates):
 
-| Secret                          | Required | Purpose                         |
-| ------------------------------- | -------- | ------------------------------- |
-| `KAFKA_BOOTSTRAP_SERVERS`       | yes      | All Kafka producers/consumers   |
-| `REDIS_CONFIGURATION`           | yes      | Gateway, quote-engine           |
-| `TIMESCALE_CONNECTION_STRING`   | yes      | Gateway, persistence, analytics |
-| `TIINGO_API_KEY`                | no       | Ingress only                    |
+| Secret                          | Required | Purpose                                                         |
+| ------------------------------- | -------- | --------------------------------------------------------------- |
+| `KAFKA_BOOTSTRAP_SERVERS`       | yes      | All Kafka producers/consumers                                   |
+| `KAFKA_SECURITY_PROTOCOL`       | yes      | Kafka SASL/SSL protocol (e.g. `SaslSsl` for Event Hubs)         |
+| `KAFKA_SASL_MECHANISM`          | yes      | Kafka SASL mechanism (e.g. `Plain` for Event Hubs)              |
+| `KAFKA_SASL_USERNAME`           | yes      | Kafka SASL username (`$ConnectionString` literal for Event Hubs) |
+| `KAFKA_SASL_PASSWORD`           | yes      | Kafka SASL password (Event Hubs namespace connection string)    |
+| `REDIS_CONFIGURATION`           | yes      | Gateway, quote-engine                                           |
+| `TIMESCALE_CONNECTION_STRING`   | yes      | Gateway, persistence, analytics                                 |
+| `TIINGO_API_KEY`                | no       | Ingress only                                                    |
 
 ---
 
@@ -244,6 +248,10 @@ az deployment group what-if \
   --parameters \
     imageTag=vsha-abcdef0 \
     kafkaBootstrapServers='<...>' \
+    kafkaSecurityProtocol='SaslSsl' \
+    kafkaSaslMechanism='Plain' \
+    kafkaSaslUsername='$ConnectionString' \
+    kafkaSaslPassword='<event-hubs-connection-string>' \
     redisConfiguration='<...>' \
     timescaleConnectionString='<...>'
 ```

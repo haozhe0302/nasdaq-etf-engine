@@ -101,6 +101,10 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          KAFKA_SECURITY_PROTOCOL: ${{ secrets.KAFKA_SECURITY_PROTOCOL }}
+          KAFKA_SASL_MECHANISM: ${{ secrets.KAFKA_SASL_MECHANISM }}
+          KAFKA_SASL_USERNAME: ${{ secrets.KAFKA_SASL_USERNAME }}
+          KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
           REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
           TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
         run: |
@@ -109,7 +113,9 @@ jobs:
           # operator with a fresh environment sees every gap at once.
           missing=()
           for s in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
-                   KAFKA_BOOTSTRAP_SERVERS REDIS_CONFIGURATION TIMESCALE_CONNECTION_STRING; do
+                   KAFKA_BOOTSTRAP_SERVERS KAFKA_SECURITY_PROTOCOL \
+                   KAFKA_SASL_MECHANISM KAFKA_SASL_USERNAME KAFKA_SASL_PASSWORD \
+                   REDIS_CONFIGURATION TIMESCALE_CONNECTION_STRING; do
             v="${!s:-}"
             if [[ -z "$v" ]]; then
               missing+=("$s")
@@ -118,7 +124,7 @@ jobs:
           if (( ${#missing[@]} > 0 )); then
             echo "::error::Required secrets are missing or empty: ${missing[*]}"
             echo "::error::Repo-level: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID."
-            echo "::error::Environment 'phase2-demo': KAFKA_BOOTSTRAP_SERVERS, REDIS_CONFIGURATION, TIMESCALE_CONNECTION_STRING."
+            echo "::error::Environment 'phase2-demo': KAFKA_BOOTSTRAP_SERVERS, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISM, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD, REDIS_CONFIGURATION, TIMESCALE_CONNECTION_STRING."
             exit 1
           fi
           echo "All required secrets present (values not logged)."
@@ -247,6 +253,10 @@ jobs:
       - name: Deployment what-if
         env:
           KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          KAFKA_SECURITY_PROTOCOL: ${{ secrets.KAFKA_SECURITY_PROTOCOL }}
+          KAFKA_SASL_MECHANISM: ${{ secrets.KAFKA_SASL_MECHANISM }}
+          KAFKA_SASL_USERNAME: ${{ secrets.KAFKA_SASL_USERNAME }}
+          KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
           REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
           TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
@@ -259,6 +269,10 @@ jobs:
             --parameters \
               imageTag="${{ github.event.inputs.image_tag }}" \
               kafkaBootstrapServers="$KAFKA_BOOTSTRAP_SERVERS" \
+              kafkaSecurityProtocol="$KAFKA_SECURITY_PROTOCOL" \
+              kafkaSaslMechanism="$KAFKA_SASL_MECHANISM" \
+              kafkaSaslUsername="$KAFKA_SASL_USERNAME" \
+              kafkaSaslPassword="$KAFKA_SASL_PASSWORD" \
               redisConfiguration="$REDIS_CONFIGURATION" \
               timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
               tiingoApiKey="${TIINGO_API_KEY:-}"
@@ -268,6 +282,10 @@ jobs:
         id: deploy
         env:
           KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          KAFKA_SECURITY_PROTOCOL: ${{ secrets.KAFKA_SECURITY_PROTOCOL }}
+          KAFKA_SASL_MECHANISM: ${{ secrets.KAFKA_SASL_MECHANISM }}
+          KAFKA_SASL_USERNAME: ${{ secrets.KAFKA_SASL_USERNAME }}
+          KAFKA_SASL_PASSWORD: ${{ secrets.KAFKA_SASL_PASSWORD }}
           REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
           TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
@@ -283,6 +301,10 @@ jobs:
             --parameters \
               imageTag="${{ github.event.inputs.image_tag }}" \
               kafkaBootstrapServers="$KAFKA_BOOTSTRAP_SERVERS" \
+              kafkaSecurityProtocol="$KAFKA_SECURITY_PROTOCOL" \
+              kafkaSaslMechanism="$KAFKA_SASL_MECHANISM" \
+              kafkaSaslUsername="$KAFKA_SASL_USERNAME" \
+              kafkaSaslPassword="$KAFKA_SASL_PASSWORD" \
               redisConfiguration="$REDIS_CONFIGURATION" \
               timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
               tiingoApiKey="${TIINGO_API_KEY:-}" \

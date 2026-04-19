@@ -28,8 +28,23 @@ Cross-references:
 | Section | Key | Where |
 |---------|-----|-------|
 | Kafka | `Kafka__BootstrapServers`, `Kafka__ClientId`, `Kafka__ConsumerGroupPrefix` | env / `C` / `B` |
+| Kafka (auth, optional) | `Kafka__SecurityProtocol`, `Kafka__SaslMechanism`, `Kafka__SaslUsername`, `Kafka__SaslPassword`, `Kafka__EnableTopicBootstrap` | env (operator-set) |
 | Redis | `Redis__Configuration` | env / `C` / `B` |
 | Timescale | `Timescale__ConnectionString` | env / `C` / `B` |
+
+> **Kafka auth posture.** When `Kafka__SecurityProtocol` is unset (local
+> docker-compose), every producer/consumer/admin client connects
+> Plaintext exactly as before — defaults are byte-identical. When
+> targeting **Azure Event Hubs Kafka**, set all five of:
+> `Kafka__SecurityProtocol=SaslSsl`, `Kafka__SaslMechanism=Plain`,
+> `Kafka__SaslUsername=$ConnectionString`,
+> `Kafka__SaslPassword=<Event Hubs namespace connection string>`, and
+> `Kafka__EnableTopicBootstrap=false`. Topics must be pre-provisioned
+> on the Event Hubs namespace; with `EnableTopicBootstrap=false` the
+> shared bootstrap helper switches to metadata-only validation and
+> warns (does not crash) when an expected topic is missing. Bicep /
+> GitHub Actions plumbing for these secrets is a follow-up diff —
+> today operators set them on the Container App env directly.
 
 ---
 

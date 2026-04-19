@@ -152,6 +152,22 @@ param analyticsReplicaRetryLimit int = 1
 @secure()
 param kafkaBootstrapServers string
 
+@description('Kafka security protocol. Required when broker uses SASL/SSL (e.g. Azure Event Hubs Kafka).')
+@secure()
+param kafkaSecurityProtocol string
+
+@description('Kafka SASL mechanism (PLAIN for Event Hubs).')
+@secure()
+param kafkaSaslMechanism string
+
+@description('Kafka SASL username ("$ConnectionString" for Event Hubs).')
+@secure()
+param kafkaSaslUsername string
+
+@description('Kafka SASL password (Event Hubs namespace connection string).')
+@secure()
+param kafkaSaslPassword string
+
 @description('Redis connection string. Required by gateway, quote-engine.')
 @secure()
 param redisConfiguration string
@@ -269,6 +285,10 @@ module refDataApp 'modules/containerApp.bicep' = {
       { name: 'ASPNETCORE_URLS', value: 'http://+:8080' }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
+    kafkaSecurityProtocol: kafkaSecurityProtocol
+    kafkaSaslMechanism: kafkaSaslMechanism
+    kafkaSaslUsername: kafkaSaslUsername
+    kafkaSaslPassword: kafkaSaslPassword
     redisConfiguration: redisConfiguration
     timescaleConnectionString: timescaleConnectionString
     cpu: refDataCpu
@@ -299,6 +319,10 @@ module ingressApp 'modules/containerApp.bicep' = {
       { name: 'Tiingo__RestBaseUrl', value: 'https://api.tiingo.com/iex' }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
+    kafkaSecurityProtocol: kafkaSecurityProtocol
+    kafkaSaslMechanism: kafkaSaslMechanism
+    kafkaSaslUsername: kafkaSaslUsername
+    kafkaSaslPassword: kafkaSaslPassword
     tiingoApiKey: tiingoApiKey
     cpu: ingressCpu
     memory: ingressMemory
@@ -332,6 +356,10 @@ module quoteEngineApp 'modules/containerApp.bicep' = {
       { name: 'QuoteEngine__CheckpointInterval', value: '00:00:10' }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
+    kafkaSecurityProtocol: kafkaSecurityProtocol
+    kafkaSaslMechanism: kafkaSaslMechanism
+    kafkaSaslUsername: kafkaSaslUsername
+    kafkaSaslPassword: kafkaSaslPassword
     redisConfiguration: redisConfiguration
     cpu: quoteEngineCpu
     memory: quoteEngineMemory
@@ -360,6 +388,10 @@ module persistenceApp 'modules/containerApp.bicep' = {
       { name: 'Persistence__SchemaBootstrapOnStart', value: 'true' }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
+    kafkaSecurityProtocol: kafkaSecurityProtocol
+    kafkaSaslMechanism: kafkaSaslMechanism
+    kafkaSaslUsername: kafkaSaslUsername
+    kafkaSaslPassword: kafkaSaslPassword
     timescaleConnectionString: timescaleConnectionString
     cpu: persistenceCpu
     memory: persistenceMemory

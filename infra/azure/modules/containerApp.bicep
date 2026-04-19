@@ -52,6 +52,22 @@ param envVars array = []
 @secure()
 param kafkaBootstrapServers string = ''
 
+@description('Kafka SASL/SSL security protocol (e.g. SASL_SSL). Empty string = not used by this app.')
+@secure()
+param kafkaSecurityProtocol string = ''
+
+@description('Kafka SASL mechanism (e.g. PLAIN, SCRAM-SHA-256). Empty string = not used by this app.')
+@secure()
+param kafkaSaslMechanism string = ''
+
+@description('Kafka SASL username (Event Hubs uses "$ConnectionString"). Empty string = not used by this app.')
+@secure()
+param kafkaSaslUsername string = ''
+
+@description('Kafka SASL password (Event Hubs namespace connection string). Empty string = not used by this app.')
+@secure()
+param kafkaSaslPassword string = ''
+
 @description('Redis connection string. Empty string = not used by this app.')
 @secure()
 param redisConfiguration string = ''
@@ -88,6 +104,10 @@ param tags object = {}
 // name (kebab-case) to the secret value.
 var platformSecrets = union(
   empty(kafkaBootstrapServers) ? [] : [ { name: 'kafka-bootstrap-servers', value: kafkaBootstrapServers } ],
+  empty(kafkaSecurityProtocol) ? [] : [ { name: 'kafka-security-protocol', value: kafkaSecurityProtocol } ],
+  empty(kafkaSaslMechanism) ? [] : [ { name: 'kafka-sasl-mechanism', value: kafkaSaslMechanism } ],
+  empty(kafkaSaslUsername) ? [] : [ { name: 'kafka-sasl-username', value: kafkaSaslUsername } ],
+  empty(kafkaSaslPassword) ? [] : [ { name: 'kafka-sasl-password', value: kafkaSaslPassword } ],
   empty(redisConfiguration) ? [] : [ { name: 'redis-configuration', value: redisConfiguration } ],
   empty(timescaleConnectionString) ? [] : [ { name: 'timescale-connection-string', value: timescaleConnectionString } ],
   empty(tiingoApiKey) ? [] : [ { name: 'tiingo-api-key', value: tiingoApiKey } ]
@@ -97,6 +117,10 @@ var platformSecrets = union(
 // services already bind (Kafka__BootstrapServers, etc).
 var secretEnvVars = union(
   empty(kafkaBootstrapServers) ? [] : [ { name: 'Kafka__BootstrapServers', secretRef: 'kafka-bootstrap-servers' } ],
+  empty(kafkaSecurityProtocol) ? [] : [ { name: 'Kafka__SecurityProtocol', secretRef: 'kafka-security-protocol' } ],
+  empty(kafkaSaslMechanism) ? [] : [ { name: 'Kafka__SaslMechanism', secretRef: 'kafka-sasl-mechanism' } ],
+  empty(kafkaSaslUsername) ? [] : [ { name: 'Kafka__SaslUsername', secretRef: 'kafka-sasl-username' } ],
+  empty(kafkaSaslPassword) ? [] : [ { name: 'Kafka__SaslPassword', secretRef: 'kafka-sasl-password' } ],
   empty(redisConfiguration) ? [] : [ { name: 'Redis__Configuration', secretRef: 'redis-configuration' } ],
   empty(timescaleConnectionString) ? [] : [ { name: 'Timescale__ConnectionString', secretRef: 'timescale-connection-string' } ],
   empty(tiingoApiKey) ? [] : [ { name: 'Tiingo__ApiKey', secretRef: 'tiingo-api-key' } ]

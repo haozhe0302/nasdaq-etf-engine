@@ -115,7 +115,11 @@ Bound from the `QuoteEngine` section:
 Kafka connection settings come from the shared `Kafka` section
 (`BootstrapServers`, `ClientId`, `ConsumerGroupPrefix`). Consumer groups
 are derived as `{prefix}-quote-engine-ticks` and
-`{prefix}-quote-engine-baskets`.
+`{prefix}-quote-engine-baskets`. Optional SASL/SSL auth
+(`SecurityProtocol`, `SaslMechanism`, `SaslUsername`, `SaslPassword`)
+plus `EnableTopicBootstrap=false` are honoured for Azure Event Hubs
+Kafka — see [`docs/phase2/config-matrix.md`](../../../docs/phase2/config-matrix.md)
+for the full env-var surface.
 
 Redis connection settings come from the shared `Redis` section
 (`Configuration`). The eager `AddHqqqRedisConnection` registration fails

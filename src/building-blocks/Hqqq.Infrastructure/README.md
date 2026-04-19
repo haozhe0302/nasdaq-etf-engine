@@ -8,7 +8,7 @@ Shared infrastructure concerns used by multiple services.
   - `HqqqJsonDefaults` — canonical `JsonSerializerOptions` (camelCase, enum-as-string, null-ignoring) shared across all services for Kafka events and REST responses
 - `Kafka/`
   - `KafkaTopics` — central `const string` registry of all Kafka topic names
-  - `KafkaOptions` — connection settings (BootstrapServers, ClientId, ConsumerGroupPrefix, SchemaRegistryUrl)
+  - `KafkaOptions` — connection settings (BootstrapServers, ClientId, ConsumerGroupPrefix, SchemaRegistryUrl) plus optional SASL/SSL auth (SecurityProtocol, SaslMechanism, SaslUsername, SaslPassword) and an `EnableTopicBootstrap` flag (default `true`; set to `false` against managed brokers like Azure Event Hubs Kafka where topics are pre-provisioned)
   - `KafkaTopicMetadata` / `KafkaTopicRegistry` — topic metadata (partitions, compaction) for deterministic bootstrap
   - `KafkaBootstrap` — idempotent topic creation using the Confluent admin client
   - `KafkaConfigBuilder` — minimal producer/consumer config builders from shared options

@@ -19,11 +19,8 @@ public sealed class KafkaHealthCheck(
         try
         {
             using var admin = new Confluent.Kafka.AdminClientBuilder(
-                new Confluent.Kafka.AdminClientConfig
-                {
-                    BootstrapServers = options.BootstrapServers,
-                    SocketTimeoutMs = 3000,
-                }).Build();
+                Hqqq.Infrastructure.Kafka.KafkaConfigBuilder.BuildAdminConfig(
+                    options, socketTimeoutMs: 3000)).Build();
             var metadata = admin.GetMetadata(TimeSpan.FromSeconds(3));
             return Task.FromResult(HealthCheckResult.Healthy(
                 $"Connected to {metadata.Brokers.Count} broker(s)"));

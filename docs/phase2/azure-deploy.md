@@ -192,12 +192,106 @@ real, populated window.
 
 ---
 
-## 8) Explicitly deferred (D5 / D6 / Phase 3)
+## 8) Event Hubs Kafka — workflow-injected SASL auth
+
+Pointing the Phase 2 services at an Azure Event Hubs Kafka namespace
+is now a deploy-time concern, not a manual `az containerapp update`
+step. The four SASL values are passed as `@secure()` Bicep params
+from `phase2-deploy.yml` into [`main.bicep`](../../infra/azure/main.bicep)
+and surfaced into every Kafka-touching app via per-secret
+`secretRef` env vars in [`modules/containerApp.bicep`](../../infra/azure/modules/containerApp.bicep).
+
+Apps that receive these env vars: `hqqq-reference-data`,
+`hqqq-ingress`, `hqqq-quote-engine`, `hqqq-persistence`. Gateway and
+analytics are deliberately excluded (no Kafka client usage).
+
+| GitHub environment secret (`phase2-demo`) | Bicep `@secure()` param   | Container App env var       | Example value (Event Hubs) |
+|-------------------------------------------|---------------------------|-----------------------------|----------------------------|
+| `KAFKA_BOOTSTRAP_SERVERS`                 | `kafkaBootstrapServers`   | `Kafka__BootstrapServers`   | `<namespace>.servicebus.windows.net:9093` |
+| `KAFKA_SECURITY_PROTOCOL`                 | `kafkaSecurityProtocol`   | `Kafka__SecurityProtocol`   | `SaslSsl` |
+| `KAFKA_SASL_MECHANISM`                    | `kafkaSaslMechanism`      | `Kafka__SaslMechanism`      | `Plain` |
+| `KAFKA_SASL_USERNAME`                     | `kafkaSaslUsername`       | `Kafka__SaslUsername`       | `$ConnectionString` (literal) |
+| `KAFKA_SASL_PASSWORD`                     | `kafkaSaslPassword`       | `Kafka__SaslPassword`       | `Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...` |
+
+All five are enforced by the `phase2-deploy.yml` preflight: an empty
+or missing value short-circuits the run with an aggregated error
+listing every gap. Values are never echoed to logs and are surfaced
+to the container only as `secretRef` references against per-secret
+Container App secrets (kebab-case names like `kafka-sasl-password`),
+so they never appear inline in the Bicep template body or deployment
+history.
+
+`Kafka__EnableTopicBootstrap=false` is **not** wired through the
+deploy template (it is a non-secret static toggle): set it via
+`appsettings.json` / non-secret env override per environment if the
+broker rejects topic creation. Pre-create every topic in
+[`docs/phase2/topics.md`](topics.md) on the namespace before
+deploying — Event Hubs Kafka does not honour the `CreateTopics`
+admin API.
+
+To rotate any of the SASL values: update the corresponding secret
+under GitHub Environments → `phase2-demo`, then re-run
+`phase2-deploy.yml` against the current `image_tag`. Container Apps
+materialises a new revision when secret values change.
+
+Local `docker-compose.phase2.yml` is unaffected — it stays on
+plaintext `kafka:29092` (`Kafka__SecurityProtocol` defaults to empty,
+which `KafkaConfigBuilder.ApplySecurity` interprets as "skip
+security configuration").
+
+---
+
+## 8a) Required GitHub Secrets / Variables for Azure deployment
+
+Authoritative list for the `phase2-deploy.yml` workflow. Anything
+marked **required** is enforced by the preflight job — the workflow
+fails fast (with one aggregated error) if any are missing or empty.
+
+**Repository secrets (required):**
+
+- `AZURE_CLIENT_ID` — federated credential for OIDC.
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+
+**Environment `phase2-demo` secrets (required):**
+
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `KAFKA_SECURITY_PROTOCOL`
+- `KAFKA_SASL_MECHANISM`
+- `KAFKA_SASL_USERNAME`
+- `KAFKA_SASL_PASSWORD`
+- `REDIS_CONFIGURATION`
+- `TIMESCALE_CONNECTION_STRING`
+
+**Environment `phase2-demo` secrets (optional):**
+
+- `TIINGO_API_KEY` — only required if `hqqq-ingress` is configured to
+  consume the Tiingo IEX feed; defaults to empty.
+
+**Repository variables (with workflow-side defaults):**
+
+- `PHASE2_RESOURCE_GROUP` — default `rg-hqqq-p2-demo-eus-01`.
+- `PHASE2_LOCATION` — default `eastus`.
+- `PHASE2_ACR_NAME` — default `acrhqqqp2demo01`.
+
+For a second environment (e.g. `phase2-prod`), mirror this list
+under that GitHub Environment and pass the corresponding
+`bicep_param_file` to the workflow.
+
+---
+
+## 9) Explicitly deferred (D5 / D6 / Phase 3)
 
 - Custom domain + TLS cert binding on the gateway external ingress.
 - Bicep provisioning of Azure Cache for Redis, Azure Database for
   PostgreSQL Flexible Server with the TimescaleDB extension, and a
   managed Kafka surface (Confluent Cloud or Event Hubs Kafka).
+  Note: Kafka **auth** (SecurityProtocol / SaslMechanism /
+  SaslUsername / SaslPassword) is now deploy-time wired (see §8);
+  what remains deferred is provisioning the Event Hubs / Confluent
+  namespace itself from Bicep, plus threading
+  `Kafka__EnableTopicBootstrap` through the template if that toggle
+  needs to vary per environment.
 - Persistent storage for the quote-engine checkpoint
   (Azure Files mount on the Container App).
 - Scheduled trigger for the analytics job (currently Manual only).

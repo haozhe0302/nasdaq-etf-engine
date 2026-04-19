@@ -7,12 +7,16 @@ namespace Hqqq.Infrastructure.Kafka;
 /// <summary>
 /// Idempotent Kafka topic bootstrap helper.
 /// Creates topics only if they do not already exist and applies
-/// compaction policy where specified.
+/// compaction policy where specified. When the supplied
+/// <see cref="KafkaOptions.EnableTopicBootstrap"/> is false (e.g.
+/// against a managed broker like Azure Event Hubs Kafka where topic
+/// provisioning is owned externally) this becomes a metadata-only
+/// validation that warns when expected topics are missing.
 /// </summary>
 public static class KafkaBootstrap
 {
     public static async Task EnsureTopicsAsync(
-        string bootstrapServers,
+        KafkaOptions options,
         IReadOnlyList<KafkaTopicMetadata>? topics = null,
         ILogger? logger = null,
         CancellationToken ct = default)
@@ -20,12 +24,32 @@ public static class KafkaBootstrap
         topics ??= KafkaTopicRegistry.All;
 
         using var admin = new AdminClientBuilder(
-            new AdminClientConfig { BootstrapServers = bootstrapServers }).Build();
+            KafkaConfigBuilder.BuildAdminConfig(options)).Build();
 
         var metadata = admin.GetMetadata(TimeSpan.FromSeconds(10));
         var existing = metadata.Topics
             .Select(t => t.Topic)
             .ToHashSet(StringComparer.Ordinal);
+
+        if (!options.EnableTopicBootstrap)
+        {
+            foreach (var topic in topics)
+            {
+                if (existing.Contains(topic.Name))
+                {
+                    logger?.LogInformation(
+                        "Topic {Topic} present (bootstrap disabled — validation only)",
+                        topic.Name);
+                }
+                else
+                {
+                    logger?.LogWarning(
+                        "Topic {Topic} missing — provisioning is owned externally; expected pre-created",
+                        topic.Name);
+                }
+            }
+            return;
+        }
 
         foreach (var topic in topics)
         {
@@ -68,4 +92,20 @@ public static class KafkaBootstrap
             }
         }
     }
+
+    /// <summary>
+    /// Backward-compatible overload that takes only a bootstrap-server
+    /// string. Forwards to the <see cref="KafkaOptions"/>-based overload
+    /// so existing call sites keep compiling.
+    /// </summary>
+    public static Task EnsureTopicsAsync(
+        string bootstrapServers,
+        IReadOnlyList<KafkaTopicMetadata>? topics = null,
+        ILogger? logger = null,
+        CancellationToken ct = default)
+        => EnsureTopicsAsync(
+            new KafkaOptions { BootstrapServers = bootstrapServers },
+            topics,
+            logger,
+            ct);
 }

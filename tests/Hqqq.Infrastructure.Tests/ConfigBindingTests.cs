@@ -19,6 +19,11 @@ public class ConfigBindingTests
                 ["Kafka:BootstrapServers"] = "broker1:9092",
                 ["Kafka:ClientId"] = "test-client",
                 ["Kafka:ConsumerGroupPrefix"] = "test-prefix",
+                ["Kafka:SecurityProtocol"] = "SaslSsl",
+                ["Kafka:SaslMechanism"] = "Plain",
+                ["Kafka:SaslUsername"] = "$ConnectionString",
+                ["Kafka:SaslPassword"] = "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKey=...",
+                ["Kafka:EnableTopicBootstrap"] = "false",
             })
             .Build();
 
@@ -32,6 +37,11 @@ public class ConfigBindingTests
         Assert.Equal("broker1:9092", opts.BootstrapServers);
         Assert.Equal("test-client", opts.ClientId);
         Assert.Equal("test-prefix", opts.ConsumerGroupPrefix);
+        Assert.Equal("SaslSsl", opts.SecurityProtocol);
+        Assert.Equal("Plain", opts.SaslMechanism);
+        Assert.Equal("$ConnectionString", opts.SaslUsername);
+        Assert.Equal("Endpoint=sb://example.servicebus.windows.net/;SharedAccessKey=...", opts.SaslPassword);
+        Assert.False(opts.EnableTopicBootstrap);
     }
 
     [Fact]
@@ -90,6 +100,11 @@ public class ConfigBindingTests
         var kafka = sp.GetRequiredService<IOptions<KafkaOptions>>().Value;
         Assert.Equal("localhost:9092", kafka.BootstrapServers);
         Assert.Equal("hqqq-local", kafka.ClientId);
+        Assert.Null(kafka.SecurityProtocol);
+        Assert.Null(kafka.SaslMechanism);
+        Assert.Null(kafka.SaslUsername);
+        Assert.Null(kafka.SaslPassword);
+        Assert.True(kafka.EnableTopicBootstrap);
 
         var redis = sp.GetRequiredService<IOptions<RedisOptions>>().Value;
         Assert.Equal("localhost:6379", redis.Configuration);

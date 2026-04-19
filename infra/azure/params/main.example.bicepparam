@@ -48,6 +48,10 @@ param gatewayBasketId = 'HQQQ'
 // Required @secure() params — placeholders only; supply real values
 // via --parameters at deploy time:
 param kafkaBootstrapServers = 'OVERRIDE_ME'
+param kafkaSecurityProtocol = 'OVERRIDE_ME'
+param kafkaSaslMechanism = 'OVERRIDE_ME'
+param kafkaSaslUsername = 'OVERRIDE_ME'
+param kafkaSaslPassword = 'OVERRIDE_ME'
 param redisConfiguration = 'OVERRIDE_ME'
 param timescaleConnectionString = 'OVERRIDE_ME'
 param tiingoApiKey = ''

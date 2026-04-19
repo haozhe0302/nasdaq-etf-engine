@@ -21,6 +21,11 @@ Notes:
   `Gateway:Sources:History=timescale`; `hqqq-persistence` is the only
   runtime consumer today. Analytics reads the persisted Timescale rows
   rather than re-subscribing to Kafka.
+- `pricing.snapshots.v1` is **not** the live `/hubs/market` SignalR
+  fan-out path either. Live `QuoteUpdate` fan-out uses a separate Redis
+  pub/sub channel — `hqqq:channel:quote-update` (D2) — populated by
+  `hqqq-quote-engine` and consumed by every `hqqq-gateway` replica
+  independently. See [redis-keys.md](redis-keys.md).
 - `ops.incidents.v1`: the topic is created by the bootstrap script so
   consumers can attach without a redeploy, but no service publishes or
   subscribes today.

@@ -234,31 +234,42 @@ dotnet test Hqqq.sln
 
 ## 10. What is current vs. what is still deferred
 
-### Current (Phase 2 through C4)
+### Current (Phase 2 through D5)
 - Infrastructure containers start healthy; topics bootstrapped at 3/3/1/1/1/1
   partitions.
 - `hqqq-reference-data` exposes an in-memory HQQQ basket via its REST surface.
 - `hqqq-quote-engine` consumes `market.raw_ticks.v1` + `refdata.basket.active.v1`,
   computes iNAV, writes Redis snapshot + constituents, publishes
-  `pricing.snapshots.v1`.
+  `pricing.snapshots.v1`, **and** publishes live `QuoteUpdate` envelopes
+  to the Redis pub/sub channel `hqqq:channel:quote-update` (D2).
 - `hqqq-persistence` consumes `pricing.snapshots.v1` + `market.raw_ticks.v1`
   into `quote_snapshots` and `raw_ticks`; bootstraps hypertables, rollups,
   and retention policies at startup.
-- `hqqq-gateway` serves `/api/quote` + `/api/constituents` from Redis and
-  `/api/history?range=` from Timescale when configured.
+- `hqqq-gateway` serves `/api/quote` + `/api/constituents` from Redis,
+  `/api/history?range=` from Timescale, and `/api/system/health` from
+  the **native aggregator** (D1) that scrapes each Phase 2 worker's
+  `/healthz/ready` plus the local Redis/Timescale probes.
+- `hqqq-gateway` `/hubs/market` is multi-replica-safe (D2 + D5): every
+  replica subscribes to `hqqq:channel:quote-update` and broadcasts
+  locally; SignalR Redis backplane is deliberately not enabled.
 - `hqqq-analytics` runs a deterministic one-shot report over Timescale.
 - Health endpoints (`/healthz/live`, `/healthz/ready`) return structured JSON
   on every web service.
+- Containerized app tier (D3): `docker-compose.phase2.yml` + per-service
+  Dockerfiles + `phase2-up`/`phase2-smoke`/`phase2-down` wrappers.
+- Azure Container Apps deployment (D4): `infra/azure/` Bicep + GitHub
+  OIDC workflows. See [azure-deploy.md](azure-deploy.md).
+- Multi-gateway replica smoke (D5): `docker-compose.replica-smoke.yml`
+  + `tests/Hqqq.Gateway.ReplicaSmoke/` (see Section 12).
 
 ### Still deferred
 - Real Tiingo ingestion in `hqqq-ingress` (still served by the legacy
   monolith).
 - Real issuer-feed + corporate-action pipeline in `hqqq-reference-data`.
-- Gateway-native `/api/system/health` aggregation (still stub / legacy
-  forwarding).
-- SignalR Redis backplane on `/hubs/market` — Phase 2D2.
-- Multi-replica / HA infra — Phase 2D3.
-- Replay / backfill / anomaly detection in `hqqq-analytics` — Phase 2C5+.
+- Replay / backfill / anomaly detection in `hqqq-analytics`.
+- HA topologies for Kafka / Redis / Timescale; multi-instance
+  quote-engine / persistence / ingress / reference-data.
+- Kubernetes app-tier operationalization — Phase 3.
 
 ## 11. Containerized Phase 2 stack (D3)
 
@@ -266,6 +277,12 @@ In addition to running each service via `dotnet run`, the entire Phase 2
 app tier can be brought up as containers on top of the existing infra
 compose. This is the deployment-shaped local path; the host-`dotnet run`
 path remains supported for hot-reload and native debugging.
+
+> Cloud counterpart of this same compose layout: see
+> [azure-deploy.md](azure-deploy.md). The Phase 2 services run unchanged
+> on Azure Container Apps using the same hierarchical config keys
+> (`Kafka__BootstrapServers`, `Redis__Configuration`,
+> `Timescale__ConnectionString`, `Gateway__*`).
 
 ### Layout
 
@@ -386,14 +403,136 @@ the gateway at it (`Gateway__DataSource=legacy` +
 `Gateway__LegacyBaseUrl=http://host.docker.internal:5000`) or run both
 on the host.
 
-### What is intentionally deferred to D4+
+### What is intentionally deferred to Phase 3
 
-- Azure-specific assets (ACR push, Bicep/ARM, App Service / Container Apps).
-- Kubernetes manifests / Helm charts.
-- Multi-replica gateway + SignalR Redis backplane.
+- Kubernetes manifests / Helm charts (Phase 3 work — Phase 2's cloud
+  posture is Azure Container Apps, see [azure-deploy.md](azure-deploy.md)).
 - HA Kafka / Redis / Timescale topologies.
 - Image signing, SBOMs, vulnerability scans in CI.
 - Distroless / chiselled .NET base images.
+
+(Azure assets — ACR push, Bicep, Container Apps deploy — are now
+delivered in D4 under `infra/azure/` and the
+`phase2-images.yml` / `phase2-deploy.yml` workflows; multi-replica
+gateway smoke is covered by D5 — see Section 12.)
+
+## 12. Multi-gateway replica smoke (Phase 2D5)
+
+Phase 2D5 adds a compose-based replica-smoke topology that proves two
+gateway instances can correctly fan out the same live SignalR stream
+when both subscribe to the shared Redis pub/sub channel. The point of
+D5 is gateway-replica correctness, not full HA: only the gateway is
+duplicated; quote-engine, persistence, ingress, reference-data, and
+analytics stay single-instance.
+
+### Layout
+
+| File | Role |
+|------|------|
+| `docker-compose.yml` | Infra base. |
+| `docker-compose.phase2.yml` | App-tier overlay (gateway-a on host port 5030). |
+| `docker-compose.replica-smoke.yml` | Adds `hqqq-gateway-b` on host port 5031, sharing the same Redis. |
+| `tests/Hqqq.Gateway.ReplicaSmoke/` | Console exe smoke harness. |
+
+### Endpoints
+
+| Replica | Compose service | Container DNS:port | Host port | Health |
+|---------|-----------------|--------------------|-----------|--------|
+| gateway-a | `hqqq-gateway`   | `hqqq-gateway:8080`   | `5030` | `GET /healthz/ready` |
+| gateway-b | `hqqq-gateway-b` | `hqqq-gateway-b:8080` | `5031` | `GET /healthz/ready` |
+
+### Bring-up
+
+```powershell
+.\scripts\replica-smoke-up.ps1
+.\scripts\bootstrap-kafka-topics.ps1
+.\scripts\replica-smoke.ps1
+```
+
+```bash
+./scripts/replica-smoke-up.sh
+./scripts/bootstrap-kafka-topics.sh
+./scripts/replica-smoke.sh
+```
+
+`replica-smoke-up.*` is a thin wrapper around the three-file compose
+overlay:
+
+```bash
+docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.phase2.yml \
+    -f docker-compose.replica-smoke.yml up -d --build
+```
+
+### What the harness verifies
+
+`scripts/replica-smoke.*` invokes the `Hqqq.Gateway.ReplicaSmoke` console
+exe, which:
+
+1. probes `GET /healthz/ready` and `GET /api/quote` on both gateways,
+   requiring `2xx` from each;
+2. opens two SignalR clients — one to `5030/hubs/market`, one to
+   `5031/hubs/market` — and registers a `QuoteUpdate` handler on each;
+3. publishes a single deterministic `QuoteUpdateEnvelope` to
+   `hqqq:channel:quote-update` via Redis pub/sub. The harness asserts
+   that the `PUBLISH` was received by at least 2 subscribers (one per
+   gateway replica);
+4. waits for both SignalR clients to receive the same `QuoteUpdate`
+   within the configured timeout (default 15s) and checks that the
+   `Nav`, `QuoteState`, `AsOf`, and `IsLive` fields round-trip
+   unchanged.
+
+Exit code `0` is the only "PASS"; everything else exits `1`.
+
+### Environment overrides
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `HQQQ_GATEWAY_A_BASE_URL` | `http://localhost:5030` | gateway-a base URL for REST + SignalR. |
+| `HQQQ_GATEWAY_B_BASE_URL` | `http://localhost:5031` | gateway-b base URL for REST + SignalR. |
+| `Redis__Configuration` | `localhost:6379` | StackExchange.Redis configuration string used by the harness for the pub/sub publish. |
+| `Gateway__BasketId` | `HQQQ` | Basket id placed in the synthetic envelope. Both replicas must agree on this. |
+| `HQQQ_REPLICA_SMOKE_TIMEOUT_SECONDS` | `15` | Per-step timeout for SignalR connect and message wait. |
+
+### Tear-down
+
+```powershell
+docker compose `
+    -f docker-compose.yml `
+    -f docker-compose.phase2.yml `
+    -f docker-compose.replica-smoke.yml down
+```
+
+```bash
+docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.phase2.yml \
+    -f docker-compose.replica-smoke.yml down
+```
+
+Add `-v` to also drop named volumes (Timescale, Redis, quote-engine
+checkpoint, Prometheus/Grafana state).
+
+### Scale-out assumptions documented by D5
+
+- Both replicas resolve the same Redis instance and the same
+  `Gateway__BasketId`. This is what allows them to share snapshot keys
+  and the live pub/sub channel.
+- Sticky sessions are NOT required for `/hubs/market` — every replica
+  receives every published `QuoteUpdate` and broadcasts to its own
+  clients independently.
+- The contract surface (REST routes, SignalR hub path, hub event name,
+  DTO shapes) is unchanged by D5.
+
+### Deferred beyond D5
+
+- HA Kafka / Redis / Timescale topologies.
+- Multi-instance quote-engine / persistence / ingress / reference-data.
+- Kubernetes manifests / Helm charts.
+- SignalR Redis backplane (only relevant if a future scale-out moves
+  off "every replica receives every update").
+- Cross-region or multi-AZ topology.
 
 ## Troubleshooting
 

@@ -106,7 +106,32 @@ nasdaq-etf-engine/
 │   ├── architecture.md
 │   ├── runbook.md
 │   └── phase2/
-│       └── restructure-notes.md          # Migration status + notes
+│       ├── restructure-notes.md          # Migration status + notes
+│       ├── local-dev.md                  # Phase 2 operator walkthrough
+│       ├── azure-deploy.md               # Azure Container Apps deploy walkthrough
+│       ├── release-checklist.md          # Release gate (D6)
+│       ├── rollback.md                   # Rollback playbook (D6)
+│       ├── config-matrix.md              # Per-service config surface (D6)
+│       ├── topics.md
+│       └── redis-keys.md
+├── infra/
+│   ├── azure/                            # Bicep + GitHub OIDC for Azure Container Apps (D4)
+│   │   ├── main.bicep
+│   │   ├── modules/
+│   │   ├── params/
+│   │   └── README.md
+│   └── prometheus/
+├── docker-compose.yml                    # Infra base: Timescale, Redis, Kafka, Kafka UI, Prometheus, Grafana
+├── docker-compose.phase2.yml             # Phase 2 app-tier overlay (D3)
+├── docker-compose.replica-smoke.yml      # Multi-gateway replica-smoke overlay (D5)
+├── scripts/
+│   ├── bootstrap-kafka-topics.{ps1,sh}
+│   ├── phase2-up.{ps1,sh}
+│   ├── phase2-down.{ps1,sh}
+│   ├── phase2-smoke.{ps1,sh}
+│   ├── replica-smoke-up.{ps1,sh}
+│   ├── replica-smoke.{ps1,sh}
+│   └── build-hqqq-api-docker.ps1
 ├── src/
 │   ├── building-blocks/
 │   │   ├── Hqqq.Contracts/               # Cross-service event/DTO contracts
@@ -115,11 +140,11 @@ nasdaq-etf-engine/
 │   │   └── Hqqq.Observability/           # Metrics, tracing, health builders
 │   ├── services/
 │   │   ├── hqqq-reference-data/          # Basket + corporate-action service
-│   │   ├── hqqq-ingress/                 # Tiingo ingest worker
-│   │   ├── hqqq-quote-engine/            # iNAV compute worker
-│   │   ├── hqqq-gateway/                 # REST + SignalR serving gateway
+│   │   ├── hqqq-ingress/                 # Tiingo ingest worker (stub today)
+│   │   ├── hqqq-quote-engine/            # iNAV compute + Redis pub/sub publisher
+│   │   ├── hqqq-gateway/                 # REST + SignalR serving gateway (D1 native health, D2 live fan-out)
 │   │   ├── hqqq-persistence/             # TimescaleDB writer worker
-│   │   └── hqqq-analytics/               # Replay/backfill worker
+│   │   └── hqqq-analytics/               # One-shot Timescale report job
 │   ├── tools/
 │   │   └── hqqq-bench/                   # Offline replay + benchmark CLI
 │   ├── hqqq-api/                         # [Legacy] Phase 1 modular monolith
@@ -132,63 +157,72 @@ nasdaq-etf-engine/
 │           ├── lib/                      # API, hooks, adapters, types
 │           ├── pages/                    # Market/Constituents/History/System
 │           └── styles/                   # Tailwind theme tokens
-├── tests/
-│   ├── Hqqq.Contracts.Tests/
-│   ├── Hqqq.ReferenceData.Tests/
-│   ├── Hqqq.Ingress.Tests/
-│   ├── Hqqq.QuoteEngine.Tests/
-│   ├── Hqqq.Gateway.Tests/
-│   └── Hqqq.Persistence.Tests/
-└── docker-compose.yml
+└── tests/
+    ├── Hqqq.Contracts.Tests/
+    ├── Hqqq.ReferenceData.Tests/
+    ├── Hqqq.Ingress.Tests/
+    ├── Hqqq.QuoteEngine.Tests/
+    ├── Hqqq.Gateway.Tests/
+    ├── Hqqq.Gateway.ReplicaSmoke/        # D5 multi-gateway smoke harness
+    └── Hqqq.Persistence.Tests/
 ```
 
 Deep architecture details are documented in [docs/architecture.md](docs/architecture.md).
 Phase 2 migration status is tracked in [docs/phase2/restructure-notes.md](docs/phase2/restructure-notes.md).
 
-## Future phases (in progress)
+## Phase 2 — event-driven serving layer (in place through D6)
 
-### Phase 2 — event-driven serving layer
-
-The design direction is to split ingestion, compute, persistence, and gateway
-concerns so replay and multi-consumer workloads become first-class. The diagram
-below is the short version; `docs/architecture.md` keeps the full version with
-the same component names and flow.
+Phase 2 splits ingestion, compute, persistence, and gateway concerns
+into narrow services connected by Kafka, Redis, and Timescale. The
+short version is below; `docs/architecture.md` keeps the full version
+with the same component names and flow.
 
 ```text
 Tiingo WebSocket
-  -> ingress-service (normalize ticks + add metadata)
-  -> Kafka topic: market.raw_ticks (key=symbol)
-       |-> quote-engine (consumer group A)
+  -> ingress-service (normalize ticks + add metadata)             [stub today; legacy monolith ingests]
+  -> Kafka topic: market.raw_ticks.v1 (key=symbol)
+       |-> hqqq-quote-engine (consumer group A)
        |     -> compute basket/iNAV
-       |     -> Redis latest views:
-       |        hqqq:snapshot / constituents / metrics
-       |     -> api-gateway / websocket-gateway
-       |        -> REST read + WS broadcast (1000+ clients)
+       |     -> Redis latest views: hqqq:snapshot / constituents / freshness
+       |     -> Redis pub/sub: hqqq:channel:quote-update            (D2 live fan-out)
+       |     -> Kafka: pricing.snapshots.v1
        |
-       |-> persistence-service (consumer group B)
-       |     -> Postgres/Timescale (history/audit)
+       |-> hqqq-persistence (consumer group B)
+       |     -> TimescaleDB hypertables (quote_snapshots, raw_ticks)
+       |     -> 1m/5m continuous aggregates + retention
        |
-       \-> analytics/replay-worker (consumer group C)
-             -> anomaly checks / replay / backfill
+       \-> hqqq-analytics (one-shot job, reads Timescale only)
+
+  -> hqqq-gateway (REST + SignalR; 1..N replicas, multi-replica-safe)
+       |-> /api/quote, /api/constituents      (Redis snapshots)
+       |-> /api/history?range=                (Timescale)
+       |-> /api/system/health                  (D1 native aggregator)
+       \-> /hubs/market SignalR fan-out        (subscribes to hqqq:channel:quote-update;
+                                                broadcasts locally; no SignalR Redis backplane)
 ```
 
-Target outcomes:
-- Support 1000+ concurrent WebSocket clients through gateway scale-out
-- Support multiple downstream consumers (frontend, persistence, alerting, analytics, replay)
-- Support replay / backfill / recalculation workflows
-- Support multiple ETF baskets and multiple market-data providers
-- Support rolling deploys, autoscaling, and better failure isolation
+D-phase status (in place):
+
+| Slice | What it delivers |
+|-------|------------------|
+| **D1** | Gateway-native `/api/system/health` aggregator (default) |
+| **D2** | Live `QuoteUpdate` fan-out via Redis pub/sub `hqqq:channel:quote-update` (multi-replica-safe by construction) |
+| **D3** | Containerized Phase 2 app tier (`docker-compose.phase2.yml` + Dockerfiles + wrapper scripts) |
+| **D4** | Azure Container Apps deployment assets (`infra/azure/` Bicep + `phase2-images.yml` + `phase2-deploy.yml` GitHub OIDC) |
+| **D5** | Multi-gateway replica-smoke topology + harness (`docker-compose.replica-smoke.yml`, `tests/Hqqq.Gateway.ReplicaSmoke/`) |
+| **D6** | Operator docs closeout — refreshed architecture / runbook / Phase 2 docs + new release-checklist, rollback, config-matrix |
 
 Design principle:
-- Kafka is the durable event log and fan-out backbone
-- Redis is the latest-state serving layer (not the primary event pipeline)
+- Kafka is the durable event log and fan-out backbone for compute and persistence.
+- Redis is the latest-state serving layer **and** the live `/hubs/market` fan-out channel (per-replica subscribe + local broadcast — no SignalR Redis backplane).
 
-### Phase 3 — Kubernetes for app tier operations
+### Phase 3 — Kubernetes for app-tier operations (deferred)
 
-Planned scope:
+Planned scope (NOT in Phase 2):
 - Run gateway, ingress, and workers on Kubernetes (`Deployment` + `Service`)
 - Use HPA for gateway elasticity (CPU and/or custom metrics)
 - Manage runtime config via `ConfigMap` and secrets via `Secret`
+- HA topologies for Kafka / Redis / Timescale themselves; multi-instance quote-engine / persistence / ingress / reference-data
 - Keep stateful infra (Kafka/Redis/Postgres) independent or managed where appropriate
 
 Operating principle: stateless app tier on Kubernetes for operability and
@@ -243,6 +277,14 @@ Swagger (local): <http://localhost:5015/swagger>
 
 All setup, startup, deployment command snippets, and smoke-test procedures are
 consolidated in [docs/runbook.md](docs/runbook.md).
+
+Phase 2 operator entry points:
+
+- [docs/phase2/local-dev.md](docs/phase2/local-dev.md) — host-`dotnet run` and containerized (D3) walkthrough
+- [docs/phase2/azure-deploy.md](docs/phase2/azure-deploy.md) — Azure Container Apps deployment (D4)
+- [docs/phase2/release-checklist.md](docs/phase2/release-checklist.md) — pre/post-deploy gate (D6)
+- [docs/phase2/rollback.md](docs/phase2/rollback.md) — rollback playbook (D6)
+- [docs/phase2/config-matrix.md](docs/phase2/config-matrix.md) — per-service config surface (D6)
 
 ## Known limitations (MVP)
 

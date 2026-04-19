@@ -5,10 +5,19 @@ commands, and shutdown procedures.
 
 Sections 1–10 cover the Phase 1 monolith (`hqqq-api` + `hqqq-ui`), which is
 still the running reference system. Section 11 covers the Phase 2 services
-(gateway, quote-engine, persistence, analytics, reference-data) and
-assumes Phase 2 infra + Kafka topics are already up. See also
-[phase2/local-dev.md](phase2/local-dev.md) for a richer Phase 2 operator
-walkthrough.
+running as host processes (`dotnet run`), and assumes Phase 2 infra + Kafka
+topics are already up. Sections 12–17 cover the rest of the Phase 2
+operator surface: containerized app tier (D3), multi-gateway replica smoke
+(D5), Azure deployment (D4), health URL matrix, expected degraded
+behaviors, and common failure modes.
+
+Companion docs:
+
+- [phase2/local-dev.md](phase2/local-dev.md) — richer Phase 2 operator walkthrough
+- [phase2/azure-deploy.md](phase2/azure-deploy.md) — Azure deploy walkthrough
+- [phase2/release-checklist.md](phase2/release-checklist.md) — release gate
+- [phase2/rollback.md](phase2/rollback.md) — rollback playbook
+- [phase2/config-matrix.md](phase2/config-matrix.md) — per-service config surface
 
 ---
 
@@ -394,11 +403,255 @@ and exits with `0`.
 
 ### 11.6 Intentionally deferred
 
-- Gateway-native `/api/system/health` aggregation (still stub / legacy
-  forwarding).
-- SignalR Redis backplane on `/hubs/market` (Phase 2D2).
-- Multi-replica / HA infra (Phase 2D3).
-- Real Tiingo ingestion in `hqqq-ingress`; issuer feed + corp-action
+- Real Tiingo ingestion in `hqqq-ingress`; issuer-feed + corporate-action
   pipeline in `hqqq-reference-data` (still live inside the legacy
   monolith).
-- Replay / anomaly / backfill in `hqqq-analytics` (Phase 2C5+ / D).
+- Replay / anomaly / backfill in `hqqq-analytics`.
+- HA topologies for Kafka / Redis / Timescale themselves; multi-instance
+  quote-engine / persistence / ingress / reference-data (D5 only
+  duplicates the gateway).
+- Kubernetes app-tier operationalization — Phase 3.
+
+D-phase items already shipped (no longer "deferred"):
+
+- D1 — gateway-native `/api/system/health` aggregator (default).
+- D2 — live `QuoteUpdate` fan-out via Redis pub/sub
+  `hqqq:channel:quote-update`.
+- D3 — containerized Phase 2 app tier (`docker-compose.phase2.yml`).
+- D4 — Azure Container Apps deploy assets under `infra/azure/`.
+- D5 — multi-gateway replica smoke
+  (`docker-compose.replica-smoke.yml`, `tests/Hqqq.Gateway.ReplicaSmoke/`).
+
+---
+
+## 12) Containerized Phase 2 app tier (D3)
+
+In addition to the host-`dotnet run` flow in §11, the entire Phase 2 app
+tier can be run as containers on top of the existing infra compose.
+
+### 12.1 Bring-up
+
+```powershell
+.\scripts\phase2-up.ps1
+.\scripts\bootstrap-kafka-topics.ps1
+.\scripts\phase2-smoke.ps1
+```
+
+```bash
+./scripts/phase2-up.sh
+./scripts/bootstrap-kafka-topics.sh
+./scripts/phase2-smoke.sh
+```
+
+`phase2-up.*` is a thin wrapper around:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.phase2.yml up -d --build
+```
+
+### 12.2 Container DNS, ports, and health
+
+| Service | Container DNS:port | Host port | Health endpoint |
+|---------|--------------------|-----------|-----------------|
+| `hqqq-reference-data` | `hqqq-reference-data:8080` | `5020` | `GET /healthz/ready` |
+| `hqqq-ingress`        | `hqqq-ingress:8081`        | `5081` | `GET /healthz/ready` |
+| `hqqq-quote-engine`   | `hqqq-quote-engine:8081`   | `5082` | `GET /healthz/ready` |
+| `hqqq-persistence`    | `hqqq-persistence:8081`    | `5083` | `GET /healthz/ready` |
+| `hqqq-gateway`        | `hqqq-gateway:8080`        | `5030` | `GET /healthz/ready` |
+| `hqqq-analytics` (profile=`analytics`) | `hqqq-analytics:8081` | `5084` | n/a — exit code is the signal |
+
+Workers expose only their management host (port 8081) inside the
+container, configured with `Management__BindAddress=0.0.0.0` so the
+gateway aggregator can reach `/healthz/ready` and `/metrics` across
+the docker network.
+
+### 12.3 One-shot analytics in compose
+
+```powershell
+$env:Analytics__StartUtc = '2026-04-17T00:00:00Z'
+$env:Analytics__EndUtc   = '2026-04-18T00:00:00Z'
+docker compose -f docker-compose.yml -f docker-compose.phase2.yml `
+    --profile analytics run --rm hqqq-analytics
+```
+
+### 12.4 Tear-down
+
+```powershell
+.\scripts\phase2-down.ps1                      # stop containers, keep volumes
+.\scripts\phase2-down.ps1 -RemoveVolumes       # also drop Timescale/Redis/checkpoint volumes
+.\scripts\phase2-down.ps1 -IncludeReplicaSmoke # also tear down the D5 overlay
+```
+
+```bash
+./scripts/phase2-down.sh
+./scripts/phase2-down.sh --remove-volumes
+./scripts/phase2-down.sh --include-replica-smoke
+```
+
+`-RemoveVolumes` / `--remove-volumes` is destructive — Timescale data,
+Redis state, and the `quote_engine_data` checkpoint volume will be lost.
+
+---
+
+## 13) Multi-gateway replica smoke (D5)
+
+D5 stands up a second gateway replica (`hqqq-gateway-b` on host port
+`5031`) sharing the same Redis as the default gateway, then asserts that
+both replicas receive the same live `QuoteUpdate` over the
+`hqqq:channel:quote-update` Redis pub/sub channel. Scope is
+gateway-replica correctness, not full HA — only the gateway is duplicated.
+
+### 13.1 Bring-up
+
+```powershell
+.\scripts\replica-smoke-up.ps1
+.\scripts\bootstrap-kafka-topics.ps1
+.\scripts\replica-smoke.ps1
+```
+
+```bash
+./scripts/replica-smoke-up.sh
+./scripts/bootstrap-kafka-topics.sh
+./scripts/replica-smoke.sh
+```
+
+### 13.2 What the harness asserts
+
+The `Hqqq.Gateway.ReplicaSmoke` console exe:
+
+1. probes `GET /healthz/ready` and `GET /api/quote` on both gateways
+   (requires `2xx` from each);
+2. opens two SignalR clients — one to `5030/hubs/market`, one to
+   `5031/hubs/market` — and registers a `QuoteUpdate` handler on each;
+3. publishes a single deterministic `QuoteUpdateEnvelope` to
+   `hqqq:channel:quote-update` via Redis pub/sub, asserting at least 2
+   subscribers received the `PUBLISH`;
+4. waits for both SignalR clients to receive the same `QuoteUpdate`
+   within `HQQQ_REPLICA_SMOKE_TIMEOUT_SECONDS` (default 15 s) and
+   checks that `Nav`, `QuoteState`, `AsOf`, and `IsLive` round-trip
+   unchanged.
+
+Exit code `0` is the only "PASS"; everything else exits `1`.
+
+### 13.3 Tear-down
+
+```powershell
+.\scripts\phase2-down.ps1 -IncludeReplicaSmoke
+```
+
+```bash
+./scripts/phase2-down.sh --include-replica-smoke
+```
+
+---
+
+## 14) Azure deployment (D4)
+
+Azure Container Apps is the cloud target for Phase 2. AKS / Helm /
+Kubernetes are explicitly **out of scope** for Phase 2 — they are
+Phase 3 work.
+
+The bootstrap (resource group, GitHub OIDC federated identity, role
+assignments, repo + environment secrets) is documented in
+[`infra/azure/README.md`](../infra/azure/README.md). The day-to-day
+operator walkthrough (deploy loop, analytics on demand, container
+hardening, adding a second environment) lives in
+[`phase2/azure-deploy.md`](phase2/azure-deploy.md).
+
+### 14.1 Deploy a new revision
+
+1. Merge to `main` (or run [`phase2-images.yml`](../.github/workflows/phase2-images.yml) manually). Note the
+   `vsha-...` tag from the run summary.
+2. Run [`phase2-deploy.yml`](../.github/workflows/phase2-deploy.yml)
+   with `image_tag=vsha-<short-sha>`. Set `what_if_only=true` first for
+   a dry run.
+3. Read the run summary for the gateway FQDN and the smoke commands.
+
+The deploy is idempotent: re-running with the same `image_tag` is a
+no-op for the images, and Bicep only re-applies what changed.
+
+### 14.2 Smoke
+
+```bash
+RG=rg-hqqq-p2-demo-eus-01
+GATEWAY=$(az containerapp show -g $RG -n ca-hqqq-p2-gateway-demo-01 \
+  --query properties.configuration.ingress.fqdn -o tsv)
+
+curl -fsS https://$GATEWAY/healthz/ready
+curl -fsS https://$GATEWAY/api/system/health
+curl -fsS https://$GATEWAY/api/quote
+curl -fsS "https://$GATEWAY/api/history?range=1D"
+```
+
+### 14.3 Run analytics on demand
+
+```bash
+RG=rg-hqqq-p2-demo-eus-01
+JOB=caj-hqqq-p2-analytics-demo-01
+
+az containerapp job start \
+  --name $JOB \
+  --resource-group $RG \
+  --env-vars \
+    Analytics__StartUtc=2026-04-17T00:00:00Z \
+    Analytics__EndUtc=2026-04-18T00:00:00Z
+
+EXEC=$(az containerapp job execution list -n $JOB -g $RG --query '[0].name' -o tsv)
+az containerapp job logs show -n $JOB -g $RG --execution $EXEC --container $JOB --follow
+```
+
+Exit codes: `0` success (incl. empty window), `1` failure, `2`
+unsupported `Analytics:Mode`.
+
+---
+
+## 15) Health check URL matrix
+
+| Mode | Process / container | `/healthz/live` | `/healthz/ready` | `/api/system/health` | `/metrics` |
+|------|---------------------|-----------------|------------------|----------------------|------------|
+| Host (`dotnet run`) | `hqqq-gateway` | `http://localhost:5030/healthz/live` | `http://localhost:5030/healthz/ready` | `http://localhost:5030/api/system/health` | `http://localhost:5030/metrics` |
+| Host (`dotnet run`) | `hqqq-reference-data` | `http://localhost:5020/healthz/live` | `http://localhost:5020/healthz/ready` | n/a | `http://localhost:5020/metrics` |
+| Host (`dotnet run`) workers (`hqqq-ingress` / `hqqq-quote-engine` / `hqqq-persistence`) | management host | `http://localhost:<mgmtPort>/healthz/live` | `http://localhost:<mgmtPort>/healthz/ready` | n/a | `http://localhost:<mgmtPort>/metrics` |
+| Containerized (D3) | `hqqq-gateway` | `http://localhost:5030/healthz/live` | `http://localhost:5030/healthz/ready` | `http://localhost:5030/api/system/health` | `http://localhost:5030/metrics` |
+| Containerized (D3) | workers | host ports `5020`, `5081`, `5082`, `5083` | same | n/a | same |
+| Replica-smoke (D5) | `hqqq-gateway-b` | `http://localhost:5031/healthz/live` | `http://localhost:5031/healthz/ready` | `http://localhost:5031/api/system/health` | `http://localhost:5031/metrics` |
+| Azure Container Apps (D4) | gateway only (external) | `https://<gatewayFqdn>/healthz/live` | `https://<gatewayFqdn>/healthz/ready` | `https://<gatewayFqdn>/api/system/health` | `https://<gatewayFqdn>/metrics` |
+| Azure Container Apps (D4) | workers (internal-only) | reached by the gateway aggregator via internal CAE FQDNs | same | n/a | same |
+
+---
+
+## 16) Expected degraded behaviors
+
+These are the documented, deliberate degraded responses. None of them
+should be treated as a regression on their own.
+
+| Trigger | Endpoint | Response | Notes |
+|---------|----------|----------|-------|
+| Redis snapshot key missing for the configured `Gateway:BasketId` | `GET /api/quote` | `503 {"error":"quote_unavailable", ...}` | Gateway never silently substitutes stub data when `Sources:Quote=redis`. Quote-engine re-populates on the next compute cycle. |
+| Redis constituents key missing | `GET /api/constituents` | `503 {"error":"constituents_unavailable", ...}` | Same shape as quote; clears on next cycle. |
+| Malformed Redis payload | `GET /api/quote` / `/api/constituents` | `502 {"error":"quote_malformed"}` / `{"error":"constituents_malformed"}` | Counter `hqqq.gateway.quote_updates_malformed` increments on the SignalR fan-out path. |
+| Timescale unreachable | `GET /api/history?range=...` | `503 {"error":"history_unavailable", ...}` | Live serving (Redis) is unaffected. |
+| Empty history window | `GET /api/history?range=1D` | `200` with render-safe empty payload (`pointCount=0`, empty `series`, 21-bucket `distribution`) | Expected on a fresh stack before persistence has written rows. |
+| Unsupported `range` | `GET /api/history?range=XYZ` | `400 {"error":"history_range_unsupported", ...}` | Supported ranges: `1D`, `5D`, `1M`, `3M`, `YTD`, `1Y`. |
+| Downstream worker not configured / unreachable | `GET /api/system/health` (aggregated) | `200` overall, that dependency reports `status: "unknown"` (or `"idle"` if no `BaseUrl` configured); top-level status rolls up to `degraded` | The aggregator never returns a non-200 unless the gateway itself catastrophically fails. |
+| Quote-engine restart | live SignalR `/hubs/market` | momentary gap in `QuoteUpdate` events; no error to clients | Checkpoint at `QuoteEngine__CheckpointPath` rehydrates basket + scale-state on the next start. |
+| Corp-action provider failure (legacy) | `/api/system/health` (legacy or aggregated overlay) | `corporate-actions` dependency flagged; pricing falls back to unadjusted shares with `ProviderFailed=true` | Live serving continues. |
+| `hqqq-analytics` empty window | exit code | `0`, log line `WARN ... hasData=false` | Empty window is not a failure. |
+
+---
+
+## 17) Common failure modes & first checks
+
+| Symptom | First check |
+|---------|-------------|
+| `phase2-smoke` reports `503` on `/api/quote` | `docker exec cache redis-cli EXISTS hqqq:snapshot:HQQQ` — if `0`, quote-engine has not produced yet. Tail `hqqq-quote-engine` logs. |
+| `phase2-smoke` reports `503` on `/api/history` | `docker exec db psql -U admin -d hqqq -c "SELECT COUNT(*) FROM quote_snapshots;"` — if `0`, persistence has not consumed yet, or `pricing.snapshots.v1` is empty. |
+| Kafka topics missing (consumer crashes on startup) | `docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list` — re-run `bootstrap-kafka-topics.{ps1,sh}`. |
+| `kafka` container marked `unhealthy` | `docker compose ps`; Kafka has a 30 s start period. Wait, then re-run bootstrap. |
+| Gateway returns `502 quote_malformed` | A producer wrote a non-JSON or shape-mismatched payload to Redis. Check `hqqq-quote-engine` recent deploys; metric `hqqq.gateway.quote_updates_malformed`. |
+| `phase2-deploy.yml` fails on Bicep step | Read the workflow's `what-if` output; check the `phase2-demo` environment secrets exist (`KAFKA_BOOTSTRAP_SERVERS`, `REDIS_CONFIGURATION`, `TIMESCALE_CONNECTION_STRING`). |
+| Container App stuck in `Provisioning` / `Failed` | `az containerapp revision list -g $RG -n <appName>` then `az containerapp logs show -g $RG -n <appName> --revision <revName>` — typical causes are image-pull failure (check ACR + UAMI `AcrPull`) or env-var validation (`IValidateOptions` failing fast). |
+| `analytics` job exit code `2` | `Analytics:Mode` is unsupported. Re-run with `Analytics__Mode=report` and a valid `StartUtc`/`EndUtc`. |
+| Replica-smoke fails on SignalR wait | Confirm both gateways report `2xx` on `/healthz/ready`; confirm both resolve the same Redis (`Redis__Configuration`) and same `Gateway__BasketId`; raise `HQQQ_REPLICA_SMOKE_TIMEOUT_SECONDS`. |
+| `/api/system/health` aggregated payload shows `status: "unknown"` for a worker | The gateway can't reach that worker's `/healthz/ready`. Check the corresponding `Gateway:Health:Services:<Name>:BaseUrl` and that the worker's management host is bound to `0.0.0.0` (containerized workers set `Management__BindAddress=0.0.0.0`). |
+| `quote-engine` checkpoint not restored after restart | `QuoteEngine:CheckpointPath` must map to a persistent volume in containers (`quote_engine_data` named volume in compose; ephemeral `/tmp` in Azure today — documented gap). |

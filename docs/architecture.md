@@ -22,12 +22,18 @@ Two deployable "faces" coexist today:
   - `hqqq-ingress` (worker) — **stub**; Tiingo ingestion still lives in the
     monolith.
   - `hqqq-quote-engine` (worker) — real Kafka consumer + iNAV compute;
-    writes Redis snapshots and publishes `pricing.snapshots.v1`.
+    writes Redis snapshots, publishes `pricing.snapshots.v1`, and
+    publishes live `QuoteUpdate` envelopes to the Redis pub/sub channel
+    `hqqq:channel:quote-update`.
   - `hqqq-persistence` (worker) — real Kafka → TimescaleDB writer for
     `pricing.snapshots.v1` and `market.raw_ticks.v1`; bootstraps
     hypertables, continuous aggregates, and retention policies.
   - `hqqq-gateway` (web) — REST + SignalR serving edge; reads Redis for
-    quote/constituents and Timescale for history.
+    quote/constituents and Timescale for history; native
+    `/api/system/health` aggregator (D1); subscribes to
+    `hqqq:channel:quote-update` and broadcasts each `QuoteUpdate`
+    locally to its connected SignalR clients (D2 / D5
+    multi-replica-safe).
   - `hqqq-analytics` (worker) — one-shot report over Timescale.
 
 The architecture intentionally favors explicit module / service boundaries
@@ -221,9 +227,15 @@ so endpoint schema changes are localized.
 
 ---
 
-## 4) Current transitional architecture (Phase 2 through C4)
+## 4) Current transitional architecture (Phase 2 through D5)
 
-> **See Phase 2 repo restructure details here [phase2/restructure-notes.md](phase2/restructure-notes.md)** 
+> **See Phase 2 repo restructure details here [phase2/restructure-notes.md](phase2/restructure-notes.md)**
+>
+> Operator references: [phase2/local-dev.md](phase2/local-dev.md),
+> [phase2/azure-deploy.md](phase2/azure-deploy.md),
+> [phase2/release-checklist.md](phase2/release-checklist.md),
+> [phase2/rollback.md](phase2/rollback.md),
+> [phase2/config-matrix.md](phase2/config-matrix.md).
 
 Phase 2 splits serving, compute, persistence, and offline analytics out of
 the monolith into narrow services connected by Kafka, Redis, and Timescale.
@@ -236,12 +248,12 @@ cutover slice is proven stable.
 |---|---|---|
 | Tiingo WS / REST ingestion | `hqqq-api` (monolith) | `hqqq-ingress` is a stub host only |
 | Basket refresh + corp-action adjustment | `hqqq-api` (monolith) | `hqqq-reference-data` only serves an in-memory seed basket |
-| iNAV compute + Redis materialization | `hqqq-quote-engine` | Real Kafka consumers, writes `hqqq:snapshot:{basketId}` + `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1` |
+| iNAV compute + Redis materialization | `hqqq-quote-engine` | Real Kafka consumers, writes `hqqq:snapshot:{basketId}` + `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update` |
 | `pricing.snapshots.v1` + `market.raw_ticks.v1` → Timescale | `hqqq-persistence` | Bootstraps hypertables, `quote_snapshots_1m`/`quote_snapshots_5m` continuous aggregates, and retention policies |
 | Latest-state serving (`/api/quote`, `/api/constituents`) | `hqqq-gateway` (Redis) | Per-endpoint `Gateway:Sources:Quote=redis` / `Gateway:Sources:Constituents=redis` |
 | History serving (`/api/history?range=`) | `hqqq-gateway` (Timescale) | `Gateway:Sources:History=timescale`; reads `quote_snapshots` directly |
-| System-health aggregation (`/api/system/health`) | `hqqq-api` (via gateway forwarding) | Gateway-native aggregation deferred |
-| Realtime SignalR fan-out (`/hubs/market`) | `hqqq-gateway` (single replica) | Redis backplane deferred to D2 |
+| System-health aggregation (`/api/system/health`) | `hqqq-gateway` (native aggregator, D1) | Default `Gateway:Sources:SystemHealth=aggregated`; `legacy` (forwards to monolith) and `stub` remain available for cutover/offline |
+| Realtime SignalR fan-out (`/hubs/market`) | `hqqq-gateway` (multi-replica safe, D2 + D5) | Every replica subscribes independently to Redis pub/sub `hqqq:channel:quote-update` and broadcasts locally; SignalR Redis backplane deliberately not used |
 | Offline reporting over history | `hqqq-analytics` | One-shot `Analytics:Mode=report` job reads Timescale; replay/anomaly/backfill deferred |
 
 ### 4.2 Data plane
@@ -272,19 +284,27 @@ Tiingo WebSocket
                                  |              - retention policies
                                  v
                            +===== Redis =====+
-                           | hqqq:snapshot:{basketId}   |
+                           | hqqq:snapshot:{basketId}    |   <-- snapshot keys (R/W)
                            | hqqq:constituents:{basketId}|
                            | hqqq:basket:active:{basketId}|
-                           | hqqq:freshness:{basketId}  |
-                           +=================+
-                                 |
-                                 v
-                           [hqqq-gateway]
-                             |        |
-                             |        +--- /api/history ---> TimescaleDB (quote_snapshots)
+                           | hqqq:freshness:{basketId}   |
+                           | hqqq:channel:quote-update    |   <-- live pub/sub channel (D2)
+                           +==============================+
+                                 |                   |
+                       (snapshot reads)        (pub/sub fan-out)
+                                 |                   |
+                                 v                   v
+                           [hqqq-gateway] (1..N replicas, D5)
+                             |        |        \
+                             |        |         +-- /hubs/market SignalR fan-out
+                             |        |             (per-replica subscribe + local broadcast;
+                             |        |              no SignalR Redis backplane)
+                             |        +--- /api/history ----> TimescaleDB (quote_snapshots)
+                             |        +--- /api/system/health (D1 native aggregator scrapes
+                             |                                 each Phase 2 worker's
+                             |                                 /healthz/ready + Redis/Timescale)
                              |
                            REST /api/quote, /api/constituents (Redis)
-                           SignalR /hubs/market (in-process, no backplane yet)
 
                            [hqqq-analytics]    (one-shot, Timescale only)
 ```
@@ -306,35 +326,76 @@ Tiingo WebSocket
 - Real Tiingo WebSocket / REST ingestion.
 - Basket refresh from external issuer feeds and corporate-action
   adjustment.
-- `/api/system/health` aggregation (gateway currently forwards to
-  monolith in legacy mode).
 - Recorder / benchmark tooling (`Benchmark` module).
 
 These remain single-process today and are the next candidates for
-extraction.
+extraction. `/api/system/health` aggregation has already moved to the
+gateway (D1 native aggregator); the monolith path is now only used as a
+`legacy`/`stub` fallback per `Gateway:Sources:SystemHealth`.
 
-### 4.5 Deferred to D-phase and beyond
+### 4.5 D-phase delivered, and what is still deferred
 
-- **D2**: Redis pub/sub SignalR backplane on `/hubs/market` so multiple
-  gateway replicas can serve the same hub.
-- **D3**: Multi-replica / HA infra (gateway scale-out, consumer-group
-  ownership).
-- **Later observability**: Gateway-native `/api/system/health`
-  aggregation.
-- **Phase 3**: Kubernetes app-tier operationalization — `Deployment` +
+D-phase summary (now in place):
+
+- **D1** — Gateway-native `/api/system/health` aggregator: scrapes
+  `/healthz/ready` on each Phase 2 worker plus the local Redis /
+  Timescale probes; rolls up to `degraded` instead of crashing when a
+  dependency is missing.
+- **D2** — Live `QuoteUpdate` fan-out via Redis pub/sub
+  (`hqqq:channel:quote-update`): the quote-engine publishes envelopes,
+  every gateway replica runs its own subscriber and broadcasts the
+  inner DTO to its SignalR clients. SignalR Redis backplane is
+  deliberately NOT enabled — the per-replica subscribe + local
+  broadcast keeps multi-replica fan-out correct without it.
+- **D3** — Containerized Phase 2 app tier: per-service Dockerfiles
+  (non-root, pinned `mcr.microsoft.com/dotnet/aspnet:10.0`),
+  `docker-compose.phase2.yml` overlay on top of the existing infra
+  compose, `phase2-up`/`phase2-smoke`/`phase2-down` wrapper scripts.
+- **D4** — Azure Container Apps deployment assets: Bicep under
+  `infra/azure/` (ACR + LAW + UAMI + CAE + 5 apps + 1 Manual job),
+  GitHub OIDC workflows
+  ([phase2-images.yml](../.github/workflows/phase2-images.yml),
+  [phase2-deploy.yml](../.github/workflows/phase2-deploy.yml)),
+  walkthrough in [phase2/azure-deploy.md](phase2/azure-deploy.md).
+- **D5** — Multi-gateway replica smoke: `docker-compose.replica-smoke.yml`
+  adds a second gateway replica, `tests/Hqqq.Gateway.ReplicaSmoke/`
+  asserts both replicas receive the same `QuoteUpdate` over the shared
+  Redis pub/sub channel. Scope is gateway-replica correctness, not full
+  HA.
+- **D6** — Operator docs closeout: refreshed architecture / runbook /
+  Phase 2 docs plus new
+  [release-checklist.md](phase2/release-checklist.md),
+  [rollback.md](phase2/rollback.md), and
+  [config-matrix.md](phase2/config-matrix.md).
+
+Still deferred:
+
+- **Phase 3** — Kubernetes app-tier operationalization (`Deployment` +
   `Service` + HPA for stateless services, managed stateful infra
-  (Kafka/Redis/Postgres) kept separate.
+  Kafka/Redis/Postgres kept separate).
+- HA topologies for Kafka / Redis / Timescale themselves (D5 only
+  duplicates the gateway).
+- Multi-instance quote-engine / persistence / ingress / reference-data
+  (singletons today by design).
+- Real Tiingo ingestion in `hqqq-ingress`; real issuer-feed and
+  corporate-action pipeline in `hqqq-reference-data`; both still served
+  by the legacy monolith.
+- Replay / anomaly / backfill in `hqqq-analytics`.
+- Custom domain + TLS, Azure Files mount for the quote-engine
+  checkpoint, scheduled trigger for the analytics job, image signing /
+  SBOMs / vulnerability scans in CI.
 
 ---
 
 ## 5) Current-to-future evolution summary
 
-| Concern | Phase 1 monolith | Phase 2 now (through C4) | Still deferred |
+| Concern | Phase 1 monolith | Phase 2 now (through D5) | Still deferred |
 |---|---|---|---|
 | Tick transport | In-process ingestion | Monolith still ingests; `hqqq-quote-engine` consumes Kafka ticks produced by the monolith bridge | Real `hqqq-ingress` (Phase 2B remaining) |
-| Serving state | In-process memory | Redis (`hqqq:snapshot:*`, `hqqq:constituents:*`) | Multi-replica fan-out (D2/D3) |
+| Serving state | In-process memory | Redis (`hqqq:snapshot:*`, `hqqq:constituents:*`); multi-gateway-safe by construction (D5) | HA Redis topology (Phase 3+) |
 | History storage | Filesystem snapshots | TimescaleDB hypertables + 1m/5m continuous aggregates + retention policies | Rollup-first history reads (C5+) |
-| Gateway read path | Monolith endpoints | `hqqq-gateway` with layered per-endpoint source selection (`redis`/`timescale`/stub/legacy) | Gateway-native `/api/system/health` |
-| Fan-out model | Single-process internal fan-out | Multi-consumer groups over Kafka | SignalR Redis backplane (D2) |
-| Offline analytics | Ad-hoc / notebook | `hqqq-analytics` one-shot report (`Analytics:Mode=report`) | Replay / anomaly / backfill (C5+ / D) |
-| Deployment | Local/prototype style | Local compose for infra; services run as host processes | Kubernetes app-tier (Phase 3) |
+| Gateway read path | Monolith endpoints | `hqqq-gateway` with layered per-endpoint source selection (`redis`/`timescale`/`aggregated`/`legacy`/`stub`) | — |
+| System-health | Monolith `/api/system/health` only | `hqqq-gateway` native aggregator (D1, default); `legacy`/`stub` available as fallbacks | — |
+| Fan-out model | Single-process internal fan-out | Multi-consumer groups over Kafka **plus** live `hqqq:channel:quote-update` Redis pub/sub; every gateway replica subscribes and broadcasts locally (D2 + D5) | HA Kafka / Redis topologies (Phase 3+) |
+| Offline analytics | Ad-hoc / notebook | `hqqq-analytics` one-shot report (`Analytics:Mode=report`); Manual-trigger Container Apps Job in Azure | Replay / anomaly / backfill (C5+ / D) |
+| Deployment | Local/prototype style | Local compose (infra base + Phase 2 app-tier overlay D3 + replica-smoke overlay D5) **and** Azure Container Apps via Bicep + GitHub OIDC (D4) | Kubernetes app-tier (Phase 3) |

@@ -51,6 +51,10 @@ builder.Services.AddSingleton<IPricingSnapshotProducer>(sp =>
     sp.GetRequiredService<ConfluentPricingSnapshotProducer>());
 builder.Services.AddSingleton<ISnapshotEventPublisher, SnapshotTopicPublisher>();
 
+// Phase 2D2 — Redis pub/sub fan-out for live SignalR updates.
+builder.Services.AddSingleton<IRedisChannelPublisher, StackExchangeRedisChannelPublisher>();
+builder.Services.AddSingleton<IQuoteUpdatePublisher, RedisQuoteUpdatePublisher>();
+
 // ── In-process buffers between Kafka consumers and the pipeline worker ──
 // The consumers push into the sink side; the pipeline worker drains the
 // feed side. Keeping the channel in the middle preserves backpressure and

@@ -61,6 +61,17 @@ public sealed record QuoteUpdateDto
 }
 
 /// <summary>
+/// Wire envelope for the realtime quote-update Redis pub/sub channel.
+/// Carries the basket id alongside the slim <see cref="QuoteUpdateDto"/> so a
+/// single channel can serve every basket without proliferating channel names.
+/// </summary>
+public sealed record QuoteUpdateEnvelope
+{
+    public required string BasketId { get; init; }
+    public required QuoteUpdateDto Update { get; init; }
+}
+
+/// <summary>
 /// A single point in a time-series (e.g. NAV vs market chart).
 /// </summary>
 public sealed record SeriesPointDto

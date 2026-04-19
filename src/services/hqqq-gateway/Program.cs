@@ -3,6 +3,7 @@ using Hqqq.Observability.Hosting;
 using Hqqq.Gateway.Configuration;
 using Hqqq.Gateway.Endpoints;
 using Hqqq.Gateway.Hubs;
+using Hqqq.Gateway.Services.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +24,14 @@ builder.Services.AddGatewaySources(builder.Configuration, builder.Environment);
 
 builder.Services.AddSignalR();
 
+// Phase 2D2 — bridge Redis pub/sub to SignalR. Each gateway instance
+// subscribes to RedisKeys.QuoteUpdateChannel and broadcasts QuoteUpdate
+// events to its own connected clients. No SignalR Redis backplane needed:
+// the engine publishes once, every gateway receives the message, each one
+// fans out locally.
+builder.Services.AddSingleton<QuoteUpdateBroadcaster>();
+builder.Services.AddHostedService<QuoteUpdateSubscriber>();
+
 var app = builder.Build();
 
 app.Services.LogConfigurationPosture(
@@ -42,7 +51,8 @@ app.MapHub<MarketHub>("/hubs/market");
 // directly. Stub/legacy remain available as fallbacks.
 // Phase 2D1 — /api/system/health is served natively by AggregatedSystemHealthSource
 // which fans out to each service's /healthz/ready and the local infra probes.
-// TODO: Phase 2D2 — wire Redis pub/sub backplane for SignalR fan-out on /hubs/market
+// Phase 2D2 — QuoteUpdateSubscriber bridges hqqq:channel:quote-update to
+// MarketHub broadcasts. Reconnect/bootstrap remains REST GET /api/quote.
 
 app.Run();
 

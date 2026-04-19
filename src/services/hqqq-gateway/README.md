@@ -14,12 +14,27 @@ probes. Pure serving layer with no business computation.
   `GET /api/history?range=`, `GET /api/system/health`
 - Management endpoints (Phase 2D1): `GET /healthz/live`,
   `GET /healthz/ready`, `GET /metrics`
-- WebSocket: `/hubs/market` (SignalR)
+- WebSocket: `/hubs/market` (SignalR) — broadcasts the slim `QuoteUpdate`
+  event (Phase 2D2)
 - Data sources:
   - B5: Redis for latest quote/constituents snapshots (optional)
   - C2: Timescale (`quote_snapshots`) for history (optional)
   - D1: native aggregation for system-health (default; `legacy`/`stub` available for cutover/offline)
-- SignalR Redis backplane for multi-instance fan-out
+  - D2: Redis pub/sub (`hqqq:channel:quote-update`) → SignalR fan-out
+
+## Live fan-out (Phase 2D2)
+
+`/hubs/market` is wired to `QuoteUpdateSubscriber`, a hosted background
+service that subscribes to the `hqqq:channel:quote-update` Redis pub/sub
+channel populated by `hqqq-quote-engine`. Each gateway instance receives
+every published `QuoteUpdateEnvelope`, validates the JSON, and broadcasts
+the inner `QuoteUpdateDto` to its own connected SignalR clients using the
+locked event name `QuoteUpdate`. This makes the fan-out path
+multi-gateway-safe without requiring a SignalR Redis backplane: every
+gateway sees the same message and dispatches locally. Reconnect /
+bootstrap remains REST `GET /api/quote` — D2 deliberately does not add a
+replay buffer or sequence protocol. Malformed payloads are dropped
+silently and counted via `hqqq.gateway.quote_updates_malformed`.
 
 ## Configuration
 

@@ -26,12 +26,14 @@ public sealed class QuoteEngineWorker : BackgroundService
     private readonly IQuoteSnapshotSink _quoteSink;
     private readonly IConstituentSnapshotSink _constituentsSink;
     private readonly ISnapshotEventPublisher _eventPublisher;
+    private readonly IQuoteUpdatePublisher _quoteUpdatePublisher;
     private readonly ConstituentsSnapshotMaterializer _constituentsMaterializer;
     private readonly QuoteSnapshotV1Mapper _snapshotEventMapper;
     private readonly ILogger<QuoteEngineWorker> _logger;
 
     private ActiveBasket? _lastActiveBasket;
     private SnapshotDigest? _lastSnapshotDigest;
+    private QuoteUpdateDigest? _lastUpdateDigest;
     private string? _lastCheckpointedFingerprint;
     private DateTimeOffset? _lastCheckpointedComputedAt;
 
@@ -44,6 +46,7 @@ public sealed class QuoteEngineWorker : BackgroundService
         IQuoteSnapshotSink quoteSink,
         IConstituentSnapshotSink constituentsSink,
         ISnapshotEventPublisher eventPublisher,
+        IQuoteUpdatePublisher quoteUpdatePublisher,
         ConstituentsSnapshotMaterializer constituentsMaterializer,
         QuoteSnapshotV1Mapper snapshotEventMapper,
         ILogger<QuoteEngineWorker> logger)
@@ -56,6 +59,7 @@ public sealed class QuoteEngineWorker : BackgroundService
         _quoteSink = quoteSink;
         _constituentsSink = constituentsSink;
         _eventPublisher = eventPublisher;
+        _quoteUpdatePublisher = quoteUpdatePublisher;
         _constituentsMaterializer = constituentsMaterializer;
         _snapshotEventMapper = snapshotEventMapper;
         _logger = logger;
@@ -157,7 +161,7 @@ public sealed class QuoteEngineWorker : BackgroundService
                             snapshot.Nav, snapshot.Qqq, snapshot.PremiumDiscountPct,
                             snapshot.Freshness.SymbolsFresh, snapshot.Freshness.SymbolsTotal);
 
-                        await PublishOutputsAsync(basket, snapshot, ct).ConfigureAwait(false);
+                        await PublishOutputsAsync(basket, snapshot, delta, ct).ConfigureAwait(false);
 
                         _lastSnapshotDigest = new SnapshotDigest
                         {
@@ -186,14 +190,19 @@ public sealed class QuoteEngineWorker : BackgroundService
     }
 
     private async Task PublishOutputsAsync(
-        ActiveBasket basket, Hqqq.Contracts.Dtos.QuoteSnapshotDto snapshot, CancellationToken ct)
+        ActiveBasket basket,
+        Hqqq.Contracts.Dtos.QuoteSnapshotDto snapshot,
+        Hqqq.Contracts.Dtos.QuoteUpdateDto delta,
+        CancellationToken ct)
     {
-        // Each sink is isolated: one failure must not block the other two,
-        // and must never kill the worker. The engine is the authoritative
-        // owner of state — Redis / Kafka are just projections of it.
+        // Each sink is isolated: one failure must not block the others, and
+        // must never kill the worker. The engine is the authoritative owner of
+        // state — Redis / Kafka are just projections of it.
+        var snapshotWriteSucceeded = false;
         try
         {
             await _quoteSink.WriteAsync(basket.BasketId, snapshot, ct).ConfigureAwait(false);
+            snapshotWriteSucceeded = true;
         }
         catch (Exception ex)
         {
@@ -227,7 +236,48 @@ public sealed class QuoteEngineWorker : BackgroundService
             _logger.LogWarning(ex,
                 "Kafka snapshot publish failed for basket {BasketId}", basket.BasketId);
         }
+
+        // Phase 2D2 — only fan out a live update once the latest-state Redis
+        // SET landed: clients that drop SignalR mid-cycle must be able to
+        // re-bootstrap from REST /api/quote and not miss state.
+        if (snapshotWriteSucceeded)
+        {
+            await PublishQuoteUpdateAsync(basket, delta, ct).ConfigureAwait(false);
+        }
     }
+
+    private async Task PublishQuoteUpdateAsync(
+        ActiveBasket basket, Hqqq.Contracts.Dtos.QuoteUpdateDto delta, CancellationToken ct)
+    {
+        // Narrow no-op suppression: skip publishing when none of the scalars
+        // the frontend uses for its live signal have moved AND no new series
+        // point was emitted this cycle. Keeps idle sessions quiet without
+        // doing any real diff work.
+        var digest = new QuoteUpdateDigest(
+            delta.Nav,
+            delta.Qqq,
+            delta.PremiumDiscountPct,
+            delta.LatestSeriesPoint is not null);
+
+        if (_lastUpdateDigest is { } previous
+            && previous.Equals(digest)
+            && !digest.HasNewSeriesPoint)
+        {
+            return;
+        }
+
+        await _quoteUpdatePublisher
+            .PublishAsync(basket.BasketId, delta, ct)
+            .ConfigureAwait(false);
+
+        _lastUpdateDigest = digest;
+    }
+
+    private readonly record struct QuoteUpdateDigest(
+        decimal Nav,
+        decimal Qqq,
+        decimal PremiumDiscountPct,
+        bool HasNewSeriesPoint);
 
     private async Task TryWriteCheckpointAsync(
         ActiveBasket basket, SnapshotDigest? digest, CancellationToken ct)

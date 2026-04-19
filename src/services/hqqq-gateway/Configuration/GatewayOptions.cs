@@ -8,6 +8,7 @@ public enum GatewayDataSourceMode
     Legacy,
     Redis,
     Timescale,
+    Aggregated,
 }
 
 /// <summary>
@@ -47,6 +48,15 @@ public sealed class GatewaySourcesOptions
     /// global <see cref="GatewayOptions.DataSource"/> (stub/legacy only).
     /// </summary>
     public string? History { get; set; }
+
+    /// <summary>
+    /// System-health source override. Supported values:
+    /// <c>aggregated</c> (default), <c>stub</c>, <c>legacy</c>. Empty
+    /// resolves to <c>aggregated</c> regardless of the global
+    /// <see cref="GatewayOptions.DataSource"/> so the native aggregator is
+    /// the new out-of-the-box behavior.
+    /// </summary>
+    public string? SystemHealth { get; set; }
 }
 
 public sealed class GatewayOptions
@@ -107,6 +117,28 @@ public sealed class GatewayOptions
     /// </summary>
     public GatewayDataSourceMode ResolveHistoryMode(IHostEnvironment env)
         => ResolveEndpointMode(Sources.History, env);
+
+    /// <summary>
+    /// Resolves the per-endpoint mode for <c>/api/system/health</c>. Empty
+    /// defaults to <see cref="GatewayDataSourceMode.Aggregated"/> — the new
+    /// native aggregator — instead of falling back to the global switch,
+    /// so frontends pick up the native behavior automatically.
+    /// </summary>
+    public GatewayDataSourceMode ResolveSystemHealthMode()
+    {
+        if (!string.IsNullOrWhiteSpace(Sources.SystemHealth))
+        {
+            var trimmed = Sources.SystemHealth.Trim();
+            if (trimmed.Equals("aggregated", StringComparison.OrdinalIgnoreCase))
+                return GatewayDataSourceMode.Aggregated;
+            if (trimmed.Equals("legacy", StringComparison.OrdinalIgnoreCase))
+                return GatewayDataSourceMode.Legacy;
+            if (trimmed.Equals("stub", StringComparison.OrdinalIgnoreCase))
+                return GatewayDataSourceMode.Stub;
+        }
+
+        return GatewayDataSourceMode.Aggregated;
+    }
 
     private GatewayDataSourceMode ResolveEndpointMode(string? perEndpoint, IHostEnvironment env)
     {

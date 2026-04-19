@@ -80,3 +80,8 @@ data/
 # ── Temp files ───────────────────────────────
 ~$*
 *.tmp
+
+# ── Bicep build artifacts ────────────────────
+# `az bicep build` / `az bicep build-params` emit ARM JSON next to
+# the source. We compile in CI/CD but never commit the output.
+infra/azure/**/*.json

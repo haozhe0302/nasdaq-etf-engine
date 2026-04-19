@@ -1,14 +1,43 @@
 # Phase 2 — Repository Restructure Notes
 
-Status: Phase 2 repo layout restructure + 2A hardening + 2B through B5 +
-2C through C4 are in place. The quote-engine does real compute and
-Redis/Kafka materialization; the gateway has layered source selection with
-Redis-backed `/api/quote`/`/api/constituents` and a Timescale-backed
-`/api/history`; the persistence service consumes
-`pricing.snapshots.v1` and `market.raw_ticks.v1` into TimescaleDB with
-rollups + retention; `hqqq-analytics` runs a one-shot report over
-persisted Timescale data. Gateway-native `/api/system/health` aggregation,
-SignalR Redis backplane, and multi-replica HA remain deferred.
+## Current status (D6.5)
+
+- **D1–D5 are real in-repo runtime/operator slices**, not plans.
+  Gateway-native `/api/system/health` aggregator (D1), live
+  `QuoteUpdate` fan-out via Redis pub/sub `hqqq:channel:quote-update`
+  (D2, multi-replica-safe by construction), containerized Phase 2
+  app tier (D3, `docker-compose.phase2.yml`), Azure Container Apps
+  deploy assets under `infra/azure/` with GitHub OIDC workflows (D4),
+  and the multi-gateway replica-smoke topology + harness (D5,
+  `docker-compose.replica-smoke.yml`,
+  `tests/Hqqq.Gateway.ReplicaSmoke/`) are all shipped.
+- **D6 closed out the operator docs** (refreshed architecture /
+  runbook / Phase 2 docs + new
+  [release-checklist.md](release-checklist.md),
+  [rollback.md](rollback.md), [config-matrix.md](config-matrix.md)).
+- **D6.5 closed out the public-facing repo narrative** so the
+  outward-facing entrypoints match the actual transitional state:
+  the root [`README.md`](../../README.md) now leads with both phases
+  and an operator entrypoint matrix, [`docs/architecture.md`](../architecture.md)
+  reframes the Phase 1 monolith as legacy/still-present and the
+  Phase 2 services as the current app tier, [`docs/runbook.md`](../runbook.md)
+  has a §0 "Read this first" pointer block, and this status block
+  itself is the canonical D6.5 marker.
+- **Phase 3 (Kubernetes app-tier operationalization) remains
+  deferred.** D5 only duplicates the gateway; quote-engine /
+  persistence / ingress / reference-data are still singletons by
+  design today, and stateful infra (Kafka / Redis / Timescale) is
+  single-instance in the demo environment.
+
+Status one-liner: Phase 2 repo layout restructure + 2A hardening + 2B
+through B5 + 2C through C4 + 2D through D6 + D6.5 public-narrative
+closeout are in place. The quote-engine does real compute and
+Redis/Kafka materialization; the gateway has layered source selection
+with Redis-backed `/api/quote`/`/api/constituents`, a Timescale-backed
+`/api/history`, and a **native** aggregating `/api/system/health` (D1);
+the persistence service consumes `pricing.snapshots.v1` and
+`market.raw_ticks.v1` into TimescaleDB with rollups + retention;
+`hqqq-analytics` runs a one-shot report over persisted Timescale data.
 
 ---
 
@@ -185,29 +214,55 @@ Still stubbed / transitional in the new services:
   ingestion still happens inside the legacy monolith.
 - `hqqq-reference-data` — in-memory basket repository only; real issuer
   feeds and corporate-action pipeline still live in the legacy monolith.
-- `hqqq-gateway` — `/api/system/health` still returns stub DTOs or
-  forwards to the legacy monolith depending on `Gateway:DataSource`;
-  there is no native gateway aggregation yet.
-- `/hubs/market` uses plain `AddSignalR()` only; there is no Redis
-  backplane yet (single-replica serving only).
 
 Services start, bind configuration, report their posture, and consume
 or idle appropriately. Dependencies report as "degraded" rather than
 crashing when unavailable.
 
+D-phase delivered (no longer transitional):
+
+- `hqqq-gateway` `/api/system/health` is now served by a **native
+  aggregator** (D1, default `Gateway:Sources:SystemHealth=aggregated`)
+  that scrapes each Phase 2 worker's `/healthz/ready` plus the local
+  Redis/Timescale probes; `legacy` (forwards to monolith) and `stub`
+  remain available as fallbacks.
+- `/hubs/market` is multi-replica-safe by construction (D2 + D5):
+  every gateway replica subscribes independently to the Redis pub/sub
+  channel `hqqq:channel:quote-update` (populated by `hqqq-quote-engine`)
+  and broadcasts the inner `QuoteUpdate` to its own SignalR clients.
+  SignalR Redis backplane is **deliberately not enabled** — the
+  per-replica subscribe + local broadcast pattern keeps fan-out correct
+  without it.
+- App-tier containerization (D3), Azure Container Apps deployment
+  assets (D4), and gateway replica-smoke (D5) are all in place. See the
+  runbook and `local-dev.md` / `azure-deploy.md` for operator entry
+  points.
+
 ## Intentionally deferred
 
 | Deferred item | Target |
 |---|---|
-| Gateway-native `/api/system/health` aggregation (instead of legacy forwarding) | Later observability step |
 | Real Tiingo ingestion in `hqqq-ingress` | Phase 2B (ingress cutover, remaining) |
 | Issuer-feed + corporate-action pipeline in `hqqq-reference-data` | Phase 2B/C reference-data cutover |
-| Replay / backfill / anomaly detection in `hqqq-analytics` | Phase 2C5+ / 2D |
+| Replay / backfill / anomaly detection in `hqqq-analytics` | Phase 2C5+ |
 | `constituent_snapshots` / `basket_versions` persistence tables | Phase 2C5+ |
 | Re-pointing the gateway `/api/history` read-side at the 1m/5m rollups | Phase 2C5+ |
-| Redis pub/sub SignalR backplane on `/hubs/market` (multi-replica fan-out) | Phase 2D2 |
-| Multi-replica / HA infra (gateway scale-out, consumer-group ownership) | Phase 2D3 |
+| HA topologies for Kafka / Redis / Timescale themselves | Phase 3+ |
+| Multi-instance quote-engine / persistence / ingress / reference-data | Phase 3+ |
+| Custom domain + TLS, Azure Files mount for quote-engine checkpoint, scheduled analytics trigger, image signing / SBOMs / vulnerability scans | Phase 3+ |
 | Kubernetes app-tier deployments | Phase 3 |
+
+D-phase items that were on this list and are now delivered:
+
+| Delivered item | Phase |
+|---|---|
+| Gateway-native `/api/system/health` aggregator | D1 |
+| Live `QuoteUpdate` fan-out via Redis pub/sub `hqqq:channel:quote-update` (multi-replica-safe; no SignalR Redis backplane needed) | D2 |
+| Containerized Phase 2 app tier (`docker-compose.phase2.yml` + per-service Dockerfiles + wrapper scripts) | D3 |
+| Azure Container Apps deployment assets (`infra/azure/` Bicep + `phase2-images.yml` + `phase2-deploy.yml` GitHub OIDC workflows) | D4 |
+| Multi-gateway replica smoke (`docker-compose.replica-smoke.yml` + `tests/Hqqq.Gateway.ReplicaSmoke/`) | D5 |
+| Operator docs closeout (release checklist, rollback, config matrix; refreshed architecture / runbook / Phase 2 docs) | D6 |
+| Public-facing repo narrative closeout (root README operator entrypoint matrix, architecture framing as Phase 1 legacy + Phase 2 current app tier, runbook §0 prelude, this status block) | D6.5 |
 
 ## Module-to-service mapping (planned)
 
@@ -230,10 +285,9 @@ crashing when unavailable.
   `hqqq-analytics`; introduce `constituent_snapshots` / `basket_versions`;
   optionally re-point gateway `/api/history` at the 1m/5m continuous
   aggregates for long-range queries.
-- **Later observability**: Replace gateway `/api/system/health` legacy
-  forwarding with native aggregation over shared observability health
-  payloads.
-- **Phase 2D2**: Redis pub/sub SignalR backplane for `/hubs/market`
-  multi-instance fan-out.
-- **Phase 2D3**: Multi-replica / HA deployment topology.
-- **Phase 3**: Kubernetes app-tier operationalization.
+- **Phase 3**: Kubernetes app-tier operationalization (`Deployment` +
+  `Service` + HPA for stateless services); HA Kafka / Redis / Timescale
+  topologies; multi-instance quote-engine / persistence / ingress /
+  reference-data; image signing, SBOMs, vulnerability scans in CI;
+  distroless / chiselled .NET base images; persistent storage for the
+  quote-engine checkpoint on Azure (Azure Files mount).

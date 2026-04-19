@@ -16,7 +16,8 @@ All key patterns and builder methods are defined in
 
 | Channel | Publisher | Subscriber(s) | Purpose | Status |
 |---------|----------|---------------|---------|--------|
-| `hqqq:channel:snapshot` | (planned) hqqq-quote-engine | (planned) hqqq-gateway | Notify the gateway that a new snapshot is available in Redis so it can push over SignalR without polling | **Planned, not yet active** — no service publishes or subscribes today. The reserved key/channel name is still listed here so it can be wired in D2 without a rename. |
+| `hqqq:channel:quote-update` | `hqqq-quote-engine` | every `hqqq-gateway` replica (independent subscribers) | Live `QuoteUpdateEnvelope` fan-out: each gateway replica receives every published envelope, validates the JSON, and broadcasts the inner `QuoteUpdate` DTO to its own connected SignalR clients on `/hubs/market` (event name `QuoteUpdate`). | **Live (D2; multi-replica-safe per D5).** Constant: `RedisKeys.QuoteUpdateChannel` in `src/building-blocks/Hqqq.Infrastructure/Redis/RedisKeys.cs`. |
+| `hqqq:channel:snapshot` | _(reserved — no service publishes today)_ | _(reserved — no service subscribes today)_ | Originally proposed as a "snapshot-available" notification before D2 settled on per-update envelopes. **Superseded by `hqqq:channel:quote-update`.** | **Reserved name only.** Constant: `RedisKeys.SnapshotChannel`. Kept to avoid a future rename collision; safe to ignore. |
 
 ## Naming conventions
 
@@ -34,17 +35,39 @@ All hash values are JSON-serialized using `HqqqJsonDefaults.Options`. Field name
 - No TTL is set on serving keys -- they are overwritten on every compute cycle (~500ms for snapshots, per-tick for latest quotes).
 - If Redis restarts, the quote-engine re-populates all keys within one compute cycle from its in-memory state.
 
-## SignalR backplane
+## Live SignalR fan-out (D2 + D5) — no Redis backplane
 
-> **Status: deferred to Phase 2D2 — not active today.**
+**SignalR's Redis backplane is deliberately NOT enabled.** Multi-replica
+fan-out on `/hubs/market` is solved at the application layer by the
+`hqqq:channel:quote-update` Redis pub/sub channel listed above:
 
-The gateway currently uses only `AddSignalR()` (see
-`src/services/hqqq-gateway/Program.cs`). `/hubs/market` is served in-process
-by a single gateway replica; there is **no** Redis pub/sub backplane yet and
-no `SignalR:*` keys are written.
+1. `hqqq-quote-engine` `PUBLISH`es a `QuoteUpdateEnvelope` JSON payload
+   on `hqqq:channel:quote-update` for every materialized cycle.
+2. Every `hqqq-gateway` replica runs a `QuoteUpdateSubscriber` hosted
+   service that `SUBSCRIBE`s to the same channel.
+3. Each replica receives every envelope, validates the JSON
+   (malformed → dropped silently and counted via
+   `hqqq.gateway.quote_updates_malformed`), and broadcasts the inner
+   `QuoteUpdate` DTO to **its own** connected SignalR clients using the
+   locked event name `QuoteUpdate`.
 
-When multi-replica fan-out is introduced in Phase 2D2, the gateway will add
-`AddStackExchangeRedis(...)` on top of `AddSignalR()`, reusing the existing
-`Redis:Configuration`. SignalR's own key prefix (`SignalR:...`) does not
-conflict with the `hqqq:` keyspace documented above, so no key migration
-is required at that point.
+### Why no SignalR backplane
+
+The per-replica subscribe + local broadcast pattern preserves the
+multi-replica-safe invariant ("every replica receives every published
+update") without paying the cost of `AddStackExchangeRedis(...)` on top
+of `AddSignalR()`. Sticky sessions are NOT required for `/hubs/market` —
+a SignalR client connected to either replica receives the full live
+stream. Reconnect / bootstrap state still comes from REST
+`GET /api/quote`; D2 deliberately does not introduce a replay buffer or
+sequence protocol.
+
+### When the SignalR Redis backplane would become relevant
+
+Only if a future scale-out posture breaks the "every replica receives
+every published update" invariant — for example, partitioning gateways
+into shards that each subscribe to only a subset of channels. In that
+case, adding `AddStackExchangeRedis(...)` on top of `AddSignalR()` would
+re-establish hub-message fan-out at the SignalR layer. SignalR's own
+key prefix (`SignalR:...`) does not conflict with the `hqqq:` keyspace
+documented above, so no key migration would be required.

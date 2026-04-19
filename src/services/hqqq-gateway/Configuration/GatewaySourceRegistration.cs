@@ -1,3 +1,4 @@
+using Hqqq.Gateway.Services.Adapters.Aggregated;
 using Hqqq.Gateway.Services.Adapters.Legacy;
 using Hqqq.Gateway.Services.Adapters.Stub;
 using Hqqq.Gateway.Services.Infrastructure;
@@ -30,9 +31,10 @@ public static class GatewaySourceRegistration
         var constituentsMode = options.ResolveConstituentsMode(environment);
         var historyMode = options.ResolveHistoryMode(environment);
 
-        // System-health stays on the global mode (B1 transitional path) until
-        // a later observability step. It does not accept `redis` or `timescale`.
-        var systemHealthMode = globalMode;
+        // System-health defaults to native aggregation. `legacy` and `stub`
+        // remain available via Gateway:Sources:SystemHealth for cutover and
+        // offline scenarios.
+        var systemHealthMode = options.ResolveSystemHealthMode();
 
         services.AddSingleton(new ResolvedGatewayMode(globalMode));
         services.AddSingleton(new ResolvedSourceModes(
@@ -82,7 +84,7 @@ public static class GatewaySourceRegistration
         RegisterQuoteSource(services, quoteMode);
         RegisterConstituentsSource(services, constituentsMode);
         RegisterHistorySource(services, historyMode);
-        RegisterSystemHealthSource(services, systemHealthMode);
+        RegisterSystemHealthSource(services, configuration, systemHealthMode);
 
         return services;
     }
@@ -137,17 +139,27 @@ public static class GatewaySourceRegistration
         }
     }
 
-    private static void RegisterSystemHealthSource(IServiceCollection services, GatewayDataSourceMode mode)
+    private static void RegisterSystemHealthSource(
+        IServiceCollection services,
+        IConfiguration configuration,
+        GatewayDataSourceMode mode)
     {
-        // System-health stays on stub/legacy only — native aggregation lands
-        // in a later observability step.
         switch (mode)
         {
             case GatewayDataSourceMode.Legacy:
                 services.AddSingleton<ISystemHealthSource, LegacyHttpSystemHealthSource>();
                 break;
-            default:
+            case GatewayDataSourceMode.Stub:
                 services.AddSingleton<ISystemHealthSource, StubSystemHealthSource>();
+                break;
+            default:
+                // Aggregated is the new default and the only one that needs
+                // the typed health-aggregator HttpClient and options bound.
+                services.Configure<GatewayHealthOptions>(
+                    configuration.GetSection(GatewayHealthOptions.SectionName));
+                services.AddHttpClient(HttpServiceHealthClient.HttpClientName);
+                services.AddSingleton<IServiceHealthClient, HttpServiceHealthClient>();
+                services.AddSingleton<ISystemHealthSource, AggregatedSystemHealthSource>();
                 break;
         }
     }

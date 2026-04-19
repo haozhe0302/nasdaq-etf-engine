@@ -3,18 +3,16 @@ using Microsoft.AspNetCore.SignalR;
 namespace Hqqq.Gateway.Hubs;
 
 /// <summary>
-/// SignalR hub for real-time market data streaming.
-/// Currently a skeleton — no live data is broadcast yet. Phase 2B5 cut the
-/// REST quote/constituents endpoints over to Redis but intentionally leaves
-/// the live fan-out path untouched; that work lands in D2.
+/// SignalR hub for real-time market data streaming. The hub itself stays
+/// minimal: clients connect, listen for the <c>"QuoteUpdate"</c> event, and
+/// re-bootstrap from REST <c>GET /api/quote</c> on reconnect. Live fan-out
+/// is driven externally by
+/// <see cref="Services.Realtime.QuoteUpdateSubscriber"/>, which subscribes
+/// to the Redis pub/sub channel populated by hqqq-quote-engine and
+/// broadcasts <c>QuoteUpdate</c> via <see cref="Microsoft.AspNetCore.SignalR.IHubContext{THub}"/>.
 /// </summary>
 public sealed class MarketHub : Hub
 {
-    // TODO: Phase 2D2 — broadcast live quote updates using event name "QuoteUpdate"
-    //   Clients.All.SendAsync("QuoteUpdate", payload)
-    // TODO: Phase 2D2 — add Redis pub/sub backplane for multi-instance fan-out
-    //   builder.AddStackExchangeRedis(...) and subscribe to RedisKeys.SnapshotChannel
-
     private readonly ILogger<MarketHub> _logger;
 
     public MarketHub(ILogger<MarketHub> logger)

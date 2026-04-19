@@ -1,0 +1,257 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Phase 2 app-tier overlay
+# ══════════════════════════════════════════════════════════════════════════
+# Layered on top of docker-compose.yml (infra-only base):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.phase2.yml up -d --build
+#
+# Default stack: reference-data + ingress + quote-engine + persistence + gateway.
+# Analytics is gated behind the `analytics` profile and is intended as a
+# one-shot job:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.phase2.yml \
+#       --profile analytics run --rm hqqq-analytics
+#
+# Container DNS names (used for inter-service URLs on the compose network):
+#   hqqq-reference-data : 8080 (web)
+#   hqqq-ingress        : 8081 (management host)
+#   hqqq-quote-engine   : 8081 (management host)
+#   hqqq-persistence    : 8081 (management host)
+#   hqqq-gateway        : 8080 (web + SignalR)
+#   hqqq-analytics      : 8081 (management host, when run with profile)
+#
+# Host port mapping (kept aligned with launchSettings + appsettings defaults
+# so existing scripts/phase2-smoke.ps1 keeps working unchanged):
+#   reference-data : 5020 ; ingress : 5081 ; quote-engine : 5082 ;
+#   persistence    : 5083 ; gateway : 5030 ; analytics : 5084 (profile only).
+
+services:
+  # ────────────────────────────────────────────────
+  # hqqq-reference-data — basket registry web service
+  # ────────────────────────────────────────────────
+  hqqq-reference-data:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-reference-data/Dockerfile
+    image: hqqq-reference-data:dev
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
+      Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
+      Redis__Configuration: cache:6379
+      Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+    ports:
+      - "5020:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────
+  # hqqq-ingress — Tiingo ingest worker (management surface only)
+  # ────────────────────────────────────────────────
+  hqqq-ingress:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-ingress/Dockerfile
+    image: hqqq-ingress:dev
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Tiingo__ApiKey: ${Tiingo__ApiKey:-}
+      Tiingo__WsUrl: ${Tiingo__WsUrl:-wss://api.tiingo.com/iex}
+      Tiingo__RestBaseUrl: ${Tiingo__RestBaseUrl:-https://api.tiingo.com/iex}
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
+      Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
+      Management__Enabled: "true"
+      Management__Port: "8081"
+      Management__BindAddress: 0.0.0.0
+    ports:
+      - "5081:8081"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/healthz/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────
+  # hqqq-quote-engine — Kafka consumer + iNAV compute
+  # Checkpoint volume is mapped so engine state survives restarts.
+  # ────────────────────────────────────────────────
+  hqqq-quote-engine:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-quote-engine/Dockerfile
+    image: hqqq-quote-engine:dev
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
+      Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
+      Redis__Configuration: cache:6379
+      QuoteEngine__CheckpointPath: /data/quote-engine/checkpoint.json
+      QuoteEngine__CheckpointInterval: 00:00:10
+      Management__Enabled: "true"
+      Management__Port: "8081"
+      Management__BindAddress: 0.0.0.0
+    ports:
+      - "5082:8081"
+    volumes:
+      - quote_engine_data:/data/quote-engine
+    depends_on:
+      cache:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      hqqq-reference-data:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/healthz/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────
+  # hqqq-persistence — Kafka -> TimescaleDB writer
+  # ────────────────────────────────────────────────
+  hqqq-persistence:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-persistence/Dockerfile
+    image: hqqq-persistence:dev
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
+      Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
+      Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Persistence__SchemaBootstrapOnStart: "true"
+      Management__Enabled: "true"
+      Management__Port: "8081"
+      Management__BindAddress: 0.0.0.0
+    ports:
+      - "5083:8081"
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/healthz/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────
+  # hqqq-gateway — REST + SignalR serving edge.
+  # Per-endpoint sources default to the C2 cutover posture (Redis +
+  # Timescale). The system-health aggregator reaches the workers via the
+  # compose DNS names below; legacy fallback stays inert (DataSource=stub)
+  # because the monolith is not part of this stack.
+  # ────────────────────────────────────────────────
+  hqqq-gateway:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-gateway/Dockerfile
+    image: hqqq-gateway:dev
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Redis__Configuration: cache:6379
+      Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Gateway__BasketId: ${Gateway__BasketId:-HQQQ}
+      Gateway__DataSource: ${Gateway__DataSource:-stub}
+      Gateway__LegacyBaseUrl: ${Gateway__LegacyBaseUrl:-}
+      Gateway__Sources__Quote: ${Gateway__Sources__Quote:-redis}
+      Gateway__Sources__Constituents: ${Gateway__Sources__Constituents:-redis}
+      Gateway__Sources__History: ${Gateway__Sources__History:-timescale}
+      Gateway__Sources__SystemHealth: ${Gateway__Sources__SystemHealth:-aggregated}
+      Gateway__Health__RequestTimeoutSeconds: "1.5"
+      Gateway__Health__IncludeRedis: "true"
+      Gateway__Health__IncludeTimescale: "true"
+      Gateway__Health__Services__ReferenceData__BaseUrl: http://hqqq-reference-data:8080
+      Gateway__Health__Services__Ingress__BaseUrl: http://hqqq-ingress:8081
+      Gateway__Health__Services__QuoteEngine__BaseUrl: http://hqqq-quote-engine:8081
+      Gateway__Health__Services__Persistence__BaseUrl: http://hqqq-persistence:8081
+      Gateway__Health__Services__Analytics__BaseUrl: http://hqqq-analytics:8081
+    ports:
+      - "5030:8080"
+    depends_on:
+      cache:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      hqqq-reference-data:
+        condition: service_started
+      hqqq-ingress:
+        condition: service_started
+      hqqq-quote-engine:
+        condition: service_started
+      hqqq-persistence:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────
+  # hqqq-analytics — one-shot Timescale report job (PROFILE: analytics).
+  # Default `up` excludes this service. Run on demand:
+  #
+  #   $env:Analytics__StartUtc='2026-04-17T00:00:00Z'
+  #   $env:Analytics__EndUtc='2026-04-18T00:00:00Z'
+  #   docker compose -f docker-compose.yml -f docker-compose.phase2.yml \
+  #       --profile analytics run --rm hqqq-analytics
+  #
+  # No healthcheck: exit code is the signal (0 ok / 1 fail / 2 bad mode).
+  # ────────────────────────────────────────────────
+  hqqq-analytics:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-analytics/Dockerfile
+    image: hqqq-analytics:dev
+    profiles: ["analytics"]
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Analytics__Mode: ${Analytics__Mode:-report}
+      Analytics__BasketId: ${Analytics__BasketId:-HQQQ}
+      Analytics__StartUtc: ${Analytics__StartUtc:-}
+      Analytics__EndUtc: ${Analytics__EndUtc:-}
+      Analytics__EmitJsonPath: ${Analytics__EmitJsonPath:-}
+      Analytics__IncludeRawTickAggregates: ${Analytics__IncludeRawTickAggregates:-false}
+      Management__Enabled: "true"
+      Management__Port: "8081"
+      Management__BindAddress: 0.0.0.0
+    ports:
+      - "5084:8081"
+    volumes:
+      - ./artifacts:/artifacts
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  quote_engine_data:

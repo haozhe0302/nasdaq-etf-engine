@@ -9,7 +9,12 @@ first live message is handled, and materializes its outputs to the serving
 layer: Redis latest-state for the basket's quote + constituents snapshot,
 and `pricing.snapshots.v1` on Kafka for downstream persistence / analytics
 consumers. Gateway Redis readers for REST quote/constituents are now live in B5;
-SignalR live fan-out/backplane remains deferred to later D2 work.
+live SignalR fan-out is in place since D2 — the engine publishes
+`QuoteUpdateEnvelope` JSON payloads to the Redis pub/sub channel
+`hqqq:channel:quote-update` (`RedisKeys.QuoteUpdateChannel`) for each
+basket cycle, and every `hqqq-gateway` replica subscribes independently
+and broadcasts the inner `QuoteUpdate` DTO to its own SignalR clients
+(no SignalR Redis backplane required).
 
 ## Internal pipeline
 
@@ -24,7 +29,7 @@ Kafka refdata.basket.active.v1   ─► BasketEventConsumer    ─┤
                                                                                      ├─► SnapshotMaterializer ─► QuoteSnapshotDto ─┬─► RedisSnapshotWriter ─► Redis hqqq:snapshot:{basketId}
                                                                                      │                                              └─► QuoteSnapshotV1Mapper ─► SnapshotTopicPublisher ─► Kafka pricing.snapshots.v1
                                                                                      ├─► ConstituentsSnapshotMaterializer ─► ConstituentsSnapshotDto ─► RedisConstituentsWriter ─► Redis hqqq:constituents:{basketId}
-                                                                                     └─► QuoteDeltaMaterializer ─► QuoteUpdateDto (in-proc, for later SignalR fan-out)
+                                                                                     └─► QuoteDeltaMaterializer ─► QuoteUpdateDto ─► RedisQuoteUpdatePublisher ─► Redis pub/sub hqqq:channel:quote-update (D2; gateway replicas broadcast to /hubs/market)
 
 EngineCheckpointRestorer (startup, pre-consumer) ─► engine.OnBasketActivated
 QuoteEngineWorker ─► FileEngineCheckpointStore (on activation + interval)

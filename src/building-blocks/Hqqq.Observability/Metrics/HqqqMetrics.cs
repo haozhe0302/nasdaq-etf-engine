@@ -4,7 +4,7 @@ namespace Hqqq.Observability.Metrics;
 
 /// <summary>
 /// Shared meter and instrument instances that services can use directly.
-/// Call <see cref="Logging.LoggingExtensions.AddHqqqObservability"/> to register.
+/// Call <see cref="Hosting.ObservabilityRegistration.AddHqqqObservability"/> to register.
 /// </summary>
 public sealed class HqqqMetrics
 {
@@ -33,4 +33,23 @@ public sealed class HqqqMetrics
 
     public Histogram<double> GatewayRequestDuration { get; } =
         Meter.CreateHistogram<double>(MetricNames.GatewayRequestDuration, "ms");
+
+    // Phase 2D2 — Redis pub/sub + SignalR live fan-out
+    public Counter<long> QuoteUpdatesPublished { get; } =
+        Meter.CreateCounter<long>(MetricNames.QuoteUpdatesPublished, "updates");
+
+    public Counter<long> QuoteUpdatePublishFailures { get; } =
+        Meter.CreateCounter<long>(MetricNames.QuoteUpdatePublishFailures, "failures");
+
+    public Counter<long> GatewayQuoteUpdatesReceived { get; } =
+        Meter.CreateCounter<long>(MetricNames.GatewayQuoteUpdatesReceived, "updates");
+
+    public Counter<long> GatewayQuoteUpdatesMalformed { get; } =
+        Meter.CreateCounter<long>(MetricNames.GatewayQuoteUpdatesMalformed, "updates");
+
+    public Counter<long> GatewaySignalrBroadcasts { get; } =
+        Meter.CreateCounter<long>(MetricNames.GatewaySignalrBroadcasts, "broadcasts");
+
+    public Counter<long> GatewaySignalrBroadcastFailures { get; } =
+        Meter.CreateCounter<long>(MetricNames.GatewaySignalrBroadcastFailures, "failures");
 }

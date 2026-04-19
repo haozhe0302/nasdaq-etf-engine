@@ -1,10 +1,9 @@
 using Hqqq.Infrastructure.Hosting;
-using Hqqq.Observability.Health;
-using Hqqq.Observability.Logging;
+using Hqqq.Observability.Hosting;
 using Hqqq.Gateway.Configuration;
 using Hqqq.Gateway.Endpoints;
 using Hqqq.Gateway.Hubs;
-using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Hqqq.Gateway.Services.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,14 +12,25 @@ builder.Configuration.AddLegacyFlatKeyFallback();
 builder.Services.AddHqqqRedis(builder.Configuration);
 builder.Services.AddHqqqRedisConnection();
 builder.Services.AddHqqqTimescale(builder.Configuration);
-builder.Services.AddHqqqObservability();
+
+// Phase 2D1 — shared observability: ServiceIdentity, HqqqMetrics,
+// HealthChecks (self/live), Prometheus MeterProvider exporter.
+builder.Services.AddHqqqObservability("hqqq-gateway", builder.Environment)
+    .AddRedisHealthCheck()
+    .AddTimescaleHealthCheck();
+builder.Services.AddHqqqMetricsExporter();
 
 builder.Services.AddGatewaySources(builder.Configuration, builder.Environment);
 
 builder.Services.AddSignalR();
 
-builder.Services.AddHealthChecks()
-    .AddCheck("self", () => HealthCheckResult.Healthy("Process is running"), tags: ["live"]);
+// Phase 2D2 — bridge Redis pub/sub to SignalR. Each gateway instance
+// subscribes to RedisKeys.QuoteUpdateChannel and broadcasts QuoteUpdate
+// events to its own connected clients. No SignalR Redis backplane needed:
+// the engine publishes once, every gateway receives the message, each one
+// fans out locally.
+builder.Services.AddSingleton<QuoteUpdateBroadcaster>();
+builder.Services.AddHostedService<QuoteUpdateSubscriber>();
 
 var app = builder.Build();
 
@@ -29,24 +39,7 @@ app.Services.LogConfigurationPosture(
     app.Logger,
     "Redis", "Timescale", "Gateway");
 
-app.MapHealthChecks("/healthz/live", new()
-{
-    Predicate = check => check.Tags.Contains("live"),
-    ResponseWriter = async (ctx, report) =>
-    {
-        ctx.Response.ContentType = "application/json";
-        await ctx.Response.WriteAsync(HealthPayloadBuilder.Build(report));
-    },
-});
-
-app.MapHealthChecks("/healthz/ready", new()
-{
-    ResponseWriter = async (ctx, report) =>
-    {
-        ctx.Response.ContentType = "application/json";
-        await ctx.Response.WriteAsync(HealthPayloadBuilder.Build(report));
-    },
-});
+app.MapHqqqHealthEndpoints();
 
 app.MapGatewayEndpoints();
 app.MapHub<MarketHub>("/hubs/market");
@@ -56,9 +49,10 @@ app.MapHub<MarketHub>("/hubs/market");
 // Phase 2C2 — IHistorySource supports a Timescale-backed implementation
 // selectable via Gateway:Sources:History=timescale, reading quote_snapshots
 // directly. Stub/legacy remain available as fallbacks.
-// TODO: later observability step — swap ISystemHealthSource to gateway-native
-// health aggregation (system-health is intentionally still on stub/legacy).
-// TODO: Phase 2D2 — wire Redis pub/sub backplane for SignalR fan-out on /hubs/market
+// Phase 2D1 — /api/system/health is served natively by AggregatedSystemHealthSource
+// which fans out to each service's /healthz/ready and the local infra probes.
+// Phase 2D2 — QuoteUpdateSubscriber bridges hqqq:channel:quote-update to
+// MarketHub broadcasts. Reconnect/bootstrap remains REST GET /api/quote.
 
 app.Run();
 

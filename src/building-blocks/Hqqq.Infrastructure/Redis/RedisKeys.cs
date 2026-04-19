@@ -28,6 +28,13 @@ public static class RedisKeys
     /// <summary>Redis pub/sub channel for snapshot-update notifications to the gateway.</summary>
     public const string SnapshotChannel = "hqqq:channel:snapshot";
 
+    /// <summary>
+    /// Phase 2D2: Redis pub/sub channel carrying slim
+    /// <c>QuoteUpdateEnvelope</c> JSON payloads from the quote-engine to every
+    /// gateway instance for SignalR fan-out on <c>/hubs/market</c>.
+    /// </summary>
+    public const string QuoteUpdateChannel = "hqqq:channel:quote-update";
+
     // ── Key builders ────────────────────────────────────────────
 
     public static string Snapshot(string basketId) => string.Format(SnapshotPattern, basketId);

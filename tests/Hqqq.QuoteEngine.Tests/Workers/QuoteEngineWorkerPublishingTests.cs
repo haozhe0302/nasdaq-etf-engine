@@ -21,6 +21,7 @@ public class QuoteEngineWorkerPublishingTests
         FakeRawTickFeed TickFeed,
         InMemoryRedisStringCache Cache,
         RecordingPricingSnapshotProducer Producer,
+        RecordingQuoteUpdatePublisher QuoteUpdatePublisher,
         FakeSystemClock Clock,
         string CheckpointPath);
 
@@ -50,6 +51,7 @@ public class QuoteEngineWorkerPublishingTests
         var quoteSink = new RedisSnapshotWriter(cache);
         var constituentsSink = new RedisConstituentsWriter(cache);
         var publisher = new SnapshotTopicPublisher(producer, options);
+        var quoteUpdatePublisher = new RecordingQuoteUpdatePublisher();
         var constituentsMat = new ConstituentsSnapshotMaterializer(quotes, baskets, clock, options);
         var eventMapper = new QuoteSnapshotV1Mapper(quotes, baskets, clock);
 
@@ -60,11 +62,11 @@ public class QuoteEngineWorkerPublishingTests
 
         var worker = new QuoteEngineWorker(
             engine, tickFeed, basketFeed, options, store,
-            quoteSink, constituentsSink, publisher,
+            quoteSink, constituentsSink, publisher, quoteUpdatePublisher,
             constituentsMat, eventMapper,
             NullLogger<QuoteEngineWorker>.Instance);
 
-        return new Rig(worker, basketFeed, tickFeed, cache, producer, clock, options.CheckpointPath);
+        return new Rig(worker, basketFeed, tickFeed, cache, producer, quoteUpdatePublisher, clock, options.CheckpointPath);
     }
 
     private static ActiveBasket SampleBasket() =>
@@ -180,6 +182,138 @@ public class QuoteEngineWorkerPublishingTests
             Assert.True(
                 rig.Cache.Writes.Count < 300,
                 $"Redis writes ({rig.Cache.Writes.Count}) should track materialize cycles, not tick volume");
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Worker_PublishesQuoteUpdate_AfterSnapshotMaterializes()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "hqqq-qe-worker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var rig = BuildRig(tempDir);
+            var basket = SampleBasket();
+
+            rig.BasketFeed.Enqueue(basket);
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("AAPL", 205m, rig.Clock.UtcNow, previousClose: 200m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("MSFT", 402m, rig.Clock.UtcNow, previousClose: 400m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await rig.Worker.StartAsync(cts.Token);
+
+            await WaitForAsync(
+                () => rig.QuoteUpdatePublisher.Published.Count > 0,
+                TimeSpan.FromSeconds(5));
+
+            rig.BasketFeed.Complete();
+            rig.TickFeed.Complete();
+            await rig.Worker.StopAsync(cts.Token);
+
+            // Phase 2D2 — publish must be tied to a successful snapshot
+            // write (so REST bootstrap can recover the same state) and
+            // must use the basket id of the active basket.
+            Assert.NotEmpty(rig.QuoteUpdatePublisher.Published);
+            var first = rig.QuoteUpdatePublisher.Published.First();
+            Assert.Equal("HQQQ", first.BasketId);
+            Assert.True(first.Update.Nav > 0m);
+            Assert.True(rig.Cache.Values.ContainsKey(RedisKeys.Snapshot(basket.BasketId)),
+                "Quote-update publish requires the prior Redis snapshot SET to have landed.");
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Worker_SuppressesNoOpQuoteUpdates_WhenSignalUnchanged()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "hqqq-qe-worker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var rig = BuildRig(tempDir);
+            var basket = SampleBasket();
+
+            rig.BasketFeed.Enqueue(basket);
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("AAPL", 205m, rig.Clock.UtcNow, previousClose: 200m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("MSFT", 402m, rig.Clock.UtcNow, previousClose: 400m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await rig.Worker.StartAsync(cts.Token);
+
+            // First publish: latch signal.
+            await WaitForAsync(
+                () => rig.QuoteUpdatePublisher.Published.Count >= 1,
+                TimeSpan.FromSeconds(5));
+            var publishedAfterFirst = rig.QuoteUpdatePublisher.Published.Count;
+
+            // Idle the engine: no new ticks, no clock advance, so the
+            // materialize cycle keeps producing the same (nav, qqq, premDisc)
+            // tuple with no new series point. Many cycles, zero new publishes.
+            await Task.Delay(TimeSpan.FromMilliseconds(300));
+
+            rig.BasketFeed.Complete();
+            rig.TickFeed.Complete();
+            await rig.Worker.StopAsync(cts.Token);
+
+            var publishedAfterIdle = rig.QuoteUpdatePublisher.Published.Count;
+
+            // We allow the first publish to land, then expect suppression to
+            // hold the count flat through the idle window. Permit at most one
+            // additional publish for any cycle that raced the latch.
+            Assert.True(
+                publishedAfterIdle <= publishedAfterFirst + 1,
+                $"Expected no-op suppression to hold publishes flat. " +
+                $"first={publishedAfterFirst} after={publishedAfterIdle}");
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Worker_QuoteUpdatePayload_RoundTripsToFrontendShape()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "hqqq-qe-worker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var rig = BuildRig(tempDir);
+            var basket = SampleBasket();
+
+            rig.BasketFeed.Enqueue(basket);
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("AAPL", 205m, rig.Clock.UtcNow, previousClose: 200m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("MSFT", 402m, rig.Clock.UtcNow, previousClose: 400m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await rig.Worker.StartAsync(cts.Token);
+
+            await WaitForAsync(
+                () => rig.QuoteUpdatePublisher.Published.Count > 0,
+                TimeSpan.FromSeconds(5));
+
+            rig.BasketFeed.Complete();
+            rig.TickFeed.Complete();
+            await rig.Worker.StopAsync(cts.Token);
+
+            // Sanity: the published DTO carries the frontend-required scalars
+            // and freshness/feeds blocks (camelCase serialization is locked
+            // by HqqqJsonDefaults; tested separately in the publisher).
+            var update = rig.QuoteUpdatePublisher.Published.First().Update;
+            Assert.Equal("live", update.QuoteState);
+            Assert.NotNull(update.Freshness);
+            Assert.NotNull(update.Feeds);
+            Assert.NotNull(update.Movers);
         }
         finally
         {

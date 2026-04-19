@@ -1,0 +1,610 @@
+# Phase 2 — deploy / update the Azure app tier via Bicep with a
+# workflow-enforced release-hardening gate.
+#
+# Pipeline shape (manual trigger only):
+#
+#   preflight  →  deploy  →  smoke  →  rollback-assist (opt, on failure)
+#
+#   - preflight       : strict pre-create validation. Required secrets
+#                       present, RG exists, ACR exists, requested
+#                       image_tag exists for ALL 6 Phase 2 images.
+#   - deploy          : bicep build + what-if + create. Publishes a
+#                       structured `outputs:` block + a machine-readable
+#                       run summary.
+#   - smoke           : HTTPS probes against the deployed gateway FQDN
+#                       (healthz/live, healthz/ready, /api/system/health
+#                       with sourceMode=aggregated assertion, /api/quote,
+#                       /api/constituents, /api/history?range=1D with
+#                       JSON shape assertion). Optional analytics
+#                       Container Apps Job dry-run.
+#   - rollback-assist : optional, gateway-only revision flip when smoke
+#                       fails AND `rollback_on_smoke_failure=true`.
+#
+# Auth: GitHub OIDC -> Azure (azure/login@v2). The federated app
+# registration must have:
+#   - Contributor on the Phase 2 resource group
+#   - AcrPull / AcrPush on the Phase 2 ACR
+#
+# Required repository secrets:
+#   AZURE_CLIENT_ID
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+#
+# Required environment ('phase2-demo') secrets:
+#   KAFKA_BOOTSTRAP_SERVERS
+#   REDIS_CONFIGURATION
+#   TIMESCALE_CONNECTION_STRING
+# Optional environment secret:
+#   TIINGO_API_KEY
+#
+# Optional repository variables (defaults baked in):
+#   PHASE2_RESOURCE_GROUP   (default: rg-hqqq-p2-demo-eus-01)
+#   PHASE2_LOCATION         (default: eastus)
+#   PHASE2_ACR_NAME         (default: acrhqqqp2demo01)
+
+name: Phase 2 — deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (e.g. vsha-abcdef0). 'latest' is allowed but discouraged for reproducibility."
+        required: true
+        default: "latest"
+      bicep_param_file:
+        description: "Path to the .bicepparam file to use."
+        required: true
+        default: "infra/azure/params/main.demo.bicepparam"
+      what_if_only:
+        description: "If true, only run `what-if` and skip the actual deployment + smoke + rollback-assist."
+        type: boolean
+        required: false
+        default: false
+      run_analytics_smoke:
+        description: "If true, run a short-window analytics Container Apps Job dry-run as part of smoke."
+        type: boolean
+        required: false
+        default: false
+      rollback_on_smoke_failure:
+        description: "If true and post-deploy smoke fails, attempt a gateway-only revision rollback assist."
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: phase2-deploy-${{ github.event.inputs.bicep_param_file }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Preflight: fail fast before any what-if / create. ─────────────
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    environment: phase2-demo
+    env:
+      RESOURCE_GROUP: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2-demo-eus-01' }}
+      LOCATION: ${{ vars.PHASE2_LOCATION != '' && vars.PHASE2_LOCATION || 'eastus' }}
+      PHASE2_ACR_NAME: ${{ vars.PHASE2_ACR_NAME != '' && vars.PHASE2_ACR_NAME || 'acrhqqqp2demo01' }}
+    outputs:
+      acr_name: ${{ steps.acr.outputs.acr_name }}
+      resource_group: ${{ steps.export.outputs.resource_group }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required secrets are present (no values logged)
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
+          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+        run: |
+          set -uo pipefail
+          # Aggregate every missing secret in one error block so an
+          # operator with a fresh environment sees every gap at once.
+          missing=()
+          for s in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+                   KAFKA_BOOTSTRAP_SERVERS REDIS_CONFIGURATION TIMESCALE_CONNECTION_STRING; do
+            v="${!s:-}"
+            if [[ -z "$v" ]]; then
+              missing+=("$s")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Required secrets are missing or empty: ${missing[*]}"
+            echo "::error::Repo-level: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID."
+            echo "::error::Environment 'phase2-demo': KAFKA_BOOTSTRAP_SERVERS, REDIS_CONFIGURATION, TIMESCALE_CONNECTION_STRING."
+            exit 1
+          fi
+          echo "All required secrets present (values not logged)."
+
+      - name: Validate bicep param file exists
+        run: |
+          set -euo pipefail
+          PARAM="${{ github.event.inputs.bicep_param_file }}"
+          if [[ ! -f "$PARAM" ]]; then
+            echo "::error::Bicep param file not found at '$PARAM'."
+            echo "::error::Inputs.bicep_param_file must point to an existing file in the repo (e.g. infra/azure/params/main.demo.bicepparam)."
+            exit 1
+          fi
+          echo "Param file '$PARAM' OK."
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify resource group exists
+        id: export
+        run: |
+          set -euo pipefail
+          if ! az group show --name "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::Resource group '$RESOURCE_GROUP' does not exist."
+            echo "::error::Bootstrap with: az group create --name $RESOURCE_GROUP --location $LOCATION"
+            exit 1
+          fi
+          echo "Resource group '$RESOURCE_GROUP' OK."
+          echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+
+      - name: Verify ACR exists and is reachable
+        id: acr
+        run: |
+          set -euo pipefail
+          if ! az acr show --name "$PHASE2_ACR_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::ACR '$PHASE2_ACR_NAME' was not found in resource group '$RESOURCE_GROUP'."
+            echo "::error::Either set repo variable PHASE2_ACR_NAME to the correct registry, or run a first deploy that provisions it."
+            exit 1
+          fi
+          echo "ACR '$PHASE2_ACR_NAME' OK."
+          echo "acr_name=$PHASE2_ACR_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify image_tag exists in ACR for all six Phase 2 images
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          set -uo pipefail
+          repos=( hqqq-gateway hqqq-reference-data hqqq-ingress hqqq-quote-engine hqqq-persistence hqqq-analytics )
+          missing=()
+          for repo in "${repos[@]}"; do
+            tags=$(az acr repository show-tags \
+              --name "$PHASE2_ACR_NAME" \
+              --repository "$repo" \
+              --output tsv 2>/dev/null || true)
+            if [[ -z "$tags" ]]; then
+              missing+=("$repo: repository missing or unreadable")
+              continue
+            fi
+            if ! printf '%s\n' "$tags" | grep -Fxq "$IMAGE_TAG"; then
+              missing+=("$repo:$IMAGE_TAG")
+            else
+              echo "OK: $repo:$IMAGE_TAG"
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::The requested image_tag '$IMAGE_TAG' is missing for the following Phase 2 image(s):"
+            for m in "${missing[@]}"; do
+              echo "::error::  - $m"
+            done
+            echo "::error::Run phase2-images.yml on the target commit to publish the tag, then re-run this workflow."
+            exit 1
+          fi
+          echo "All six Phase 2 images carry tag '$IMAGE_TAG' in ACR '$PHASE2_ACR_NAME'."
+
+      - name: Preflight summary
+        run: |
+          {
+            echo "## Phase 2 preflight: PASS"
+            echo ""
+            echo "- Resource group: \`$RESOURCE_GROUP\`"
+            echo "- ACR: \`$PHASE2_ACR_NAME\`"
+            echo "- Param file: \`${{ github.event.inputs.bicep_param_file }}\`"
+            echo "- Image tag: \`${{ github.event.inputs.image_tag }}\` (verified across all 6 services)"
+            echo "- what_if_only: \`${{ github.event.inputs.what_if_only }}\`"
+            echo "- run_analytics_smoke: \`${{ github.event.inputs.run_analytics_smoke }}\`"
+            echo "- rollback_on_smoke_failure: \`${{ github.event.inputs.rollback_on_smoke_failure }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Deploy: bicep build + what-if + create, structured outputs. ───
+  deploy:
+    name: Deploy (${{ github.event.inputs.image_tag }})
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: phase2-demo
+    env:
+      RESOURCE_GROUP: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2-demo-eus-01' }}
+      LOCATION: ${{ vars.PHASE2_LOCATION != '' && vars.PHASE2_LOCATION || 'eastus' }}
+    outputs:
+      deployment_name: ${{ steps.deploy.outputs.deployment_name }}
+      gateway_fqdn: ${{ steps.deploy.outputs.gateway_fqdn }}
+      gateway_app_name: ${{ steps.deploy.outputs.gateway_app_name }}
+      gateway_latest_revision: ${{ steps.deploy.outputs.gateway_latest_revision }}
+      analytics_job_name: ${{ steps.deploy.outputs.analytics_job_name }}
+      acr_login_server: ${{ steps.deploy.outputs.acr_login_server }}
+      container_apps_environment: ${{ steps.deploy.outputs.container_apps_environment }}
+      image_tag: ${{ github.event.inputs.image_tag }}
+      resource_group: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2-demo-eus-01' }}
+      what_if_only: ${{ github.event.inputs.what_if_only }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Bicep build (validate template syntax)
+        run: az bicep build --file infra/azure/main.bicep
+
+      - name: Deployment what-if
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
+          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+        run: |
+          set -euo pipefail
+          az deployment group what-if \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/azure/main.bicep \
+            --parameters "${{ github.event.inputs.bicep_param_file }}" \
+            --parameters \
+              imageTag="${{ github.event.inputs.image_tag }}" \
+              kafkaBootstrapServers="$KAFKA_BOOTSTRAP_SERVERS" \
+              redisConfiguration="$REDIS_CONFIGURATION" \
+              timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
+              tiingoApiKey="${TIINGO_API_KEY:-}"
+
+      - name: Deployment create
+        if: ${{ github.event.inputs.what_if_only != 'true' }}
+        id: deploy
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: ${{ secrets.KAFKA_BOOTSTRAP_SERVERS }}
+          REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
+          TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+        run: |
+          set -euo pipefail
+          DEPLOY_NAME="phase2-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}"
+          OUT_FILE="$(mktemp)"
+          az deployment group create \
+            --name "$DEPLOY_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --template-file infra/azure/main.bicep \
+            --parameters "${{ github.event.inputs.bicep_param_file }}" \
+            --parameters \
+              imageTag="${{ github.event.inputs.image_tag }}" \
+              kafkaBootstrapServers="$KAFKA_BOOTSTRAP_SERVERS" \
+              redisConfiguration="$REDIS_CONFIGURATION" \
+              timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
+              tiingoApiKey="${TIINGO_API_KEY:-}" \
+            --query properties.outputs \
+            --output json > "$OUT_FILE"
+
+          GATEWAY_FQDN=$(jq -r '.gatewayFqdn.value // empty' "$OUT_FILE")
+          ANALYTICS_JOB=$(jq -r '.analyticsJobName.value // empty' "$OUT_FILE")
+          ACR_LOGIN_SERVER=$(jq -r '.acrLoginServer.value // empty' "$OUT_FILE")
+          CAE_NAME=$(jq -r '.containerAppsEnvironmentName.value // empty' "$OUT_FILE")
+          GATEWAY_REV=$(jq -r '.gatewayLatestRevisionName.value // empty' "$OUT_FILE")
+
+          # gatewayAppName comes from the bicepparam file, not from the
+          # template outputs (kept minimal in main.bicep). Read it back
+          # from the deployment record.
+          GATEWAY_APP=$(az deployment group show \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$DEPLOY_NAME" \
+            --query properties.parameters.gatewayAppName.value \
+            --output tsv 2>/dev/null || echo "")
+
+          echo "deployment_name=$DEPLOY_NAME" >> "$GITHUB_OUTPUT"
+          echo "gateway_fqdn=$GATEWAY_FQDN" >> "$GITHUB_OUTPUT"
+          echo "analytics_job_name=$ANALYTICS_JOB" >> "$GITHUB_OUTPUT"
+          echo "acr_login_server=$ACR_LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+          echo "container_apps_environment=$CAE_NAME" >> "$GITHUB_OUTPUT"
+          echo "gateway_latest_revision=$GATEWAY_REV" >> "$GITHUB_OUTPUT"
+          echo "gateway_app_name=$GATEWAY_APP" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy summary
+        if: ${{ github.event.inputs.what_if_only != 'true' }}
+        run: |
+          {
+            echo "## Phase 2 deploy: complete"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Deployment name | \`${{ steps.deploy.outputs.deployment_name }}\` |"
+            echo "| Image tag | \`${{ github.event.inputs.image_tag }}\` |"
+            echo "| Resource group | \`$RESOURCE_GROUP\` |"
+            echo "| Container Apps env | \`${{ steps.deploy.outputs.container_apps_environment }}\` |"
+            echo "| ACR login server | \`${{ steps.deploy.outputs.acr_login_server }}\` |"
+            echo "| Gateway app | \`${{ steps.deploy.outputs.gateway_app_name }}\` |"
+            echo "| Gateway FQDN | \`${{ steps.deploy.outputs.gateway_fqdn }}\` |"
+            echo "| Gateway latest revision | \`${{ steps.deploy.outputs.gateway_latest_revision }}\` |"
+            echo "| Analytics job | \`${{ steps.deploy.outputs.analytics_job_name }}\` |"
+            echo "| what_if_only | \`${{ github.event.inputs.what_if_only }}\` |"
+            echo ""
+            echo "### Manual smoke (operator copy-paste)"
+            echo ""
+            echo '```bash'
+            echo "curl -fsS https://${{ steps.deploy.outputs.gateway_fqdn }}/healthz/ready"
+            echo "curl -fsS https://${{ steps.deploy.outputs.gateway_fqdn }}/api/system/health"
+            echo '```'
+            echo ""
+            echo "### Run analytics on demand"
+            echo ""
+            echo '```bash'
+            echo "az containerapp job start \\"
+            echo "  --name ${{ steps.deploy.outputs.analytics_job_name }} \\"
+            echo "  --resource-group $RESOURCE_GROUP \\"
+            echo "  --env-vars Analytics__StartUtc=2026-04-17T00:00:00Z Analytics__EndUtc=2026-04-18T00:00:00Z"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: What-if-only summary
+        if: ${{ github.event.inputs.what_if_only == 'true' }}
+        run: |
+          {
+            echo "## Phase 2 deploy: what-if only"
+            echo ""
+            echo "No \`az deployment group create\` was performed."
+            echo "Smoke + rollback-assist jobs are skipped because what_if_only=true."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Smoke: HTTPS probes against the deployed gateway. ─────────────
+  smoke:
+    name: Smoke
+    needs: deploy
+    if: ${{ github.event.inputs.what_if_only != 'true' }}
+    runs-on: ubuntu-latest
+    environment: phase2-demo
+    env:
+      RESOURCE_GROUP: ${{ needs.deploy.outputs.resource_group }}
+      GATEWAY_FQDN: ${{ needs.deploy.outputs.gateway_fqdn }}
+      GATEWAY_APP_NAME: ${{ needs.deploy.outputs.gateway_app_name }}
+      ANALYTICS_JOB_NAME: ${{ needs.deploy.outputs.analytics_job_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run gateway smoke probes
+        id: gateway_smoke
+        run: |
+          set -uo pipefail
+          if [[ -z "${GATEWAY_FQDN:-}" ]]; then
+            echo "::error::Gateway FQDN not propagated from deploy job. Aborting smoke."
+            exit 1
+          fi
+          chmod +x infra/azure/scripts/phase2-azure-smoke.sh
+          GATEWAY_FQDN="$GATEWAY_FQDN" \
+          EXPECT_AGGREGATED=true \
+            infra/azure/scripts/phase2-azure-smoke.sh
+
+      - name: Analytics dry-run (optional)
+        id: analytics_smoke
+        if: ${{ github.event.inputs.run_analytics_smoke == 'true' && success() }}
+        run: |
+          set -uo pipefail
+          if [[ -z "${ANALYTICS_JOB_NAME:-}" || -z "${RESOURCE_GROUP:-}" ]]; then
+            echo "::error::Analytics smoke requested but ANALYTICS_JOB_NAME/RESOURCE_GROUP not propagated."
+            exit 1
+          fi
+
+          # Tight one-hour window ending now. Empty-window analytics is
+          # still expected to exit 0 by design (see hqqq-analytics).
+          END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          START=$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)
+          echo "Analytics window: $START -> $END"
+
+          az containerapp job start \
+            --name "$ANALYTICS_JOB_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --env-vars \
+              "Analytics__StartUtc=$START" \
+              "Analytics__EndUtc=$END" \
+            --output none
+
+          # Pull the most recent execution name (the one we just kicked).
+          EXEC=""
+          for _ in 1 2 3 4 5; do
+            EXEC=$(az containerapp job execution list \
+              --name "$ANALYTICS_JOB_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --query '[0].name' \
+              --output tsv 2>/dev/null || echo "")
+            if [[ -n "$EXEC" ]]; then break; fi
+            sleep 3
+          done
+          if [[ -z "$EXEC" ]]; then
+            echo "::error::Could not enumerate the just-started analytics execution."
+            exit 1
+          fi
+          echo "Polling execution: $EXEC"
+          echo "execution_name=$EXEC" >> "$GITHUB_OUTPUT"
+
+          # Bounded poll (~5 min). The job's own replicaTimeout is 30
+          # min in Bicep but a 1h smoke window with no expected data
+          # should finish well under 5 min.
+          status="Running"
+          for i in $(seq 1 30); do
+            status=$(az containerapp job execution show \
+              --name "$ANALYTICS_JOB_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --job-execution-name "$EXEC" \
+              --query 'properties.status' \
+              --output tsv 2>/dev/null || echo "Unknown")
+            echo "  [$i/30] status=$status"
+            case "$status" in
+              Succeeded) break ;;
+              Failed|Degraded|Stopped|Cancelled) break ;;
+              *) sleep 10 ;;
+            esac
+          done
+          echo "execution_status=$status" >> "$GITHUB_OUTPUT"
+          if [[ "$status" != "Succeeded" ]]; then
+            echo "::error::Analytics dry-run did not succeed (status=$status)."
+            exit 1
+          fi
+
+      - name: Smoke success summary
+        if: ${{ success() }}
+        run: |
+          {
+            echo "## Phase 2 smoke: PASS"
+            echo ""
+            echo "- Gateway: \`https://${GATEWAY_FQDN}\`"
+            echo "- /healthz/live, /healthz/ready, /api/system/health (sourceMode=aggregated), /api/quote, /api/constituents, /api/history?range=1D — all green."
+            if [[ "${{ github.event.inputs.run_analytics_smoke }}" == "true" ]]; then
+              echo "- Analytics dry-run: \`${{ steps.analytics_smoke.outputs.execution_name }}\` -> \`${{ steps.analytics_smoke.outputs.execution_status }}\`"
+            else
+              echo "- Analytics dry-run: skipped (run_analytics_smoke=false)."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke failure diagnostics
+        if: ${{ failure() }}
+        run: |
+          {
+            echo "## Phase 2 smoke: FAIL"
+            echo ""
+            echo "Inspect the logs above for the exact failing endpoint."
+            echo ""
+            echo "### az inspect commands (copy-paste)"
+            echo ""
+            echo '```bash'
+            echo "RG=${RESOURCE_GROUP}"
+            echo "GATEWAY=${GATEWAY_APP_NAME}"
+            echo ""
+            echo "# Active gateway revisions + traffic split"
+            echo "az containerapp revision list --name \$GATEWAY --resource-group \$RG \\"
+            echo "  --query \"[].{name:name, active:properties.active, traffic:properties.trafficWeight, image:properties.template.containers[0].image, created:properties.createdTime}\" \\"
+            echo "  --output table"
+            echo ""
+            echo "# Latest gateway logs (last 200 lines)"
+            echo "az containerapp logs show --name \$GATEWAY --resource-group \$RG --tail 200"
+            if [[ "${{ github.event.inputs.run_analytics_smoke }}" == "true" ]]; then
+              echo ""
+              echo "# Most recent analytics execution"
+              echo "az containerapp job execution list \\"
+              echo "  --name ${ANALYTICS_JOB_NAME} \\"
+              echo "  --resource-group \$RG \\"
+              echo "  --query '[0]'"
+            fi
+            echo '```'
+            if [[ "${{ github.event.inputs.rollback_on_smoke_failure }}" == "true" ]]; then
+              echo ""
+              echo "rollback_on_smoke_failure=true — gateway rollback assist will run next."
+            else
+              echo ""
+              echo "rollback_on_smoke_failure=false — no automatic rollback. Re-run with rollback_on_smoke_failure=true to attempt a gateway revision flip."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Rollback assist: optional, gateway-only revision flip. ────────
+  rollback-assist:
+    name: Gateway rollback assist
+    needs: [deploy, smoke]
+    if: ${{ always() && needs.smoke.result == 'failure' && github.event.inputs.rollback_on_smoke_failure == 'true' && github.event.inputs.what_if_only != 'true' }}
+    runs-on: ubuntu-latest
+    environment: phase2-demo
+    env:
+      RESOURCE_GROUP: ${{ needs.deploy.outputs.resource_group }}
+      GATEWAY_APP_NAME: ${{ needs.deploy.outputs.gateway_app_name }}
+      GATEWAY_LATEST_REVISION: ${{ needs.deploy.outputs.gateway_latest_revision }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Identify previous revision
+        id: previous
+        run: |
+          set -uo pipefail
+          if [[ -z "${GATEWAY_APP_NAME:-}" || -z "${RESOURCE_GROUP:-}" ]]; then
+            echo "::error::Gateway app name / RG not propagated from deploy. Cannot proceed with rollback assist."
+            exit 1
+          fi
+          echo "Latest gateway revision (this run): ${GATEWAY_LATEST_REVISION:-<unknown>}"
+
+          # Most-recent revision other than the one this run created.
+          PREV=$(az containerapp revision list \
+            --name "$GATEWAY_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query "sort_by([?name!=\`${GATEWAY_LATEST_REVISION:-}\`], &properties.createdTime)[-1].name" \
+            --output tsv 2>/dev/null || echo "")
+          if [[ -z "$PREV" || "$PREV" == "null" ]]; then
+            echo "::warning::No retained previous revision found for $GATEWAY_APP_NAME. Skipping destructive flip."
+            echo "previous_revision=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Previous revision candidate: $PREV"
+          echo "previous_revision=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Activate previous revision and shift traffic
+        if: ${{ steps.previous.outputs.previous_revision != '' }}
+        run: |
+          set -euo pipefail
+          PREV="${{ steps.previous.outputs.previous_revision }}"
+
+          az containerapp revision activate \
+            --name "$GATEWAY_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision "$PREV" \
+            --output none
+
+          az containerapp ingress traffic set \
+            --name "$GATEWAY_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision-weight "$PREV=100" \
+            --output none
+
+          echo "Traffic shifted to previous revision '$PREV'."
+
+      - name: Rollback summary
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          PREV="${{ steps.previous.outputs.previous_revision }}"
+          {
+            echo "## Phase 2 gateway rollback assist"
+            echo ""
+            echo "- Gateway app: \`${GATEWAY_APP_NAME}\`"
+            echo "- This-run revision: \`${GATEWAY_LATEST_REVISION:-<unknown>}\`"
+            if [[ -n "$PREV" ]]; then
+              echo "- Activated previous revision: \`$PREV\` (100% traffic)."
+              echo ""
+              echo "Workers + analytics job were NOT touched (gateway-only rollback by design)."
+              echo ""
+              echo "### Verify"
+              echo ""
+              echo '```bash'
+              echo "az containerapp revision list --name ${GATEWAY_APP_NAME} --resource-group ${RESOURCE_GROUP} \\"
+              echo "  --query \"[?properties.active].{name:name, traffic:properties.trafficWeight}\" --output table"
+              echo '```'
+            else
+              echo "- No retained previous revision found. Traffic was NOT shifted."
+              echo ""
+              echo "Recommended next steps:"
+              echo ""
+              echo '```bash'
+              echo "# Build/push a known-good image set, then re-run phase2-deploy.yml with that image_tag."
+              echo "az containerapp revision list --name ${GATEWAY_APP_NAME} --resource-group ${RESOURCE_GROUP} --output table"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

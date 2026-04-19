@@ -1,0 +1,65 @@
+# Repo-root .dockerignore
+#
+# All Phase 2 service Dockerfiles use the repo root as build context so
+# multi-project ProjectReferences into src/building-blocks resolve. This file
+# keeps the context small (faster `docker build`, fewer layer invalidations)
+# and prevents local-dev secrets/state from leaking into image layers.
+
+# ── Git / VCS ────────────────────────────────────
+.git/
+.gitattributes
+.gitignore
+.github/
+
+# ── Editor / IDE ─────────────────────────────────
+.vs/
+.vscode/
+.idea/
+.cursor/
+.cursorignore
+*.user
+*.suo
+*.DotSettings.user
+*.swp
+*.swo
+
+# ── Secrets / env ────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── .NET build output ────────────────────────────
+**/bin/
+**/obj/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/TestResults/
+*.binlog
+[Bb]uild[Ll]og.*
+artifacts/
+
+# ── Frontend / node — not built in any service image ──
+src/hqqq-ui/
+**/node_modules/
+
+# ── Local-dev runtime state ──────────────────────
+data/
+**/data/
+*.log
+*.tmp
+
+# ── Tests — service images don't ship tests ──────
+tests/
+
+# ── Docs / images / OS noise ─────────────────────
+docs/
+images/
+*.md
+!**/Dockerfile*
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# ── Compose itself doesn't belong in any image ───
+docker-compose*.yml

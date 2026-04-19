@@ -17,6 +17,10 @@ public class UpstreamFailureTests : IDisposable
         _factory = new GatewayAppFactory()
             .WithConfig("Gateway:DataSource", "legacy")
             .WithConfig("Gateway:LegacyBaseUrl", "http://legacy.test")
+            // Phase 2D1 defaulted system-health to `aggregated`; this fixture
+            // exercises legacy upstream-failure behavior so we opt back in
+            // explicitly.
+            .WithConfig("Gateway:Sources:SystemHealth", "legacy")
             .WithFakeHandler(_fakeHandler);
         _client = _factory.CreateClient();
     }

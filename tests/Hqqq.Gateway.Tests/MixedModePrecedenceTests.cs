@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Hqqq.Contracts.Dtos;
 using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Services.Adapters.Aggregated;
 using Hqqq.Gateway.Services.Adapters.Legacy;
 using Hqqq.Gateway.Services.Sources;
 using Hqqq.Gateway.Tests.Fixtures;
@@ -77,7 +78,9 @@ public class MixedModePrecedenceTests : IDisposable
         Assert.Equal(GatewayDataSourceMode.Redis, modes.Quote);
         Assert.Equal(GatewayDataSourceMode.Redis, modes.Constituents);
         Assert.Equal(GatewayDataSourceMode.Legacy, modes.History);
-        Assert.Equal(GatewayDataSourceMode.Legacy, modes.SystemHealth);
+        // Phase 2D1 — system-health no longer follows the global DataSource;
+        // it defaults to Aggregated unless overridden.
+        Assert.Equal(GatewayDataSourceMode.Aggregated, modes.SystemHealth);
     }
 
     [Fact]
@@ -92,13 +95,15 @@ public class MixedModePrecedenceTests : IDisposable
     }
 
     [Fact]
-    public void HistoryAndSystemHealthSources_StayOnLegacyForwarding()
+    public void HistorySource_StaysOnLegacyForwarding_AndSystemHealth_DefaultsToAggregated()
     {
         using var scope = _factory.Services.CreateScope();
 
         Assert.IsType<LegacyHttpHistorySource>(
             scope.ServiceProvider.GetRequiredService<IHistorySource>());
-        Assert.IsType<LegacyHttpSystemHealthSource>(
+        // Phase 2D1 — system-health no longer rides on the legacy global; it
+        // is the native aggregator by default.
+        Assert.IsType<AggregatedSystemHealthSource>(
             scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
     }
 
@@ -171,7 +176,9 @@ public class MixedModePrecedenceTests : IDisposable
         Assert.Equal(GatewayDataSourceMode.Redis, modes.Quote);
         Assert.Equal(GatewayDataSourceMode.Legacy, modes.Constituents);
         Assert.Equal(GatewayDataSourceMode.Timescale, modes.History);
-        Assert.Equal(GatewayDataSourceMode.Legacy, modes.SystemHealth);
+        // Phase 2D1 — system-health defaults to Aggregated regardless of
+        // the global DataSource.
+        Assert.Equal(GatewayDataSourceMode.Aggregated, modes.SystemHealth);
 
         Assert.IsType<RedisQuoteSource>(
             scope.ServiceProvider.GetRequiredService<IQuoteSource>());
@@ -179,13 +186,16 @@ public class MixedModePrecedenceTests : IDisposable
             scope.ServiceProvider.GetRequiredService<IConstituentsSource>());
         Assert.IsType<TimescaleHistorySource>(
             scope.ServiceProvider.GetRequiredService<IHistorySource>());
-        Assert.IsType<LegacyHttpSystemHealthSource>(
+        Assert.IsType<AggregatedSystemHealthSource>(
             scope.ServiceProvider.GetRequiredService<ISystemHealthSource>());
     }
 
     [Fact]
-    public async Task SystemHealth_StillForwardsToLegacy_AndOverlaysGatewayMetadata()
+    public async Task SystemHealth_LegacyOptIn_StillForwards_AndOverlaysGatewayMetadata()
     {
+        // Phase 2D1 — the legacy forwarder is no longer the default; opt in
+        // explicitly via Sources:SystemHealth=legacy.
+        var http = new FakeHttpMessageHandler();
         var upstreamHealth = """
         {
             "serviceName": "hqqq-api",
@@ -196,9 +206,16 @@ public class MixedModePrecedenceTests : IDisposable
             "runtime": { "uptimeSeconds": 100 }
         }
         """;
-        _http.SetResponse(HttpStatusCode.OK, upstreamHealth);
+        http.SetResponse(HttpStatusCode.OK, upstreamHealth);
 
-        var response = await _client.GetAsync("/api/system/health");
+        using var factory = new GatewayAppFactory()
+            .WithConfig("Gateway:DataSource", "legacy")
+            .WithConfig("Gateway:LegacyBaseUrl", "http://legacy.test")
+            .WithConfig("Gateway:Sources:SystemHealth", "legacy")
+            .WithFakeHandler(http);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/system/health");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -209,7 +226,7 @@ public class MixedModePrecedenceTests : IDisposable
         Assert.Equal("legacy", root.GetProperty("sourceMode").GetString());
         Assert.Equal("healthy", root.GetProperty("status").GetString());
 
-        var healthCalls = _http.Requests
+        var healthCalls = http.Requests
             .Where(r => r.RequestUri!.AbsolutePath == "/api/system/health")
             .ToList();
         Assert.Single(healthCalls);

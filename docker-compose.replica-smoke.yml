@@ -1,0 +1,78 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Phase 2D5 replica-smoke overlay
+# ══════════════════════════════════════════════════════════════════════════
+# Layered on top of docker-compose.yml + docker-compose.phase2.yml. Adds a
+# SECOND gateway replica (`hqqq-gateway-b`) on host port 5031, sharing the
+# same Redis (and therefore the same `hqqq:channel:quote-update` pub/sub
+# channel) as `hqqq-gateway` on host port 5030.
+#
+# Bring-up:
+#
+#   docker compose \
+#       -f docker-compose.yml \
+#       -f docker-compose.phase2.yml \
+#       -f docker-compose.replica-smoke.yml up -d --build
+#
+# Or via the wrapper script:
+#
+#   .\scripts\replica-smoke-up.ps1
+#   ./scripts/replica-smoke-up.sh
+#
+# Scope contract for D5:
+#   • Only the gateway is duplicated. Quote-engine, persistence, ingress,
+#     reference-data, and analytics intentionally stay single-instance — D5
+#     proves gateway fan-out correctness, not full HA.
+#   • gateway-b mirrors gateway's environment block verbatim except for the
+#     host port mapping. Both replicas resolve the same Redis (`cache:6379`)
+#     and basket id, which is what makes the multi-replica fan-out path
+#     work without a SignalR Redis backplane.
+#   • REST routes, the SignalR hub path, the hub event name, and DTO shapes
+#     are unchanged. D5 is a topology / smoke step, not a contract change.
+
+services:
+  hqqq-gateway-b:
+    build:
+      context: .
+      dockerfile: src/services/hqqq-gateway/Dockerfile
+    image: hqqq-gateway:dev
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      Redis__Configuration: cache:6379
+      Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      Gateway__BasketId: ${Gateway__BasketId:-HQQQ}
+      Gateway__DataSource: ${Gateway__DataSource:-stub}
+      Gateway__LegacyBaseUrl: ${Gateway__LegacyBaseUrl:-}
+      Gateway__Sources__Quote: ${Gateway__Sources__Quote:-redis}
+      Gateway__Sources__Constituents: ${Gateway__Sources__Constituents:-redis}
+      Gateway__Sources__History: ${Gateway__Sources__History:-timescale}
+      Gateway__Sources__SystemHealth: ${Gateway__Sources__SystemHealth:-aggregated}
+      Gateway__Health__RequestTimeoutSeconds: "1.5"
+      Gateway__Health__IncludeRedis: "true"
+      Gateway__Health__IncludeTimescale: "true"
+      Gateway__Health__Services__ReferenceData__BaseUrl: http://hqqq-reference-data:8080
+      Gateway__Health__Services__Ingress__BaseUrl: http://hqqq-ingress:8081
+      Gateway__Health__Services__QuoteEngine__BaseUrl: http://hqqq-quote-engine:8081
+      Gateway__Health__Services__Persistence__BaseUrl: http://hqqq-persistence:8081
+      Gateway__Health__Services__Analytics__BaseUrl: http://hqqq-analytics:8081
+    ports:
+      - "5031:8080"
+    depends_on:
+      cache:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      hqqq-reference-data:
+        condition: service_started
+      hqqq-ingress:
+        condition: service_started
+      hqqq-quote-engine:
+        condition: service_started
+      hqqq-persistence:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped

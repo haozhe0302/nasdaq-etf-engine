@@ -106,30 +106,17 @@ services:
       - prometheus
 
   # ──────────────────────────────────────────────
-  # [OPTIONAL] hqqq-api in Docker
-  # Uncomment when you need full containerized local testing.
-  # For daily development, run the API on the host with
-  #   dotnet watch run --project src/hqqq-api
-  # to get native debugging and hot reload.
+  # Phase 2 app-tier
   # ──────────────────────────────────────────────
-  # api:
-  #   build:
-  #     context: ./src/hqqq-api
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "5000:8080"
-  #   environment:
-  #     - ASPNETCORE_ENVIRONMENT=Development
-  #     - ConnectionStrings__DefaultConnection=Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
-  #     - Redis__Configuration=cache:6379
-  #     - Kafka__BootstrapServers=kafka:29092
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
-  #     cache:
-  #       condition: service_healthy
-  #     kafka:
-  #       condition: service_healthy
+  # The Phase 2 services (reference-data, ingress, quote-engine, persistence,
+  # gateway, analytics) live in docker-compose.phase2.yml and overlay this
+  # infra-only base. Bring up the full stack with:
+  #
+  #   docker compose -f docker-compose.yml -f docker-compose.phase2.yml up -d --build
+  #
+  # The legacy hqqq-api monolith is built/run separately via
+  # scripts/build-hqqq-api-docker.ps1 — it is intentionally not part of the
+  # Phase 2 default stack.
 
 volumes:
   pgdata:

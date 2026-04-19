@@ -1,30 +1,132 @@
 # hqqq-gateway
 
 REST + SignalR serving gateway. Quote/constituents can be served from Redis
-(Phase 2B5) and history can be served from Timescale (Phase 2C2);
-system-health remains on the transitional stub/legacy path until a later
-observability step. Pure serving layer with no business computation.
+(Phase 2B5), history can be served from Timescale (Phase 2C2), and as of
+Phase 2D1 `/api/system/health` is served by a native aggregator that scrapes
+each Phase 2 service's `/healthz/ready` plus the local Redis/Timescale
+probes. Pure serving layer with no business computation.
 
-**Future home of current API endpoints + MarketHub.**
+**Serving edge for the Phase 2 app tier (REST + SignalR).**
 
 ## Responsibilities (Phase 2)
 
 - REST endpoints: `GET /api/quote`, `GET /api/constituents`,
   `GET /api/history?range=`, `GET /api/system/health`
-- WebSocket: `/hubs/market` (SignalR)
+- Management endpoints (Phase 2D1): `GET /healthz/live`,
+  `GET /healthz/ready`, `GET /metrics`
+- WebSocket: `/hubs/market` (SignalR) — broadcasts the slim `QuoteUpdate`
+  event (Phase 2D2)
 - Data sources:
   - B5: Redis for latest quote/constituents snapshots (optional)
   - C2: Timescale (`quote_snapshots`) for history (optional)
-  - system-health still served via stub or legacy forwarding
-- SignalR Redis backplane for multi-instance fan-out
+  - D1: native aggregation for system-health (default; `legacy`/`stub` available for cutover/offline)
+  - D2: Redis pub/sub (`hqqq:channel:quote-update`) → SignalR fan-out
+
+## Live fan-out (Phase 2D2)
+
+`/hubs/market` is wired to `QuoteUpdateSubscriber`, a hosted background
+service that subscribes to the `hqqq:channel:quote-update` Redis pub/sub
+channel populated by `hqqq-quote-engine`. Each gateway instance receives
+every published `QuoteUpdateEnvelope`, validates the JSON, and broadcasts
+the inner `QuoteUpdateDto` to its own connected SignalR clients using the
+locked event name `QuoteUpdate`. This makes the fan-out path
+multi-gateway-safe without requiring a SignalR Redis backplane: every
+gateway sees the same message and dispatches locally. Reconnect /
+bootstrap remains REST `GET /api/quote` — D2 deliberately does not add a
+replay buffer or sequence protocol. Malformed payloads are dropped
+silently and counted via `hqqq.gateway.quote_updates_malformed`.
+
+## Multi-replica fan-out (Phase 2D5)
+
+The D2 design is multi-gateway-safe by construction. Every gateway replica
+runs its own `QuoteUpdateSubscriber`, subscribes independently to
+`hqqq:channel:quote-update`, and broadcasts locally to the SignalR
+clients connected to it. There is no SignalR Redis backplane: when the
+quote-engine publishes once, every replica receives the message and
+fans out to its own clients.
+
+D5 adds a compose-based replica-smoke topology that exercises this
+property end-to-end:
+
+| Replica | Compose service | Container DNS:port | Host port |
+|---------|-----------------|--------------------|-----------|
+| gateway-a | `hqqq-gateway`   | `hqqq-gateway:8080`   | `5030` |
+| gateway-b | `hqqq-gateway-b` | `hqqq-gateway-b:8080` | `5031` |
+
+Both replicas share the single `cache` (Redis) container, the single
+`hqqq-quote-engine`, and all other Phase 2 services. Only the gateway
+is duplicated — D5 is gateway-replica correctness, not full HA.
+
+### Scale-out assumptions
+
+- **Sticky sessions are NOT required.** Because every replica receives
+  every published `QuoteUpdate`, a SignalR client connected to either
+  replica gets the full live stream. A load balancer in front of the
+  replicas does not need session affinity for `/hubs/market`.
+- **Reconnect / bootstrap is unchanged.** Initial state and
+  reconnect-time resync still come from REST `GET /api/quote`. D5 does
+  not introduce a replay buffer or sequence protocol.
+- **Per-replica config invariants.** Both replicas MUST agree on:
+  - `Redis__Configuration` — same Redis instance for the pub/sub channel
+    and the snapshot keys read by `Gateway:Sources:Quote=redis`.
+  - `Gateway__BasketId` — same basket id, so the snapshot/constituents
+    keys (`hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`)
+    resolve to the same values across replicas.
+  - `Gateway:Sources:*` — keep the source matrix in sync so a request
+    answered by either replica sees the same data shape.
+- **Contract surface is unchanged.** REST routes (`/api/quote`,
+  `/api/constituents`, `/api/history`, `/api/system/health`), the
+  SignalR hub path (`/hubs/market`), the hub event name (`QuoteUpdate`),
+  and DTO shapes are not modified by D5.
+
+### How to run it
+
+The replica-smoke topology lives in
+[../../../docker-compose.replica-smoke.yml](../../../docker-compose.replica-smoke.yml)
+and is brought up via the wrapper scripts:
+
+```powershell
+.\scripts\replica-smoke-up.ps1
+.\scripts\bootstrap-kafka-topics.ps1
+.\scripts\replica-smoke.ps1
+```
+
+```bash
+./scripts/replica-smoke-up.sh
+./scripts/bootstrap-kafka-topics.sh
+./scripts/replica-smoke.sh
+```
+
+The smoke harness lives in
+[../../../tests/Hqqq.Gateway.ReplicaSmoke](../../../tests/Hqqq.Gateway.ReplicaSmoke)
+and is a small console exe that:
+
+1. probes `GET /healthz/ready` and `GET /api/quote` on both gateways;
+2. opens a SignalR client to `5030/hubs/market` and another to
+   `5031/hubs/market`;
+3. publishes a single `QuoteUpdateEnvelope` to
+   `RedisKeys.QuoteUpdateChannel`;
+4. asserts both clients receive the same `QuoteUpdate` within the
+   configured timeout (default 15s).
+
+### Deferred beyond D5
+
+- HA Kafka / Redis / Timescale topologies.
+- Multi-instance quote-engine / persistence / ingress / reference-data.
+- Kubernetes manifests / Helm charts.
+- SignalR Redis backplane (only relevant if a future scale-out moves
+  off the "every replica receives every update" property).
+- Cross-region or multi-AZ topology.
 
 ## Configuration
 
 Gateway source selection is layered: a **global** `Gateway:DataSource` acts as
 the fallback for every endpoint, and individual endpoints can be overridden
 with `Gateway:Sources:*`. Quote and constituents accept `redis`, history
-accepts `timescale`, and system-health still follows only the global switch
-(stub/legacy).
+accepts `timescale`, and system-health defaults to `aggregated` (native
+fan-out across the Phase 2 services and local infra probes) — `legacy` and
+`stub` remain available via `Gateway:Sources:SystemHealth` for cutover and
+offline scenarios.
 
 ### `Gateway:DataSource` (global fallback)
 
@@ -75,25 +177,56 @@ stub data when `timescale` was requested.
 The response preserves the existing frontend contract exactly:
 `range, startDate, endDate, pointCount, totalPoints, isPartial, series[time,nav,marketPrice], trackingError, distribution, diagnostics`.
 
-> `/api/system/health` intentionally does **not** accept `redis` or
-> `timescale`. System-health stays on stub/legacy and moves to native
-> gateway aggregation in a later observability step.
+### `Gateway:Sources:SystemHealth`
 
-### B-phase operating modes
+Per-endpoint override for `GET /api/system/health`. Defaults to
+`aggregated` (Phase 2D1) regardless of the global `DataSource`.
 
-The gateway is designed to be run in one of three operating modes during the
-Phase 2B cutover. Each mode differs only in configuration.
+| Value | Behavior |
+|-------|----------|
+| `aggregated` | Native fan-out: probes `/healthz/ready` on each configured downstream service in parallel, runs the local `HealthCheckService` for Redis/Timescale, composes the response in `BSystemHealth` shape. **Default.** |
+| `legacy` | Forward the request to legacy `hqqq-api` and additively overlay gateway metadata (preserves the Phase 2B1 transitional behavior). |
+| `stub` | Return a deterministic placeholder (used for offline UI smoke). |
+| _(empty)_ | `aggregated`. |
 
-| Mode | Quote | Constituents | History | System health | Required infra | Intended use |
-|------|-------|--------------|---------|---------------|----------------|--------------|
-| **Stub mode** — `DataSource=stub` | stub | stub | stub | stub | none | UI smoke / offline dev; deterministic placeholder DTOs, no dependencies |
-| **Legacy proxy mode** — `DataSource=legacy` + `LegacyBaseUrl` | legacy | legacy | legacy | legacy (gateway-overlaid) | running `hqqq-api` | Regression parity with Phase 1 while Phase 2 services come online |
-| **Mixed B5 cutover mode** — `DataSource=legacy` (or `stub`) + `Sources:Quote=redis` + `Sources:Constituents=redis` | **redis** | **redis** | legacy or stub (follows `DataSource`) | legacy or stub (follows `DataSource`) | Redis + `hqqq-quote-engine` writing snapshots (plus `hqqq-api` if `DataSource=legacy`) | Cutover testing: live quote/constituents off the new pipeline while history/health stay on the transitional path |
-| **Mixed C2 cutover mode** — add `Sources:History=timescale` on top of any row above | (as above) | (as above) | **timescale** | (as above) | Timescale + `hqqq-persistence` writing `quote_snapshots` | Cutover testing: serve history directly from Timescale while system-health stays on the transitional path |
+In `aggregated` mode the gateway never returns a non-200 unless the
+gateway itself catastrophically fails. A missing or unreachable downstream
+becomes a dependency entry with `status: "unknown"` (and a short
+`details` string) instead of crashing the request. A downstream that has
+no configured `BaseUrl` becomes `status: "idle"` with
+`details: "not configured"`. The roll-up rule collapses any `unhealthy`
+or `degraded` dependency into top-level `degraded` so a single missing
+worker doesn't trip frontend alarms.
 
-Per-endpoint overrides always win over the global `Gateway:DataSource`:
-`redis` for quote/constituents, `timescale` for history. System-health
-follows only the global switch until a later observability step.
+### `Gateway:Health` (aggregator settings)
+
+Bound only when `Gateway:Sources:SystemHealth` resolves to `aggregated`.
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `RequestTimeoutSeconds` | `1.5` | Per-call timeout for each downstream probe. |
+| `IncludeRedis` | `true` | Include the local Redis health check in the payload. |
+| `IncludeTimescale` | `true` | Include the local Timescale health check in the payload. |
+| `Services:{Key}:BaseUrl` | _empty_ | Base URL of each downstream service's management endpoint. Keys: `ReferenceData`, `Ingress`, `QuoteEngine`, `Persistence`, `Analytics`. Empty/missing → reported as `idle` (not configured). |
+
+### Phase-cutover operating profiles
+
+The gateway supports multiple configuration-only profiles during the
+Phase 2 cutover. These profiles are additive: per-endpoint overrides can
+be layered on top of the global source posture.
+
+| Profile | Quote | Constituents | History | System health | Required infra | Intended use |
+|---------|-------|--------------|---------|---------------|----------------|--------------|
+| **Stub mode** — `DataSource=stub` + `Sources:SystemHealth=stub` | stub | stub | stub | stub | none | UI smoke / offline dev; deterministic placeholder DTOs, no dependencies |
+| **Legacy proxy mode** — `DataSource=legacy` + `LegacyBaseUrl` + `Sources:SystemHealth=legacy` | legacy | legacy | legacy | legacy (gateway-overlaid) | running `hqqq-api` | Regression parity with Phase 1 while Phase 2 services come online |
+| **D1 native mode (default)** — anything above without an explicit `Sources:SystemHealth` override | (as configured) | (as configured) | (as configured) | **aggregated** | Phase 2 service `/healthz/ready` endpoints reachable on `Gateway:Health:Services:*:BaseUrl` (plus Redis/Timescale for the local probes) | Standard Phase 2 posture: native system-health off the new pipeline; missing services surface as `unknown`/`idle` without crashing |
+| **Mixed B5 cutover mode** — `Sources:Quote=redis` + `Sources:Constituents=redis` | **redis** | **redis** | (as configured) | (as configured) | Redis + `hqqq-quote-engine` writing snapshots | Cutover testing: live quote/constituents off the new pipeline |
+| **Mixed C2 cutover mode** — add `Sources:History=timescale` on top of any row above | (as above) | (as above) | **timescale** | (as above) | Timescale + `hqqq-persistence` writing `quote_snapshots` | Cutover testing: serve history directly from Timescale |
+
+Override precedence is explicit: per-endpoint sources always win over the
+global `Gateway:DataSource`:
+`redis` for quote/constituents, `timescale` for history, `aggregated` /
+`legacy` / `stub` for system-health.
 
 ### `Gateway:BasketId`
 

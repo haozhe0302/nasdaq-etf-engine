@@ -1,4 +1,5 @@
 using Hqqq.Infrastructure.Hosting;
+using Hqqq.Observability.Hosting;
 using Hqqq.Observability.Logging;
 using Hqqq.QuoteEngine.Abstractions;
 using Hqqq.QuoteEngine.Consumers;
@@ -18,7 +19,13 @@ builder.Logging.AddHqqqDefaults();
 builder.Services.AddHqqqKafka(builder.Configuration);
 builder.Services.AddHqqqRedis(builder.Configuration);
 builder.Services.AddHqqqRedisConnection();
-builder.Services.AddHqqqObservability();
+
+// Phase 2D1 — shared observability + Kafka/Redis dependency probes;
+// management host serves /healthz/* and /metrics on Management:Port.
+builder.Services.AddHqqqObservability("hqqq-quote-engine", builder.Environment)
+    .AddKafkaHealthCheck()
+    .AddRedisHealthCheck();
+builder.Services.AddHqqqManagementHost(builder.Configuration);
 
 builder.Services.Configure<QuoteEngineOptions>(builder.Configuration.GetSection("QuoteEngine"));
 builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<QuoteEngineOptions>>().Value);
@@ -43,6 +50,10 @@ builder.Services.AddSingleton<ConfluentPricingSnapshotProducer>();
 builder.Services.AddSingleton<IPricingSnapshotProducer>(sp =>
     sp.GetRequiredService<ConfluentPricingSnapshotProducer>());
 builder.Services.AddSingleton<ISnapshotEventPublisher, SnapshotTopicPublisher>();
+
+// Phase 2D2 — Redis pub/sub fan-out for live SignalR updates.
+builder.Services.AddSingleton<IRedisChannelPublisher, StackExchangeRedisChannelPublisher>();
+builder.Services.AddSingleton<IQuoteUpdatePublisher, RedisQuoteUpdatePublisher>();
 
 // ── In-process buffers between Kafka consumers and the pipeline worker ──
 // The consumers push into the sink side; the pipeline worker drains the
@@ -78,6 +89,8 @@ var host = builder.Build();
 host.Services.LogConfigurationPosture(
     "hqqq-quote-engine",
     host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup"),
-    "Kafka", "Redis", "QuoteEngine");
+    "Kafka", "Redis", "QuoteEngine", "Management");
 
 host.Run();
+
+public partial class Program { }

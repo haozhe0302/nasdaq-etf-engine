@@ -19,7 +19,8 @@ public class SmokeTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var body = await response.Content.ReadAsStringAsync();
-        Assert.Contains("Healthy", body);
+        Assert.Contains("\"status\": \"healthy\"", body);
+        Assert.Contains("\"serviceName\": \"hqqq-gateway\"", body);
     }
 
     [Fact]
@@ -27,6 +28,19 @@ public class SmokeTests : IClassFixture<WebApplicationFactory<Program>>
     {
         var response = await _client.GetAsync("/healthz/ready");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task MetricsEndpoint_IsExposed_OnGateway()
+    {
+        var response = await _client.GetAsync("/metrics");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadAsStringAsync();
+        // Prometheus exporter always terminates with "# EOF" even when no
+        // measurements have been recorded yet — that's enough to assert
+        // /metrics is wired and reachable.
+        Assert.Contains("# EOF", body);
     }
 
     [Fact]

@@ -1,0 +1,203 @@
+# Phase 2 service images — build, test, push to the Phase 2 ACR.
+#
+# Auth: GitHub OIDC -> Azure (azure/login@v2). The federated app
+# registration must have AcrPush at the Phase 2 ACR scope. Required
+# repository secrets:
+#   AZURE_CLIENT_ID
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+# Required repository variables (with defaults baked in below if
+# not set):
+#   PHASE2_ACR_NAME       (default: acrhqqqp2demo01)
+#
+# Tagging:
+#   - vsha-<short>  immutable, what the deploy workflow pins to
+#   - latest        moving tag, only useful for first stand-up
+# Optional workflow_dispatch input `tag_override` swaps both tags
+# for an arbitrary string (e.g. `vrelease-2026-04-18-1`).
+#
+# This workflow does NOT touch the legacy hqqq-api Docker workflow,
+# which keeps using ACR_USERNAME/ACR_PASSWORD against the legacy
+# Phase 1 ACR. Phase 2 stays OIDC-only.
+
+name: Phase 2 — images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/building-blocks/**"
+      - "src/services/**"
+      - "tests/**"
+      - "Hqqq.sln"
+      - "Directory.Build.props"
+      - "global.json"
+      - "src/services/*/Dockerfile"
+      - ".github/workflows/phase2-images.yml"
+  workflow_dispatch:
+    inputs:
+      services:
+        description: "Comma-separated services to build (default: all). Example: hqqq-gateway,hqqq-quote-engine"
+        required: false
+        default: "all"
+      tag_override:
+        description: "Optional explicit image tag (e.g. vrelease-2026-04-18-1). Empty = use vsha-<short> + latest."
+        required: false
+        default: ""
+
+concurrency:
+  group: phase2-images-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHASE2_ACR_NAME: ${{ vars.PHASE2_ACR_NAME != '' && vars.PHASE2_ACR_NAME || 'acrhqqqp2demo01' }}
+
+jobs:
+  # ── Gate: build + test the whole solution before pushing anything.
+  build-test:
+    name: dotnet build + test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Hqqq.sln
+
+      - name: Build
+        run: dotnet build Hqqq.sln --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test Hqqq.sln --no-build --configuration Release --verbosity normal
+
+  # ── Compute shared image tag once so every matrix leg agrees.
+  resolve-tag:
+    name: Resolve image tag
+    runs-on: ubuntu-latest
+    needs: build-test
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      push_latest: ${{ steps.tag.outputs.push_latest }}
+    steps:
+      - name: Compute tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          OVERRIDE="${{ github.event.inputs.tag_override }}"
+          if [[ -n "$OVERRIDE" ]]; then
+            echo "image_tag=${OVERRIDE}" >> "$GITHUB_OUTPUT"
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+          else
+            SHORT_SHA="${GITHUB_SHA::7}"
+            echo "image_tag=vsha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ── Build + push each service image. The matrix is filtered by
+  # the workflow_dispatch `services` input so a partial rebuild
+  # is possible without touching the rest of the stack.
+  image:
+    name: image (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [build-test, resolve-tag]
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - hqqq-gateway
+          - hqqq-reference-data
+          - hqqq-ingress
+          - hqqq-quote-engine
+          - hqqq-persistence
+          - hqqq-analytics
+    steps:
+      - name: Skip when not selected
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICES_INPUT="${{ github.event.inputs.services }}"
+          if [[ -z "$SERVICES_INPUT" || "$SERVICES_INPUT" == "all" ]]; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          else
+            if echo ",$SERVICES_INPUT," | grep -q ",${{ matrix.service }},"; then
+              echo "selected=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "selected=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::${{ matrix.service }} not in services input '$SERVICES_INPUT' — skipping."
+            fi
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.selected == 'true'
+
+      - name: Azure login (OIDC)
+        if: steps.gate.outputs.selected == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        if: steps.gate.outputs.selected == 'true'
+        run: az acr login --name "${{ env.PHASE2_ACR_NAME }}"
+
+      - name: Set up Docker Buildx
+        if: steps.gate.outputs.selected == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tags
+        id: tags
+        if: steps.gate.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY="${{ env.PHASE2_ACR_NAME }}.azurecr.io"
+          IMAGE_TAG="${{ needs.resolve-tag.outputs.image_tag }}"
+          PUSH_LATEST="${{ needs.resolve-tag.outputs.push_latest }}"
+          PRIMARY="${REGISTRY}/${{ matrix.service }}:${IMAGE_TAG}"
+          if [[ "$PUSH_LATEST" == "true" ]]; then
+            TAGS="${PRIMARY}"$'\n'"${REGISTRY}/${{ matrix.service }}:latest"
+          else
+            TAGS="${PRIMARY}"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "primary=${PRIMARY}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        if: steps.gate.outputs.selected == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+
+      - name: Summary
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          REGISTRY: ${{ env.PHASE2_ACR_NAME }}.azurecr.io
+          IMAGE_TAG: ${{ needs.resolve-tag.outputs.image_tag }}
+        run: |
+          # Machine-parseable per-leg line so an operator (and
+          # phase2-deploy.yml's preflight) can see in one glance which
+          # services were actually pushed in this run.
+          {
+            echo "phase2-image | service=${{ matrix.service }} | image_tag=${IMAGE_TAG} | ref=${REGISTRY}/${{ matrix.service }}:${IMAGE_TAG}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -17,4 +17,12 @@ public static class MetricNames
     public const string GatewayActiveConnections = "hqqq.gateway.active_connections";
     public const string GatewayRequestDuration = "hqqq.gateway.request_duration_ms";
     public const string HealthCheckDuration = "hqqq.health.check_duration_ms";
+
+    // Phase 2D2 — Redis pub/sub + SignalR live fan-out
+    public const string QuoteUpdatesPublished = "hqqq.quote_engine.quote_updates_published";
+    public const string QuoteUpdatePublishFailures = "hqqq.quote_engine.quote_update_publish_failures";
+    public const string GatewayQuoteUpdatesReceived = "hqqq.gateway.quote_updates_received";
+    public const string GatewayQuoteUpdatesMalformed = "hqqq.gateway.quote_updates_malformed";
+    public const string GatewaySignalrBroadcasts = "hqqq.gateway.signalr_broadcasts";
+    public const string GatewaySignalrBroadcastFailures = "hqqq.gateway.signalr_broadcast_failures";
 }

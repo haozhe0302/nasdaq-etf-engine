@@ -11,4 +11,15 @@
     <ProjectReference Include="..\..\building-blocks\Hqqq.Observability\Hqqq.Observability.csproj" />
   </ItemGroup>
 
+  <!--
+    Standalone-mode basket seed. Embedded so the published binary is
+    self-contained, AND copied to the output directory so an operator can
+    point ReferenceData:Standalone:SeedPath at a forked file when
+    iterating without a rebuild.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\basket-seed.json" />
+    <None Include="Resources\basket-seed.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

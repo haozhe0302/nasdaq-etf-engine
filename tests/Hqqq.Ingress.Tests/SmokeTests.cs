@@ -14,7 +14,7 @@ public class SmokeTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Tiingo:ApiKey"] = "test-key",
-                ["Tiingo:WebSocketUrl"] = "wss://test.example.com",
+                ["Tiingo:WsUrl"] = "wss://test.example.com",
             })
             .Build();
 
@@ -24,7 +24,7 @@ public class SmokeTests
 
         var opts = sp.GetRequiredService<IOptions<TiingoOptions>>().Value;
         Assert.Equal("test-key", opts.ApiKey);
-        Assert.Equal("wss://test.example.com", opts.WebSocketUrl);
+        Assert.Equal("wss://test.example.com", opts.WsUrl);
     }
 
     [Fact]
@@ -32,7 +32,9 @@ public class SmokeTests
     {
         var opts = new TiingoOptions();
         Assert.Null(opts.ApiKey);
-        Assert.Equal("wss://api.tiingo.com/iex", opts.WebSocketUrl);
+        Assert.Equal("wss://api.tiingo.com/iex", opts.WsUrl);
         Assert.Equal("https://api.tiingo.com/iex", opts.RestBaseUrl);
+        Assert.Equal(6, opts.WebSocketThresholdLevel);
+        Assert.True(opts.SnapshotOnStartup);
     }
 }

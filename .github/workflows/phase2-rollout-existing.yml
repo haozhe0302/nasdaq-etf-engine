@@ -1,0 +1,604 @@
+# Phase 2 — roll a pre-built image tag into EXISTING Azure resources.
+#
+# Operating model: Azure resources (resource group, ACR, Container
+# Apps environment, the 5 Container Apps, the analytics Container
+# Apps Job, Redis, Postgres, Event Hubs, SWA) are created and
+# configured manually in the Azure portal. This workflow does NOT
+# provision anything. It only:
+#
+#   1. verifies the target RG / ACR / CAE / 5 apps / 1 job exist,
+#   2. verifies the requested image_tag is published in ACR for all
+#      six Phase 2 images,
+#   3. updates each existing Container App to the new image tag,
+#   4. updates the existing analytics Job image too,
+#   5. reuses the gateway smoke script
+#      (infra/azure/scripts/phase2-azure-smoke.sh),
+#   6. optionally flips gateway traffic to the prior revision on
+#      smoke failure (gateway-only rollback assist).
+#
+# This workflow is DISTINCT from .github/workflows/phase2-deploy.yml,
+# which stays around for the Bicep provisioning path and targets the
+# older *-demo-* naming. The two workflows attach to different
+# GitHub Environments (phase2 vs. phase2-demo) and must not be run
+# against the same resource group.
+#
+# Auth: GitHub OIDC -> Azure (azure/login@v2). The federated app
+# registration needs:
+#   - AcrPull on the Phase 2 ACR (acrhqqqp2)           — for tag reads
+#   - Container Apps Contributor (or broader) on rg-hqqq-p2
+#     — for `az containerapp update` / `az containerapp job update`
+#       / `az containerapp revision *` / `az containerapp ingress *`
+#
+# Required repository secrets:
+#   AZURE_CLIENT_ID
+#   AZURE_TENANT_ID
+#   AZURE_SUBSCRIPTION_ID
+#
+# Optional repository variables (defaults match the manual-resource
+# model documented in docs/phase2/azure-deploy.md):
+#   PHASE2_RESOURCE_GROUP     (default: rg-hqqq-p2)
+#   PHASE2_ACR_NAME           (default: acrhqqqp2)
+#   PHASE2_CAE_NAME           (default: cae-hqqq-p2)
+#   PHASE2_GATEWAY_APP        (default: ca-hqqq-gateway-p2)
+#   PHASE2_REFDATA_APP        (default: ca-hqqq-reference-data-p2)
+#   PHASE2_INGRESS_APP        (default: ca-hqqq-ingress-p2)
+#   PHASE2_QUOTE_APP          (default: ca-hqqq-quote-engine-p2)
+#   PHASE2_PERSISTENCE_APP    (default: ca-hqqq-persistence-p2)
+#   PHASE2_ANALYTICS_JOB      (default: caj-hqqq-analytics-p2)
+#   PHASE2_ENVIRONMENT_NAME   (default: phase2)   — name of the
+#                              GitHub Environment this workflow
+#                              attaches to for approval gating.
+#
+# No environment secrets are required here. App-level secrets
+# (Kafka, Redis, Timescale, Tiingo) live on the Azure Container App
+# configuration and are NOT plumbed through this workflow — rolling
+# a new image tag does not rewrite them.
+
+name: Phase 2 — rollout (existing resources)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to roll out (e.g. vsha-abcdef0). 'latest' is allowed but discouraged for reproducibility."
+        required: true
+        default: "latest"
+      services:
+        description: "Comma-separated services to roll out (default: all). Example: hqqq-gateway,hqqq-quote-engine. Does not affect the analytics job (see update_analytics_job)."
+        required: false
+        default: "all"
+      update_analytics_job:
+        description: "If true, also update the analytics Container Apps Job image to the new tag. The job is NOT started — triggering a run remains a manual / smoke-time step."
+        type: boolean
+        required: false
+        default: true
+      skip_smoke:
+        description: "If true, skip the post-rollout gateway smoke probes."
+        type: boolean
+        required: false
+        default: false
+      rollback_on_smoke_failure:
+        description: "If true and the smoke job fails, flip gateway traffic back to the revision that was active before this rollout."
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: phase2-rollout-existing-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── Preflight: prove every target resource and the requested image
+  # tag exists before we touch anything. Fail fast with one aggregated
+  # error block so an operator sees every gap at once.
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    environment: ${{ vars.PHASE2_ENVIRONMENT_NAME != '' && vars.PHASE2_ENVIRONMENT_NAME || 'phase2' }}
+    env:
+      RESOURCE_GROUP: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2' }}
+      ACR_NAME: ${{ vars.PHASE2_ACR_NAME != '' && vars.PHASE2_ACR_NAME || 'acrhqqqp2' }}
+      CAE_NAME: ${{ vars.PHASE2_CAE_NAME != '' && vars.PHASE2_CAE_NAME || 'cae-hqqq-p2' }}
+      GATEWAY_APP: ${{ vars.PHASE2_GATEWAY_APP != '' && vars.PHASE2_GATEWAY_APP || 'ca-hqqq-gateway-p2' }}
+      REFDATA_APP: ${{ vars.PHASE2_REFDATA_APP != '' && vars.PHASE2_REFDATA_APP || 'ca-hqqq-reference-data-p2' }}
+      INGRESS_APP: ${{ vars.PHASE2_INGRESS_APP != '' && vars.PHASE2_INGRESS_APP || 'ca-hqqq-ingress-p2' }}
+      QUOTE_APP: ${{ vars.PHASE2_QUOTE_APP != '' && vars.PHASE2_QUOTE_APP || 'ca-hqqq-quote-engine-p2' }}
+      PERSISTENCE_APP: ${{ vars.PHASE2_PERSISTENCE_APP != '' && vars.PHASE2_PERSISTENCE_APP || 'ca-hqqq-persistence-p2' }}
+      ANALYTICS_JOB: ${{ vars.PHASE2_ANALYTICS_JOB != '' && vars.PHASE2_ANALYTICS_JOB || 'caj-hqqq-analytics-p2' }}
+    outputs:
+      resource_group: ${{ steps.export.outputs.resource_group }}
+      acr_name: ${{ steps.export.outputs.acr_name }}
+      acr_login_server: ${{ steps.acr.outputs.login_server }}
+      cae_name: ${{ steps.export.outputs.cae_name }}
+      gateway_app: ${{ steps.export.outputs.gateway_app }}
+      refdata_app: ${{ steps.export.outputs.refdata_app }}
+      ingress_app: ${{ steps.export.outputs.ingress_app }}
+      quote_app: ${{ steps.export.outputs.quote_app }}
+      persistence_app: ${{ steps.export.outputs.persistence_app }}
+      analytics_job: ${{ steps.export.outputs.analytics_job }}
+      gateway_fqdn: ${{ steps.gateway.outputs.fqdn }}
+      gateway_pre_rollout_revision: ${{ steps.gateway.outputs.pre_rollout_revision }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required repo secrets are present (no values logged)
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -uo pipefail
+          missing=()
+          for s in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID; do
+            v="${!s:-}"
+            if [[ -z "$v" ]]; then
+              missing+=("$s")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Required repository secrets are missing or empty: ${missing[*]}"
+            echo "::error::Repo → Settings → Secrets and variables → Actions → Secrets."
+            exit 1
+          fi
+          echo "Required repo secrets present."
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify resource group exists
+        run: |
+          set -euo pipefail
+          if ! az group show --name "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::Resource group '$RESOURCE_GROUP' does not exist."
+            echo "::error::This workflow does NOT create resources. Create the RG manually in the portal (see docs/phase2/azure-deploy.md §0)."
+            exit 1
+          fi
+          echo "Resource group '$RESOURCE_GROUP' OK."
+
+      - name: Verify ACR exists and is reachable
+        id: acr
+        run: |
+          set -euo pipefail
+          if ! az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::ACR '$ACR_NAME' was not found in resource group '$RESOURCE_GROUP'."
+            echo "::error::Create it manually or point PHASE2_ACR_NAME at the correct registry."
+            exit 1
+          fi
+          LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query loginServer --output tsv)
+          echo "ACR '$ACR_NAME' OK (loginServer=$LOGIN_SERVER)."
+          echo "login_server=$LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Container Apps environment exists
+        run: |
+          set -euo pipefail
+          if ! az containerapp env show --name "$CAE_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::Container Apps environment '$CAE_NAME' was not found in '$RESOURCE_GROUP'."
+            echo "::error::This workflow does NOT create environments. Create it manually in the portal."
+            exit 1
+          fi
+          echo "Container Apps environment '$CAE_NAME' OK."
+
+      - name: Verify the five Container Apps exist
+        run: |
+          set -uo pipefail
+          missing=()
+          for app in "$GATEWAY_APP" "$REFDATA_APP" "$INGRESS_APP" "$QUOTE_APP" "$PERSISTENCE_APP"; do
+            if ! az containerapp show --name "$app" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+              missing+=("$app")
+            else
+              echo "OK: Container App '$app'"
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::The following Container Apps are missing from '$RESOURCE_GROUP':"
+            for m in "${missing[@]}"; do
+              echo "::error::  - $m"
+            done
+            echo "::error::Create them manually in the portal (empty placeholder image is fine) before running this workflow."
+            exit 1
+          fi
+          echo "All five Container Apps OK."
+
+      - name: Verify analytics Container Apps Job exists
+        run: |
+          set -euo pipefail
+          if ! az containerapp job show --name "$ANALYTICS_JOB" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "::error::Container Apps Job '$ANALYTICS_JOB' was not found in '$RESOURCE_GROUP'."
+            echo "::error::Create it manually in the portal (triggerType=Manual) before running this workflow, or set update_analytics_job=false and PHASE2_ANALYTICS_JOB to match."
+            exit 1
+          fi
+          echo "Container Apps Job '$ANALYTICS_JOB' OK."
+
+      - name: Verify image_tag exists in ACR for all six Phase 2 images
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          set -uo pipefail
+          repos=( hqqq-gateway hqqq-reference-data hqqq-ingress hqqq-quote-engine hqqq-persistence hqqq-analytics )
+          missing=()
+          for repo in "${repos[@]}"; do
+            tags=$(az acr repository show-tags \
+              --name "$ACR_NAME" \
+              --repository "$repo" \
+              --output tsv 2>/dev/null || true)
+            if [[ -z "$tags" ]]; then
+              missing+=("$repo: repository missing or unreadable")
+              continue
+            fi
+            if ! printf '%s\n' "$tags" | grep -Fxq "$IMAGE_TAG"; then
+              missing+=("$repo:$IMAGE_TAG")
+            else
+              echo "OK: $repo:$IMAGE_TAG"
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::The requested image_tag '$IMAGE_TAG' is missing for the following Phase 2 image(s):"
+            for m in "${missing[@]}"; do
+              echo "::error::  - $m"
+            done
+            echo "::error::Run phase2-images.yml on the target commit to publish the tag, then re-run this workflow."
+            exit 1
+          fi
+          echo "All six Phase 2 images carry tag '$IMAGE_TAG' in ACR '$ACR_NAME'."
+
+      - name: Capture gateway FQDN and pre-rollout revision (for rollback assist)
+        id: gateway
+        run: |
+          set -euo pipefail
+          FQDN=$(az containerapp show \
+            --name "$GATEWAY_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query 'properties.configuration.ingress.fqdn' \
+            --output tsv 2>/dev/null || echo "")
+          if [[ -z "$FQDN" ]]; then
+            echo "::warning::Could not read an ingress FQDN off '$GATEWAY_APP'. Smoke will fail unless the gateway has external ingress enabled."
+          fi
+          echo "fqdn=$FQDN" >> "$GITHUB_OUTPUT"
+
+          # The revision that was serving traffic BEFORE this rollout.
+          # Captured here so rollback-assist can deterministically flip
+          # back to it rather than guessing via "most recent other".
+          PRE_REV=$(az containerapp show \
+            --name "$GATEWAY_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query 'properties.latestRevisionName' \
+            --output tsv 2>/dev/null || echo "")
+          echo "Pre-rollout gateway revision: ${PRE_REV:-<none>}"
+          echo "pre_rollout_revision=$PRE_REV" >> "$GITHUB_OUTPUT"
+
+      - name: Export resolved resource names as job outputs
+        id: export
+        run: |
+          set -euo pipefail
+          {
+            echo "resource_group=$RESOURCE_GROUP"
+            echo "acr_name=$ACR_NAME"
+            echo "cae_name=$CAE_NAME"
+            echo "gateway_app=$GATEWAY_APP"
+            echo "refdata_app=$REFDATA_APP"
+            echo "ingress_app=$INGRESS_APP"
+            echo "quote_app=$QUOTE_APP"
+            echo "persistence_app=$PERSISTENCE_APP"
+            echo "analytics_job=$ANALYTICS_JOB"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Preflight summary
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          {
+            echo "## Phase 2 rollout preflight: PASS"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Resource group | \`$RESOURCE_GROUP\` |"
+            echo "| ACR | \`$ACR_NAME\` (\`${{ steps.acr.outputs.login_server }}\`) |"
+            echo "| Container Apps env | \`$CAE_NAME\` |"
+            echo "| Gateway app | \`$GATEWAY_APP\` |"
+            echo "| Gateway FQDN | \`${{ steps.gateway.outputs.fqdn }}\` |"
+            echo "| Gateway pre-rollout revision | \`${{ steps.gateway.outputs.pre_rollout_revision }}\` |"
+            echo "| Reference-data app | \`$REFDATA_APP\` |"
+            echo "| Ingress app | \`$INGRESS_APP\` |"
+            echo "| Quote-engine app | \`$QUOTE_APP\` |"
+            echo "| Persistence app | \`$PERSISTENCE_APP\` |"
+            echo "| Analytics job | \`$ANALYTICS_JOB\` |"
+            echo "| Image tag | \`$IMAGE_TAG\` (verified across all 6 services) |"
+            echo "| Services input | \`${{ github.event.inputs.services }}\` |"
+            echo "| update_analytics_job | \`${{ github.event.inputs.update_analytics_job }}\` |"
+            echo "| skip_smoke | \`${{ github.event.inputs.skip_smoke }}\` |"
+            echo "| rollback_on_smoke_failure | \`${{ github.event.inputs.rollback_on_smoke_failure }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Roll each existing Container App to the new image tag. The
+  # matrix is gated by the workflow_dispatch `services` input so
+  # partial rollouts are possible without touching the rest of the
+  # stack.
+  rollout:
+    name: rollout (${{ matrix.service }})
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: ${{ vars.PHASE2_ENVIRONMENT_NAME != '' && vars.PHASE2_ENVIRONMENT_NAME || 'phase2' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: hqqq-gateway
+            app: ${{ vars.PHASE2_GATEWAY_APP != '' && vars.PHASE2_GATEWAY_APP || 'ca-hqqq-gateway-p2' }}
+          - service: hqqq-reference-data
+            app: ${{ vars.PHASE2_REFDATA_APP != '' && vars.PHASE2_REFDATA_APP || 'ca-hqqq-reference-data-p2' }}
+          - service: hqqq-ingress
+            app: ${{ vars.PHASE2_INGRESS_APP != '' && vars.PHASE2_INGRESS_APP || 'ca-hqqq-ingress-p2' }}
+          - service: hqqq-quote-engine
+            app: ${{ vars.PHASE2_QUOTE_APP != '' && vars.PHASE2_QUOTE_APP || 'ca-hqqq-quote-engine-p2' }}
+          - service: hqqq-persistence
+            app: ${{ vars.PHASE2_PERSISTENCE_APP != '' && vars.PHASE2_PERSISTENCE_APP || 'ca-hqqq-persistence-p2' }}
+    env:
+      RESOURCE_GROUP: ${{ needs.preflight.outputs.resource_group }}
+      ACR_LOGIN_SERVER: ${{ needs.preflight.outputs.acr_login_server }}
+      IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+    steps:
+      - name: Gate on services input
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICES_INPUT="${{ github.event.inputs.services }}"
+          if [[ -z "$SERVICES_INPUT" || "$SERVICES_INPUT" == "all" ]]; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          else
+            if echo ",$SERVICES_INPUT," | grep -q ",${{ matrix.service }},"; then
+              echo "selected=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "selected=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::${{ matrix.service }} not in services input '$SERVICES_INPUT' — skipping rollout for ${{ matrix.app }}."
+            fi
+          fi
+
+      - name: Azure login (OIDC)
+        if: steps.gate.outputs.selected == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update Container App image
+        if: steps.gate.outputs.selected == 'true'
+        id: update
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${ACR_LOGIN_SERVER}/${{ matrix.service }}:${IMAGE_TAG}"
+          echo "Rolling '${{ matrix.app }}' to image '$IMAGE_REF'"
+          az containerapp update \
+            --name "${{ matrix.app }}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_REF" \
+            --output none
+
+          NEW_REV=$(az containerapp show \
+            --name "${{ matrix.app }}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --query 'properties.latestRevisionName' \
+            --output tsv 2>/dev/null || echo "")
+          echo "new_revision=$NEW_REV" >> "$GITHUB_OUTPUT"
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Rollout summary
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          {
+            echo "phase2-rollout | service=${{ matrix.service }} | app=${{ matrix.app }} | image=${{ steps.update.outputs.image_ref }} | new_revision=${{ steps.update.outputs.new_revision }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Roll the analytics Container Apps Job to the new image tag.
+  # `az containerapp job update` does not start the job; triggering
+  # a run is still a manual / smoke-time step.
+  rollout-job:
+    name: rollout (analytics job)
+    needs: preflight
+    if: ${{ github.event.inputs.update_analytics_job == 'true' }}
+    runs-on: ubuntu-latest
+    environment: ${{ vars.PHASE2_ENVIRONMENT_NAME != '' && vars.PHASE2_ENVIRONMENT_NAME || 'phase2' }}
+    env:
+      RESOURCE_GROUP: ${{ needs.preflight.outputs.resource_group }}
+      ACR_LOGIN_SERVER: ${{ needs.preflight.outputs.acr_login_server }}
+      ANALYTICS_JOB: ${{ needs.preflight.outputs.analytics_job }}
+      IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Update analytics Job image
+        id: update
+        run: |
+          set -euo pipefail
+          IMAGE_REF="${ACR_LOGIN_SERVER}/hqqq-analytics:${IMAGE_TAG}"
+          echo "Updating job '$ANALYTICS_JOB' to image '$IMAGE_REF'"
+          az containerapp job update \
+            --name "$ANALYTICS_JOB" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_REF" \
+            --output none
+          echo "image_ref=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Rollout-job summary
+        run: |
+          {
+            echo "phase2-rollout | service=hqqq-analytics | job=$ANALYTICS_JOB | image=${{ steps.update.outputs.image_ref }}"
+            echo ""
+            echo "The job was NOT started. Trigger a run with:"
+            echo ""
+            echo '```bash'
+            echo "az containerapp job start \\"
+            echo "  --name $ANALYTICS_JOB \\"
+            echo "  --resource-group $RESOURCE_GROUP \\"
+            echo "  --env-vars Analytics__StartUtc=<UTC> Analytics__EndUtc=<UTC>"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Post-rollout smoke. Reuses the exact same probe script the
+  # Bicep-provisioning workflow uses; no duplication.
+  smoke:
+    name: Smoke
+    needs: [preflight, rollout]
+    if: ${{ always() && needs.preflight.result == 'success' && needs.rollout.result == 'success' && github.event.inputs.skip_smoke != 'true' }}
+    runs-on: ubuntu-latest
+    environment: ${{ vars.PHASE2_ENVIRONMENT_NAME != '' && vars.PHASE2_ENVIRONMENT_NAME || 'phase2' }}
+    env:
+      RESOURCE_GROUP: ${{ needs.preflight.outputs.resource_group }}
+      GATEWAY_APP: ${{ needs.preflight.outputs.gateway_app }}
+      GATEWAY_FQDN: ${{ needs.preflight.outputs.gateway_fqdn }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run gateway smoke probes
+        run: |
+          set -uo pipefail
+          if [[ -z "${GATEWAY_FQDN:-}" ]]; then
+            echo "::error::Gateway FQDN was not captured in preflight. Either the gateway has no external ingress or the caller lacks read permission."
+            exit 1
+          fi
+          chmod +x infra/azure/scripts/phase2-azure-smoke.sh
+          GATEWAY_FQDN="$GATEWAY_FQDN" \
+          EXPECT_AGGREGATED=true \
+            infra/azure/scripts/phase2-azure-smoke.sh
+
+      - name: Smoke success summary
+        if: ${{ success() }}
+        run: |
+          {
+            echo "## Phase 2 rollout smoke: PASS"
+            echo ""
+            echo "- Gateway: \`https://${GATEWAY_FQDN}\`"
+            echo "- /healthz/live, /healthz/ready, /api/system/health (sourceMode=aggregated), /api/quote, /api/constituents, /api/history?range=1D — all green."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke failure diagnostics
+        if: ${{ failure() }}
+        run: |
+          {
+            echo "## Phase 2 rollout smoke: FAIL"
+            echo ""
+            echo "Inspect the logs above for the exact failing endpoint."
+            echo ""
+            echo "### az inspect commands (copy-paste)"
+            echo ""
+            echo '```bash'
+            echo "RG=${RESOURCE_GROUP}"
+            echo "GATEWAY=${GATEWAY_APP}"
+            echo ""
+            echo "# Active gateway revisions + traffic split"
+            echo "az containerapp revision list --name \$GATEWAY --resource-group \$RG \\"
+            echo "  --query \"[].{name:name, active:properties.active, traffic:properties.trafficWeight, image:properties.template.containers[0].image, created:properties.createdTime}\" \\"
+            echo "  --output table"
+            echo ""
+            echo "# Latest gateway logs (last 200 lines)"
+            echo "az containerapp logs show --name \$GATEWAY --resource-group \$RG --tail 200"
+            echo '```'
+            if [[ "${{ github.event.inputs.rollback_on_smoke_failure }}" == "true" ]]; then
+              echo ""
+              echo "rollback_on_smoke_failure=true — gateway rollback assist will run next."
+            else
+              echo ""
+              echo "rollback_on_smoke_failure=false — no automatic rollback. Re-run with rollback_on_smoke_failure=true to attempt a gateway revision flip."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Rollback assist: optional, gateway-only revision flip back to
+  # the revision captured in preflight (i.e., the one that was
+  # serving traffic BEFORE this rollout).
+  rollback-assist:
+    name: Gateway rollback assist
+    needs: [preflight, smoke]
+    if: ${{ always() && needs.smoke.result == 'failure' && github.event.inputs.rollback_on_smoke_failure == 'true' && github.event.inputs.skip_smoke != 'true' }}
+    runs-on: ubuntu-latest
+    environment: ${{ vars.PHASE2_ENVIRONMENT_NAME != '' && vars.PHASE2_ENVIRONMENT_NAME || 'phase2' }}
+    env:
+      RESOURCE_GROUP: ${{ needs.preflight.outputs.resource_group }}
+      GATEWAY_APP: ${{ needs.preflight.outputs.gateway_app }}
+      PRE_ROLLOUT_REVISION: ${{ needs.preflight.outputs.gateway_pre_rollout_revision }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Activate pre-rollout revision and shift traffic
+        id: flip
+        run: |
+          set -uo pipefail
+          if [[ -z "${PRE_ROLLOUT_REVISION:-}" ]]; then
+            echo "::warning::No pre-rollout revision was captured (fresh app with no prior revision?). Skipping destructive flip."
+            echo "flipped=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Flipping '$GATEWAY_APP' back to pre-rollout revision '$PRE_ROLLOUT_REVISION'."
+
+          az containerapp revision activate \
+            --name "$GATEWAY_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision "$PRE_ROLLOUT_REVISION" \
+            --output none
+
+          az containerapp ingress traffic set \
+            --name "$GATEWAY_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision-weight "$PRE_ROLLOUT_REVISION=100" \
+            --output none
+
+          echo "Traffic shifted to '$PRE_ROLLOUT_REVISION'."
+          echo "flipped=true" >> "$GITHUB_OUTPUT"
+
+      - name: Rollback summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "## Phase 2 rollout — gateway rollback assist"
+            echo ""
+            echo "- Gateway app: \`${GATEWAY_APP}\`"
+            echo "- Pre-rollout revision: \`${PRE_ROLLOUT_REVISION:-<none>}\`"
+            if [[ "${{ steps.flip.outputs.flipped }}" == "true" ]]; then
+              echo "- Flipped traffic back to \`${PRE_ROLLOUT_REVISION}\` (100%)."
+              echo ""
+              echo "Workers + analytics job were NOT touched (gateway-only rollback by design)."
+              echo "The failed new revision is left in place (deactivated is an operator choice)."
+              echo ""
+              echo "### Verify"
+              echo ""
+              echo '```bash'
+              echo "az containerapp revision list --name ${GATEWAY_APP} --resource-group ${RESOURCE_GROUP} \\"
+              echo "  --query \"[?properties.active].{name:name, traffic:properties.trafficWeight}\" --output table"
+              echo '```'
+            else
+              echo "- No traffic shift performed (no pre-rollout revision was available)."
+              echo ""
+              echo "Recommended next steps:"
+              echo ""
+              echo '```bash'
+              echo "# Build/push a known-good image set, then re-run phase2-rollout-existing.yml with that image_tag."
+              echo "az containerapp revision list --name ${GATEWAY_APP} --resource-group ${RESOURCE_GROUP} --output table"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

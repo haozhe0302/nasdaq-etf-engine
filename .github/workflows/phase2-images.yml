@@ -1,5 +1,14 @@
 # Phase 2 service images — build, test, push to the Phase 2 ACR.
 #
+# This workflow produces the immutable image tags that BOTH Phase 2
+# deploy workflows consume:
+#   - .github/workflows/phase2-rollout-existing.yml  (current default:
+#     rolls new tags into manually-provisioned Container Apps in
+#     rg-hqqq-p2 / cae-hqqq-p2 / acrhqqqp2)
+#   - .github/workflows/phase2-deploy.yml            (legacy: Bicep
+#     provisioning path against the *-demo-* naming, kept for
+#     environments that still want IaC-driven resource creation)
+#
 # Auth: GitHub OIDC -> Azure (azure/login@v2). The federated app
 # registration must have AcrPush at the Phase 2 ACR scope. Required
 # repository secrets:
@@ -8,10 +17,10 @@
 #   AZURE_SUBSCRIPTION_ID
 # Required repository variables (with defaults baked in below if
 # not set):
-#   PHASE2_ACR_NAME       (default: acrhqqqp2demo01)
+#   PHASE2_ACR_NAME       (default: acrhqqqp2)
 #
 # Tagging:
-#   - vsha-<short>  immutable, what the deploy workflow pins to
+#   - vsha-<short>  immutable, what the rollout/deploy workflows pin to
 #   - latest        moving tag, only useful for first stand-up
 # Optional workflow_dispatch input `tag_override` swaps both tags
 # for an arbitrary string (e.g. `vrelease-2026-04-18-1`).
@@ -50,7 +59,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  PHASE2_ACR_NAME: ${{ vars.PHASE2_ACR_NAME != '' && vars.PHASE2_ACR_NAME || 'acrhqqqp2demo01' }}
+  PHASE2_ACR_NAME: ${{ vars.PHASE2_ACR_NAME != '' && vars.PHASE2_ACR_NAME || 'acrhqqqp2' }}
 
 jobs:
   # ── Gate: build + test the whole solution before pushing anything.

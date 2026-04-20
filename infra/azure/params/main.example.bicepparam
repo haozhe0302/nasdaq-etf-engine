@@ -58,6 +58,13 @@ param kafkaClientId = 'hqqq-azure'
 param kafkaConsumerGroupPrefix = 'hqqq'
 param gatewayBasketId = 'HQQQ'
 
+// Operating mode for Phase 2 services.
+//   hybrid     : legacy hqqq-api monolith bridges live ticks/baskets;
+//                ingress + reference-data run as no-op stubs.
+//   standalone : Phase 2 native ingress + deterministic basket seed
+//                drive the system end-to-end. Requires tiingoApiKey.
+param operatingMode = 'hybrid'
+
 // Required @secure() params — placeholders only; supply real values
 // via --parameters at deploy time:
 param kafkaBootstrapServers = 'OVERRIDE_ME'

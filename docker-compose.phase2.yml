@@ -36,11 +36,13 @@ services:
     image: hqqq-reference-data:dev
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      OperatingMode: ${HQQQ_OPERATING_MODE:-hybrid}
       Kafka__BootstrapServers: kafka:29092
       Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
       Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
       Redis__Configuration: cache:6379
       Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      ReferenceData__Standalone__RepublishIntervalSeconds: ${ReferenceData__Standalone__RepublishIntervalSeconds:-300}
     ports:
       - "5020:8080"
     depends_on:
@@ -68,9 +70,11 @@ services:
     image: hqqq-ingress:dev
     environment:
       DOTNET_ENVIRONMENT: Development
+      OperatingMode: ${HQQQ_OPERATING_MODE:-hybrid}
       Tiingo__ApiKey: ${Tiingo__ApiKey:-}
       Tiingo__WsUrl: ${Tiingo__WsUrl:-wss://api.tiingo.com/iex}
       Tiingo__RestBaseUrl: ${Tiingo__RestBaseUrl:-https://api.tiingo.com/iex}
+      Tiingo__Symbols: ${Tiingo__Symbols:-}
       Kafka__BootstrapServers: kafka:29092
       Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
       Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
@@ -176,6 +180,7 @@ services:
     image: hqqq-gateway:dev
     environment:
       ASPNETCORE_ENVIRONMENT: Development
+      OperatingMode: ${HQQQ_OPERATING_MODE:-hybrid}
       Redis__Configuration: cache:6379
       Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       Gateway__BasketId: ${Gateway__BasketId:-HQQQ}

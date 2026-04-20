@@ -3,13 +3,17 @@ using Hqqq.Contracts.Events;
 namespace Hqqq.Ingress.Clients;
 
 /// <summary>
-/// Stub — returns an empty list. Will be replaced by a real Tiingo REST client in a later phase.
+/// Stub used in <see cref="Hqqq.Infrastructure.Hosting.OperatingMode.Hybrid"/>
+/// mode. Returns an empty snapshot since the legacy monolith owns
+/// snapshot bridging in that posture.
 /// </summary>
 public sealed class StubTiingoSnapshotClient(ILogger<StubTiingoSnapshotClient> logger) : ITiingoSnapshotClient
 {
-    public Task<IReadOnlyList<RawTickV1>> FetchSnapshotsAsync(IEnumerable<string> symbols, CancellationToken ct)
+    public Task<IReadOnlyList<RawTickV1>> FetchSnapshotsAsync(
+        IEnumerable<string> symbols, CancellationToken ct)
     {
-        logger.LogInformation("StubTiingoSnapshotClient: REST snapshot fetch not yet implemented (Phase 2B)");
+        logger.LogInformation(
+            "StubTiingoSnapshotClient: hybrid mode — REST snapshot disabled (monolith owns warmup)");
         return Task.FromResult<IReadOnlyList<RawTickV1>>(Array.Empty<RawTickV1>());
     }
 }

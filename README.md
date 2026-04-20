@@ -49,7 +49,10 @@ External market data provider (Tiingo)
   |        - legacy /api/system/health path
   |
   \--> Phase 2 service-based runtime (current app tier in repo)
-         (ingestion in hqqq-ingress is still stub; monolith currently bridges ticks)
+         (ingestion path depends on HQQQ_OPERATING_MODE:
+            hybrid     = monolith bridges ticks; hqqq-ingress + hqqq-reference-data are stubs
+            standalone = hqqq-ingress consumes Tiingo IEX directly;
+                         hqqq-reference-data publishes a deterministic basket seed)
 
          Kafka topics
            - market.raw_ticks.v1 (key=symbol, ingress/bridge -> consumers)
@@ -137,8 +140,8 @@ nasdaq-etf-engine/
 │   │   ├── Hqqq.Infrastructure/          # Kafka/Redis/Timescale factories
 │   │   └── Hqqq.Observability/           # Metrics, tracing, health builders
 │   ├── services/
-│   │   ├── hqqq-reference-data/          # Basket + corporate-action service (in-memory seed today)
-│   │   ├── hqqq-ingress/                 # Tiingo ingest worker (stub today)
+│   │   ├── hqqq-reference-data/          # Basket service. Hybrid: in-memory seed (monolith owns issuer feeds + corp-actions). Standalone: deterministic repo-controlled basket-seed.json + Kafka publisher
+│   │   ├── hqqq-ingress/                 # Tiingo ingest worker. Hybrid: stub. Standalone: real Tiingo IEX websocket + raw-tick + latest-quote Kafka publisher
 │   │   ├── hqqq-quote-engine/            # iNAV compute + Redis pub/sub publisher
 │   │   ├── hqqq-gateway/                 # REST + SignalR serving gateway
 │   │   ├── hqqq-persistence/             # TimescaleDB writer worker
@@ -164,12 +167,12 @@ Service tier (under `src/services/`):
 
 | Service | Role today |
 |---------|------------|
-| `hqqq-gateway` | REST + SignalR serving edge. Reads Redis for `/api/quote` and `/api/constituents`, Timescale for `/api/history`. Native `/api/system/health` aggregator. Subscribes to `hqqq:channel:quote-update` and broadcasts `QuoteUpdate` locally per replica (no SignalR Redis backplane). |
-| `hqqq-ingress` | **Stub today.** Real Tiingo ingestion still lives in the Phase 1 monolith. |
+| `hqqq-gateway` | REST + SignalR serving edge. Reads Redis for `/api/quote` and `/api/constituents`, Timescale for `/api/history`. Native `/api/system/health` aggregator (mode-aware: in `standalone`, ingress + reference-data are required dependencies for the rollup). Subscribes to `hqqq:channel:quote-update` and broadcasts `QuoteUpdate` locally per replica (no SignalR Redis backplane). |
+| `hqqq-ingress` | **Hybrid (default):** no-op stub; the legacy `hqqq-api` monolith bridges live ticks (an unused `Tiingo__ApiKey` is logged then ignored). **Standalone:** real Tiingo IEX websocket consumer with REST snapshot warmup; publishes `market.raw_ticks.v1` (time-series) and `market.latest_by_symbol.v1` (compacted, key=symbol); fails fast at startup if `Tiingo__ApiKey` is missing/placeholder. |
 | `hqqq-quote-engine` | Consumes `market.raw_ticks.v1` + `refdata.basket.active.v1`, runs iNAV compute, writes `hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, and publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update`. |
 | `hqqq-persistence` | Consumes `pricing.snapshots.v1` + `market.raw_ticks.v1` into TimescaleDB hypertables; bootstraps `quote_snapshots_1m` / `quote_snapshots_5m` continuous aggregates and retention policies. |
 | `hqqq-analytics` | One-shot Timescale report job (`Analytics:Mode=report`) — not a long-running service. Replay / backfill / anomaly detection are deferred. |
-| `hqqq-reference-data` | Web service; in-memory seed basket today. Issuer feeds + corp-action pipeline still live in the Phase 1 monolith. |
+| `hqqq-reference-data` | **Hybrid (default):** in-memory stub; monolith owns issuer feeds + corp-action adjustment + basket activation. **Standalone:** loads a deterministic repo-controlled basket seed (`Resources/basket-seed.json`, ~25 N100 names, override via `ReferenceData__Standalone__SeedPath`) and publishes a fully-materialized `BasketActiveStateV1` to `refdata.basket.active.v1` on startup with a slow re-publish; fails fast on a missing/invalid seed. |
 
 Infrastructure roles:
 
@@ -182,6 +185,29 @@ gateway source-selection matrix are in
 [`docs/architecture.md`](docs/architecture.md). Migration status and
 explicitly deferred items are in
 [`docs/phase2/restructure-notes.md`](docs/phase2/restructure-notes.md).
+
+### Operating modes
+
+Phase 2 runs in one of two operating modes selected by the
+`HQQQ_OPERATING_MODE` env var (canonical hierarchical key:
+`OperatingMode`). The same value flows into every Container App / compose
+service so the entire deployment swaps modes together — see the
+hybrid-vs-standalone decision matrix in
+[`docs/phase2/azure-deploy.md` §0.2](docs/phase2/azure-deploy.md).
+
+| | `hybrid` (default) | `standalone` |
+|---|---|---|
+| Live ticks | Bridged from the legacy `hqqq-api` monolith. | `hqqq-ingress` consumes Tiingo IEX directly. |
+| Active basket | Bridged from the legacy monolith. | `hqqq-reference-data` publishes a deterministic repo-controlled seed (~25 N100 names). |
+| External coupling | Requires the monolith to be running. | Self-contained — no monolith in the path. |
+| Required env | (none new) | `Tiingo__ApiKey` on `hqqq-ingress`. |
+| Smoke tightness | `phase2-smoke.{ps1,sh}` / `phase2-azure-smoke.sh` assert reachability + 200s. | Same scripts with `-Mode standalone` / `--mode standalone` additionally poll `/api/quote` until `nav > 0` and `/api/constituents` until `holdings` is non-empty. |
+| Pick when | Demoing alongside the legacy monolith for parity, or no Tiingo creds available. | Phase 2 must run on its own (interview demo, isolated environment). |
+
+Switching modes is a config-only change — no image rebuild required.
+In `docker-compose.phase2.yml` the env var is wired into every Phase 2
+service; in Azure the Bicep `operatingMode` parameter (default
+`hybrid`) is injected into each Container App's environment.
 
 ---
 

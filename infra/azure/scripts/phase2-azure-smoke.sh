@@ -12,6 +12,15 @@
 #   EXPECT_AGGREGATED - "true" (default) requires /api/system/health
 #                       payload .sourceMode == "aggregated", proving the
 #                       gateway is on the native aggregator (not legacy/stub).
+#   MODE              - "hybrid" (default) or "standalone".
+#                       In "standalone" mode the script additionally
+#                       runs a bounded warmup loop (WARMUP_SECONDS) and
+#                       requires /api/quote.nav > 0 and /api/constituents.holdings
+#                       to be a non-empty array, proving the Phase 2 native
+#                       ingress + reference-data are publishing on their own.
+#   WARMUP_SECONDS    - upper-bound warmup window (default 180s) for the
+#                       standalone loop; the script exits as soon as both
+#                       endpoints satisfy the standalone shape.
 #
 # Exit codes:
 #   0 - all probes passed
@@ -21,6 +30,8 @@ set -uo pipefail
 
 GATEWAY_FQDN="${GATEWAY_FQDN:?GATEWAY_FQDN env var is required}"
 EXPECT_AGGREGATED="${EXPECT_AGGREGATED:-true}"
+MODE="${MODE:-hybrid}"
+WARMUP_SECONDS="${WARMUP_SECONDS:-180}"
 
 base="https://${GATEWAY_FQDN}"
 
@@ -70,6 +81,10 @@ require_jq
 printf "\n${color_green}HQQQ Phase 2 Azure smoke${color_reset}\n"
 printf "  gateway base       : %s\n" "$base"
 printf "  expect aggregated  : %s\n" "$EXPECT_AGGREGATED"
+printf "  operating mode     : %s\n" "$MODE"
+if [[ "$MODE" == "standalone" ]]; then
+    printf "  warmup window      : %ss\n" "$WARMUP_SECONDS"
+fi
 
 # ──────────────────────────────────────────────────────────────────
 # 1. /healthz/live + /healthz/ready
@@ -229,6 +244,54 @@ else
     fi
 fi
 rm -f "$body"
+
+# ──────────────────────────────────────────────────────────────────
+# 6. Standalone-mode warmup assertions
+# ──────────────────────────────────────────────────────────────────
+if [[ "$MODE" == "standalone" ]]; then
+    section "6. Standalone warmup (nav>0 & non-empty holdings)"
+
+    deadline=$(( $(date +%s) + WARMUP_SECONDS ))
+    quote_ok=0
+    cons_ok=0
+
+    while (( $(date +%s) < deadline )); do
+        if [[ "$quote_ok" -ne 1 ]]; then
+            body=$(mktemp)
+            code=$(probe_http "/api/quote" "$base/api/quote" "$body")
+            if [[ "$code" == "200" ]] && jq -e '.nav and (.nav > 0)' "$body" >/dev/null 2>&1; then
+                quote_ok=1
+                nav=$(jq -r '.nav' "$body")
+                log_pass "/api/quote : nav=$nav"
+            fi
+            rm -f "$body"
+        fi
+
+        if [[ "$cons_ok" -ne 1 ]]; then
+            body=$(mktemp)
+            code=$(probe_http "/api/constituents" "$base/api/constituents" "$body")
+            if [[ "$code" == "200" ]] && jq -e '.holdings | type == "array" and length > 0' "$body" >/dev/null 2>&1; then
+                cons_ok=1
+                count=$(jq -r '.holdings | length' "$body")
+                log_pass "/api/constituents : holdings.length=$count"
+            fi
+            rm -f "$body"
+        fi
+
+        if [[ "$quote_ok" -eq 1 && "$cons_ok" -eq 1 ]]; then
+            break
+        fi
+
+        sleep 5
+    done
+
+    if [[ "$quote_ok" -ne 1 ]]; then
+        log_fail "/api/quote : did not produce nav>0 within ${WARMUP_SECONDS}s warmup window"
+    fi
+    if [[ "$cons_ok" -ne 1 ]]; then
+        log_fail "/api/constituents : did not produce non-empty holdings within ${WARMUP_SECONDS}s warmup window"
+    fi
+fi
 
 # ──────────────────────────────────────────────────────────────────
 # Summary

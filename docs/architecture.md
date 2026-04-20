@@ -26,9 +26,25 @@ Two deployable "faces" coexist today:
     `pricing.snapshots.v1` and `market.raw_ticks.v1`; bootstraps
     hypertables, continuous aggregates, and retention policies.
   - `hqqq-analytics` (worker) — one-shot report over Timescale.
-  - `hqqq-reference-data` (web) — basket registry, in-memory seed today.
-  - `hqqq-ingress` (worker) — **stub**; Tiingo ingestion still lives in
-    the monolith.
+  - `hqqq-reference-data` (web) — basket registry. In **hybrid** mode
+    keeps an in-memory seed and lets the legacy monolith bridge the
+    active basket. In **standalone** mode loads a deterministic
+    repo-controlled basket seed (~25 N100 names) and publishes a
+    fully-materialized `BasketActiveStateV1` to
+    `refdata.basket.active.v1` on startup with a slow re-publish.
+  - `hqqq-ingress` (worker) — Tiingo IEX ingest. In **hybrid** mode a
+    no-op stub: the legacy monolith still bridges live ticks; if a
+    Tiingo API key is set the worker logs a warning and ignores it
+    (no double-publish). In **standalone** mode a real websocket
+    consumer that publishes `market.raw_ticks.v1` and
+    `market.latest_by_symbol.v1` and fails fast at startup if the
+    Tiingo API key is missing/placeholder.
+
+The two modes are selected by the shared `HQQQ_OPERATING_MODE` env
+var (canonical hierarchical key: `OperatingMode`) and the entire
+deployment swaps modes together — see
+[phase2/azure-deploy.md §0.2](phase2/azure-deploy.md) for the
+hybrid-vs-standalone decision matrix.
 - **Phase 1 monolith (legacy / reference, still present)** — preserved
   and still compilable; still the only path with real Tiingo ingestion,
   basket refresh from external issuer feeds, and corporate-action
@@ -279,10 +295,16 @@ Role split (recap from §1):
 
 ### 4.1 Responsibility split (today)
 
-| Responsibility | Owner today | Notes |
-|---|---|---|
-| Tiingo WS / REST ingestion | `hqqq-api` (monolith) | `hqqq-ingress` is a stub host only |
-| Basket refresh + corp-action adjustment | `hqqq-api` (monolith) | `hqqq-reference-data` only serves an in-memory seed basket |
+The "Owner" column reflects `OperatingMode=hybrid` (the default).
+`OperatingMode=standalone` moves the first two rows in-house: real
+Tiingo ingestion runs in `hqqq-ingress` and a deterministic active
+basket is published by `hqqq-reference-data`. Everything below those
+two rows is unchanged across modes.
+
+| Responsibility | Owner today (hybrid) | Owner in standalone | Notes |
+|---|---|---|---|
+| Tiingo WS / REST ingestion | `hqqq-api` (monolith) | `hqqq-ingress` (real Tiingo IEX websocket + REST snapshot warmup) | Standalone fails fast if `Tiingo__ApiKey` is missing |
+| Basket refresh + corp-action adjustment | `hqqq-api` (monolith) | `hqqq-reference-data` publishes a deterministic seed (no corp-actions); issuer-feed ingest stays out of scope for Phase 2 | Standalone publishes a full `BasketActiveStateV1` to `refdata.basket.active.v1` with a slow re-publish |
 | iNAV compute + Redis materialization | `hqqq-quote-engine` | Real Kafka consumers, writes `hqqq:snapshot:{basketId}` + `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update` |
 | `pricing.snapshots.v1` + `market.raw_ticks.v1` → Timescale | `hqqq-persistence` | Bootstraps hypertables, `quote_snapshots_1m`/`quote_snapshots_5m` continuous aggregates, and retention policies |
 | Latest-state serving (`/api/quote`, `/api/constituents`) | `hqqq-gateway` (Redis) | Per-endpoint `Gateway:Sources:Quote=redis` / `Gateway:Sources:Constituents=redis` |
@@ -293,13 +315,20 @@ Role split (recap from §1):
 
 ### 4.2 Data plane
 
+In **hybrid** mode the legacy monolith bridges Tiingo ticks and the
+active basket onto Kafka. In **standalone** mode the same Kafka
+contracts are produced natively by `hqqq-ingress` and
+`hqqq-reference-data`; the rest of the data plane is identical.
+
 ```text
 Tiingo WebSocket
       |
       v
-[hqqq-api (legacy ingestion)]  --publishes-->  market.raw_ticks.v1
-                                (today)            |
-                                                   v
+[hqqq-api (legacy ingestion, HYBRID)]   ──┐
+[hqqq-ingress (standalone)             ]  ├─►  market.raw_ticks.v1
+[hqqq-reference-data (standalone)      ]  ├─►  refdata.basket.active.v1
+                                          │
+                                          ▼
                                    +======== Kafka =========+
                                    | market.raw_ticks.v1    |  key = symbol    (3 partitions)
                                    | market.latest_by_symbol.v1 (3, compact)   |
@@ -358,15 +387,23 @@ Tiingo WebSocket
 
 ### 4.4 What still lives in the monolith
 
-- Real Tiingo WebSocket / REST ingestion.
+- Real Tiingo WebSocket / REST ingestion **in hybrid mode**.
+  `hqqq-ingress` takes ownership when `HQQQ_OPERATING_MODE=standalone`.
 - Basket refresh from external issuer feeds and corporate-action
-  adjustment.
+  adjustment. `hqqq-reference-data` in standalone mode publishes a
+  *deterministic* repo-controlled basket so the Phase 2 stack runs
+  end-to-end without the monolith, but it deliberately does not yet
+  ingest live issuer feeds or apply corp-actions — that pipeline
+  stays in the monolith and is the next candidate for extraction
+  (Phase 2B).
 - Recorder / benchmark tooling (`Benchmark` module).
 
-These remain single-process today and are the next candidates for
-extraction. `/api/system/health` aggregation has already moved to the
-gateway (D1 native aggregator); the monolith path is now only used as a
-`legacy`/`stub` fallback per `Gateway:Sources:SystemHealth`.
+`/api/system/health` aggregation has already moved to the gateway
+(D1 native aggregator); the monolith path is now only used as a
+`legacy`/`stub` fallback per `Gateway:Sources:SystemHealth`. The D1
+aggregator is mode-aware: in `standalone` it counts `hqqq-ingress`
+and `hqqq-reference-data` as required dependencies (an Idle/Unknown
+child degrades the rollup), in `hybrid` they remain advisory.
 
 
 - **Phase 3** — Kubernetes app-tier operationalization (`Deployment` +

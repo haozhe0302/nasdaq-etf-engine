@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Hqqq.Gateway.Services.Sources;
+using Hqqq.Infrastructure.Hosting;
 using Hqqq.Observability.Health;
 using Hqqq.Observability.Identity;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -29,19 +30,34 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
     private readonly HealthCheckService _localHealth;
     private readonly ServiceIdentity _identity;
     private readonly GatewayHealthOptions _options;
+    private readonly OperatingMode _mode;
     private readonly ILogger<AggregatedSystemHealthSource> _logger;
+
+    /// <summary>
+    /// Service names that are considered <em>required</em> for the
+    /// system-health rollup when the gateway runs in standalone mode.
+    /// In hybrid the legacy monolith bridges these flows, so missing
+    /// Phase 2 services don't drag the status down.
+    /// </summary>
+    private static readonly HashSet<string> StandaloneRequiredServices = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "hqqq-ingress",
+        "hqqq-reference-data",
+    };
 
     public AggregatedSystemHealthSource(
         IServiceHealthClient client,
         HealthCheckService localHealth,
         ServiceIdentity identity,
         IOptions<GatewayHealthOptions> options,
+        OperatingMode mode,
         ILogger<AggregatedSystemHealthSource> logger)
     {
         _client = client;
         _localHealth = localHealth;
         _identity = identity;
         _options = options.Value;
+        _mode = mode;
         _logger = logger;
     }
 
@@ -88,9 +104,36 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
             }
         }
 
-        var topLevel = SystemHealthPayloadBuilder.RollupStatus(dependencies.Select(d => d.Status));
+        var topLevel = ComputeTopLevelStatus(dependencies);
         var json = SystemHealthPayloadBuilder.Build(_identity, topLevel, dependencies);
         return Results.Content(json, "application/json", Encoding.UTF8, statusCode: 200);
+    }
+
+    /// <summary>
+    /// In hybrid mode we delegate to the permissive
+    /// <see cref="SystemHealthPayloadBuilder.RollupStatus"/> (only
+    /// <c>unhealthy</c>/<c>degraded</c> escalate; missing workers stay
+    /// silent). In standalone mode the Phase 2 native services
+    /// (<c>hqqq-ingress</c> + <c>hqqq-reference-data</c>) are
+    /// architecturally required, so any non-healthy state for them
+    /// — including <c>idle</c>/<c>unknown</c> — escalates to
+    /// <c>degraded</c>. This makes the gateway fail the standalone
+    /// smoke-test rollup if either upstream is missing or stale.
+    /// </summary>
+    private string ComputeTopLevelStatus(IReadOnlyList<SystemHealthPayloadBuilder.DependencyEntry> dependencies)
+    {
+        var rollup = SystemHealthPayloadBuilder.RollupStatus(dependencies.Select(d => d.Status));
+        if (_mode != OperatingMode.Standalone) return rollup;
+
+        foreach (var d in dependencies)
+        {
+            if (!StandaloneRequiredServices.Contains(d.Name)) continue;
+            if (d.Status != SystemHealthPayloadBuilder.Status.Healthy)
+            {
+                return SystemHealthPayloadBuilder.Status.Degraded;
+            }
+        }
+        return rollup;
     }
 
     private async Task<SystemHealthPayloadBuilder.DependencyEntry> ProbeServiceAsync(

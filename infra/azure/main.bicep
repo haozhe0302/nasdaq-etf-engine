@@ -230,6 +230,10 @@ param kafkaConsumerGroupPrefix string = 'hqqq'
 @description('Default basket ID surfaced by the gateway.')
 param gatewayBasketId string = 'HQQQ'
 
+@description('Operating mode for Phase 2 services. `hybrid` keeps the legacy monolith bridge for ticks/baskets (default; ingress + reference-data run as stubs). `standalone` activates the native Tiingo ingress and the deterministic basket seed in reference-data so the Phase 2 stack runs without the legacy monolith. Required Tiingo__ApiKey when set to `standalone`.')
+@allowed([ 'hybrid', 'standalone' ])
+param operatingMode string = 'hybrid'
+
 // ── Provision platform resources ─────────────────────────────────
 
 module acrModule 'modules/acr.bicep' = {
@@ -346,6 +350,13 @@ var workerManagementEnv = [
   { name: 'Management__BindAddress', value: '0.0.0.0' }
 ]
 
+// Surfaced to every Phase 2 app so a single Bicep param flips the
+// whole stack between the legacy-monolith bridge and the standalone
+// Phase 2 architecture.
+var operatingModeEnv = [
+  { name: 'OperatingMode', value: operatingMode }
+]
+
 // ── Workers: deploy first so the gateway can reference their FQDNs ──
 
 module refDataApp 'modules/containerApp.bicep' = {
@@ -359,7 +370,7 @@ module refDataApp 'modules/containerApp.bicep' = {
     image: imageRefData
     ingressMode: 'internal'
     targetPort: 8080
-    envVars: union(commonAspNetEnv, commonKafkaEnv, [
+    envVars: union(commonAspNetEnv, commonKafkaEnv, operatingModeEnv, [
       { name: 'ASPNETCORE_ENVIRONMENT', value: 'Production' }
       { name: 'ASPNETCORE_URLS', value: 'http://+:8080' }
     ])
@@ -392,7 +403,7 @@ module ingressApp 'modules/containerApp.bicep' = {
     image: imageIngress
     ingressMode: 'internal'
     targetPort: 8081
-    envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, [
+    envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, operatingModeEnv, [
       { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
       { name: 'Tiingo__WsUrl', value: 'wss://api.tiingo.com/iex' }
       { name: 'Tiingo__RestBaseUrl', value: 'https://api.tiingo.com/iex' }
@@ -448,7 +459,7 @@ module quoteEngineApp 'modules/containerApp.bicep' = {
     image: imageQuoteEngine
     ingressMode: 'internal'
     targetPort: 8081
-    envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, [
+    envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, operatingModeEnv, [
       { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
       { name: 'QuoteEngine__CheckpointPath', value: quoteEngineCheckpointPathValue }
       { name: 'QuoteEngine__CheckpointInterval', value: '00:00:10' }
@@ -487,7 +498,7 @@ module persistenceApp 'modules/containerApp.bicep' = {
     image: imagePersistence
     ingressMode: 'internal'
     targetPort: 8081
-    envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, [
+    envVars: union(commonAspNetEnv, commonKafkaEnv, workerManagementEnv, operatingModeEnv, [
       { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
       { name: 'Persistence__SchemaBootstrapOnStart', value: 'true' }
     ])
@@ -526,7 +537,7 @@ module gatewayApp 'modules/containerApp.bicep' = {
     image: imageGateway
     ingressMode: 'external'
     targetPort: 8080
-    envVars: union(commonAspNetEnv, [
+    envVars: union(commonAspNetEnv, operatingModeEnv, [
       { name: 'ASPNETCORE_ENVIRONMENT', value: 'Production' }
       { name: 'ASPNETCORE_URLS', value: 'http://+:8080' }
       { name: 'Gateway__BasketId', value: gatewayBasketId }

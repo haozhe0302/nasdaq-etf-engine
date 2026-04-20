@@ -114,6 +114,13 @@ param kafkaClientId = 'hqqq-p2-demo'
 param kafkaConsumerGroupPrefix = 'hqqq'
 param gatewayBasketId = 'HQQQ'
 
+// ── Operating mode ───────────────────────────────────────────────
+// `hybrid` keeps the legacy hqqq-api monolith in the bridging role
+// (current Phase 2 demo posture). Switch to `standalone` to run the
+// Phase 2 stack end-to-end with the native Tiingo ingress and the
+// deterministic basket seed (requires a real tiingoApiKey secret).
+param operatingMode = 'hybrid'
+
 // ── Secrets — placeholders so `bicep build` succeeds locally ────
 // The deploy workflow supplies real values via --parameters.
 // Leaving empty strings here would fail the @secure() requirement

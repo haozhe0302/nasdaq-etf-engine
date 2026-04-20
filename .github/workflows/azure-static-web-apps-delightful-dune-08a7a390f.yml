@@ -19,12 +19,26 @@ jobs:
         with:
           submodules: true
           lfs: false
-      - name: Show frontend build target
+      - name: Validate frontend build target
         env:
           URL: ${{ vars.VITE_API_BASE_URL }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
         run: |
-          if [ -z "$URL" ]; then
-            echo "::warning::VITE_API_BASE_URL is not set; frontend will use same-origin API calls."
+          set -euo pipefail
+          # Production deploys (push to main) MUST have VITE_API_BASE_URL
+          # set — otherwise the built bundle would silently ship with
+          # same-origin API calls against the SWA host, which is never
+          # the intended posture for prod. PR previews (including fork
+          # PRs where repo variables may not be exposed) stay non-fatal
+          # so preview builds still succeed.
+          if [[ -z "${URL:-}" ]]; then
+            if [[ "$EVENT_NAME" == "push" && "$REF" == "refs/heads/main" ]]; then
+              echo "::error::VITE_API_BASE_URL is not set. Production deploys to Static Web Apps require it to be configured as a repository variable so the Vite bundle is rebuilt against the correct Phase 2 gateway FQDN."
+              echo "::error::Set it at Repo → Settings → Secrets and variables → Actions → Variables → VITE_API_BASE_URL (e.g. https://<gateway-fqdn>)."
+              exit 1
+            fi
+            echo "::warning::VITE_API_BASE_URL is not set; frontend will use same-origin API calls. Non-fatal for PR preview builds."
           else
             echo "Building hqqq-ui against VITE_API_BASE_URL (length=${#URL})"
           fi

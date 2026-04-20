@@ -14,32 +14,102 @@ document explains *how to use* the resulting workflows day-to-day.
 
 ---
 
+## 0) Operating model (current default: manual-resource rollout)
+
+Two distinct Azure deploy paths coexist in this repo. Pick one per
+environment and stay on it — they target different resource-naming
+conventions and different GitHub Environments.
+
+| Aspect | Rollout-into-existing (default) | Bicep provisioning (legacy) |
+|---|---|---|
+| Workflow | [`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml) | [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml) |
+| GitHub Environment | `phase2` | `phase2-demo` |
+| Who creates Azure resources | Operator, manually in the portal | Workflow, via Bicep |
+| Resource group | `rg-hqqq-p2` | `rg-hqqq-p2-demo-eus-01` |
+| ACR | `acrhqqqp2` | `acrhqqqp2demo01` |
+| Container Apps env | `cae-hqqq-p2` | `cae-hqqq-p2-demo-eus-01` |
+| Redis / Postgres / Event Hubs | Manually provisioned once; settings wired on the Container Apps directly | `data.bicep` provisions and wires them |
+| What the workflow does | `az containerapp update --image ...` on pre-existing apps + `az containerapp job update --image ...` on the pre-existing job | `az deployment group create` over `main.bicep` (and optionally `data.bicep`) |
+| App-level secrets (`Kafka__*`, `Redis__*`, `Timescale__*`, `Tiingo__*`) | On the Azure Container App config — set once in the portal, rotated in the portal | GitHub environment secrets → Bicep `@secure()` params → Container App `secrets` |
+| Idempotent re-run with same `image_tag` | Yes (same image → Container Apps suppresses the new revision) | Yes (Bicep what-if → no-op) |
+
+This document describes the **rollout-into-existing** path as the
+default. The Bicep-provisioning path is retained for reference and
+for environments that still want IaC-driven resource creation; its
+specifics stay in §11 and in the workflow itself. Do **not** run
+both workflows against the same resource group.
+
+### 0.2) Hybrid vs Standalone operating mode
+
+Phase 2 runs in one of two operating modes, selected by the
+`HQQQ_OPERATING_MODE` env var (canonical hierarchical key:
+`OperatingMode`). The mode flows into every Container App as an env
+var (Bicep param `operatingMode`, also set in
+`docker-compose.phase2.yml`) so the entire deployment swaps modes
+together.
+
+| Aspect | `hybrid` (default) | `standalone` |
+|---|---|---|
+| `hqqq-ingress` | Stub. `Tiingo__ApiKey` is logged-then-ignored if set. The legacy `hqqq-api` monolith bridges live ticks. | Real Tiingo IEX websocket consumer. Publishes `market.raw_ticks.v1` and `market.latest_by_symbol.v1`. Fails fast at startup if `Tiingo__ApiKey` is missing/placeholder. |
+| `hqqq-reference-data` | In-memory stub repository. Monolith owns issuer feeds + corp-actions. | Loads a deterministic basket seed (embedded JSON, ~25 N100 names) and publishes a fully-materialized `BasketActiveStateV1` to `refdata.basket.active.v1` on startup with a slow re-publish. Fails fast at startup if the seed is missing/invalid. |
+| Quote engine input | Reads ticks + active basket bridged from the monolith via Kafka. | Reads ticks + active basket produced natively by `hqqq-ingress` and `hqqq-reference-data`. |
+| External coupling | Requires the legacy `hqqq-api` monolith to be running and pumping Kafka. | Self-contained on Azure — the monolith is not in the path. |
+| `/api/system/health` rollup | `ingress` and `refdata` are treated as advisory; their Idle/Unknown state does not drag the gateway to Degraded. | `ingress` and `refdata` are required dependencies; an Idle/Unknown/Degraded child degrades the rollup so smoke catches a broken native component. |
+| Smoke tightness | Local: `phase2-smoke.{ps1,sh}`. Azure: `phase2-azure-smoke.sh`. Both assert reachability + 200s. | Same scripts with `-Mode standalone` / `--mode standalone`. They additionally poll `/api/quote` until `nav > 0` and `/api/constituents` until `holdings` is non-empty (warmup window, default 60s, override via `HQQQ_SMOKE_WARMUP_SECONDS`). |
+| Pick when | You're demoing the Phase 2 surface alongside the legacy monolith for parity, or you don't yet have Tiingo creds + Kafka egress allowed in the target subscription. | The Phase 2 deployment must run on its own (interview demo, isolated environment, hybrid retired). |
+
+Switching modes is a config-only change — no image rebuild required.
+Set `HQQQ_OPERATING_MODE=standalone` (or pass `operatingMode=standalone`
+to the Bicep deploy / set the env var on each Container App) and roll
+the revision. In `standalone` you must also set `Tiingo__ApiKey` on
+the `hqqq-ingress` Container App; everything else has a sensible
+default.
+
+### 0.1) Target Azure resource names (manual-resource model)
+
+The rollout workflow's defaults match these names. Override via
+repo variables only if you deviate:
+
+| Resource | Default name |
+|---|---|
+| Resource group | `rg-hqqq-p2` |
+| Container Registry | `acrhqqqp2` |
+| Container Apps environment | `cae-hqqq-p2` |
+| Container App (gateway) | `ca-hqqq-gateway-p2` |
+| Container App (reference-data) | `ca-hqqq-reference-data-p2` |
+| Container App (ingress) | `ca-hqqq-ingress-p2` |
+| Container App (quote-engine) | `ca-hqqq-quote-engine-p2` |
+| Container App (persistence) | `ca-hqqq-persistence-p2` |
+| Container Apps Job (analytics) | `caj-hqqq-analytics-p2` |
+| Managed Redis | `redis-hqqq-p2` |
+| PostgreSQL Flexible Server | `psql-hqqq-p2` |
+| Event Hubs namespace | `evh-hqqq-p2` |
+| Static Web App | `swa-hqqq-p2` |
+
+---
+
 ## 1) Posture
 
 - **Target**: Azure Container Apps + Azure Container Registry.
 - **Out of scope**: AKS / Helm / any Kubernetes manifests.
-- **Auth**: GitHub OIDC for both image push and Bicep deploy. No
-  long-lived ACR admin credentials in the Phase 2 path. (The
+- **Auth**: GitHub OIDC for both image push and app updates. No
+  long-lived ACR admin credentials, no publish profiles. (The
   legacy [`hqqq-api-docker.yml`](../../.github/workflows/hqqq-api-docker.yml)
   workflow keeps using `ACR_USERNAME` / `ACR_PASSWORD` against
   the legacy ACR — intentionally left alone so Phase 1 stays
   demoable while Phase 2 hardens.)
-- **External dependencies**: Kafka, Redis, TimescaleDB. Their
-  connection strings reach the Container Apps environment as
-  deploy-time secrets. Two provisioning paths are supported:
-  (a) **bring-your-own** — point the workflow at any reachable
-  Kafka / Redis / Postgres and supply connection strings via
-  `phase2-demo` GitHub environment secrets (the historic posture);
-  (b) **bootstrap from Bicep** — set `provision_data_tier=true`
-  and the workflow first runs [`infra/azure/data.bicep`](../../infra/azure/data.bicep)
-  to provision Azure Managed Redis, Azure Database for PostgreSQL
-  Flexible Server (with the TimescaleDB extension allow-listed),
-  and an Event Hubs namespace + the six HQQQ topics — then pipes
-  the resulting connection strings into the app tier. See §11.
+- **External dependencies**: Kafka (Event Hubs), Redis, TimescaleDB
+  (PostgreSQL Flexible Server with the TimescaleDB extension).
+  The rollout-into-existing path expects these to have been
+  provisioned manually in the portal and wired into each Container
+  App's configuration once; the rollout workflow then only changes
+  image tags and does not touch connection strings. The legacy
+  Bicep provisioning path (§11) is still available for environments
+  that want IaC to stand everything up from scratch.
 
 ---
 
-## 2) Standard workflow loop
+## 2) Standard workflow loop (rollout-into-existing)
 
 ```mermaid
 sequenceDiagram
@@ -51,34 +121,110 @@ sequenceDiagram
     GH->>GH: phase2-images.yml — dotnet build+test
     GH->>ACR: az acr login (OIDC)
     GH->>ACR: docker push hqqq-*:vsha-XXXX
-    Dev->>GH: workflow_dispatch phase2-deploy.yml<br/>image_tag=vsha-XXXX
-    GH->>GH: preflight (secrets, RG, ACR, 6-image tag check)
+    Dev->>GH: workflow_dispatch phase2-rollout-existing.yml<br/>image_tag=vsha-XXXX
+    GH->>GH: preflight (repo secrets, RG, ACR, CAE, 5 apps, 1 job, 6-image tag)
     GH->>Azure: az login (OIDC)
-    GH->>Azure: az bicep build
-    GH->>Azure: az deployment group what-if
-    GH->>Azure: az deployment group create
-    GH->>Azure: post-deploy smoke (HTTPS) against gatewayFqdn
-    GH->>Azure: optional analytics dry-run
+    GH->>Azure: az containerapp update --image (x5, matrix)
+    GH->>Azure: az containerapp job update --image (analytics)
+    GH->>Azure: post-rollout smoke (HTTPS) against gateway FQDN
     GH->>Azure: optional gateway rollback assist (on smoke failure)
-    Azure-->>Dev: structured deploy + smoke summary
+    Azure-->>Dev: structured rollout + smoke summary
 ```
 
 ---
 
-## 3) Deploying a new revision
+## 3) Deploying a new revision (rollout-into-existing)
 
 1. Merge code to `main` (or run `phase2-images.yml` manually).
 2. Wait for `phase2-images.yml` to push tagged images. Note the
    `vsha-...` tag from the run summary, e.g. `vsha-abcdef0`.
-3. Run `phase2-deploy.yml` with `image_tag=vsha-abcdef0`. Optional:
-   set `what_if_only=true` first for a dry run.
-4. Read the run summary for the gateway URL and the smoke
-   commands.
+3. Run `phase2-rollout-existing.yml` with `image_tag=vsha-abcdef0`.
+   Optional inputs:
+   - `services` — CSV subset when only some apps need to roll
+     (defaults to `all`).
+   - `update_analytics_job` — defaults to `true`.
+   - `skip_smoke` — defaults to `false`.
+   - `rollback_on_smoke_failure` — defaults to `false`; flip to
+     `true` to auto-fall-back to the prior gateway revision on
+     smoke failure.
+4. Read the run summary for the gateway URL and the per-app new
+   revision names.
 
-The deploy is *idempotent*: running with the same `image_tag`
-twice is a no-op for the images, and Bicep only re-applies what
-changed. Container Apps creates a new revision when env vars or
-the image change.
+The rollout is *idempotent*: running with the same `image_tag`
+twice is a no-op (Container Apps suppresses a new revision when
+the image digest is unchanged and no other template field
+changed).
+
+### 3a) First-deploy sequence (manual-resource model)
+
+This is the one-time bootstrap when `rg-hqqq-p2` is freshly
+created. Every step is in the Azure portal (or `az` CLI) unless
+stated otherwise:
+
+1. **Create the resource group.**
+   `az group create --name rg-hqqq-p2 --location <region>`.
+2. **Create the ACR** `acrhqqqp2` (Standard SKU is fine),
+   `adminUserEnabled=false` (OIDC only).
+3. **Create the dependency resources:** Managed Redis
+   (`redis-hqqq-p2`), PostgreSQL Flexible Server (`psql-hqqq-p2`)
+   with the TimescaleDB extension allow-listed and a `hqqq`
+   database, Event Hubs namespace (`evh-hqqq-p2`) with the six
+   topics listed in [`topics.md`](topics.md), and (for the UI)
+   Static Web App (`swa-hqqq-p2`). If you prefer IaC for this
+   step, a one-shot run of the legacy `phase2-deploy.yml` with
+   `provision_data_tier=true` against a separate RG is still
+   valid — then import the resulting resources into the portal
+   conventions. See §11.
+4. **Create the Container Apps environment** `cae-hqqq-p2` in the
+   same RG. Attach it to your preferred Log Analytics workspace.
+5. **Create the five Container Apps** in `cae-hqqq-p2` with
+   placeholder images (e.g.
+   `mcr.microsoft.com/k8se/quickstart:latest` for dashboards —
+   they will be overwritten on the first rollout):
+   - `ca-hqqq-gateway-p2` (external ingress on :8080)
+   - `ca-hqqq-reference-data-p2` (internal ingress, :8080)
+   - `ca-hqqq-ingress-p2` (no ingress)
+   - `ca-hqqq-quote-engine-p2` (internal ingress, :8080)
+   - `ca-hqqq-persistence-p2` (no ingress)
+
+   Attach a user-assigned managed identity (UAMI) to each, grant
+   the UAMI `AcrPull` on `acrhqqqp2`, and set each app's registry
+   configuration to pull from `acrhqqqp2.azurecr.io` using that
+   UAMI.
+6. **Create the analytics Container Apps Job**
+   `caj-hqqq-analytics-p2` in the same env, `triggerType=Manual`,
+   `parallelism=1`, `replicaCompletionCount=1`,
+   `replicaTimeout=1800`, same UAMI/ACR config as the apps.
+7. **Wire app-level settings and secrets on each Container App**
+   (portal → Settings → Secrets / Containers). Never set these in
+   GitHub — this workflow does not rotate them:
+   - `Kafka__BootstrapServers`, `Kafka__SecurityProtocol`,
+     `Kafka__SaslMechanism`, `Kafka__SaslUsername`,
+     `Kafka__SaslPassword` (on reference-data, ingress,
+     quote-engine, persistence)
+   - `Redis__Configuration` (on gateway, quote-engine)
+   - `Timescale__ConnectionString` (on persistence, analytics)
+   - `Tiingo__ApiKey` (on ingress, optional)
+   - `Analytics__Mode` and related knobs (on the analytics job)
+8. **Grant the GitHub OIDC federated app role access on
+   `rg-hqqq-p2`**: `Container Apps Contributor` (or `Contributor`
+   if you want a single RBAC), plus `AcrPush` on `acrhqqqp2` so
+   `phase2-images.yml` can push.
+9. **Configure the GitHub Environment `phase2`** and the repo
+   variables / secrets listed in §8a. No environment secrets are
+   required for the rollout workflow.
+10. **Run `phase2-images.yml`** on the target commit. Note the
+    resulting `vsha-...` tag.
+11. **Run `phase2-rollout-existing.yml`** with that tag. Preflight
+    will fail fast (with an aggregated list) if any of the
+    resources from steps 1–6 are still missing.
+12. **First-time Timescale extension creation** (one-off, per
+    database): run
+    `CREATE EXTENSION IF NOT EXISTS timescaledb;` against
+    `psql-hqqq-p2` before relying on persistence schema
+    bootstrap. Same one-off as the Bicep path (§11).
+
+After this, every subsequent release is just steps 10 + 11.
 
 ---
 
@@ -151,10 +297,50 @@ No Bicep template changes required.
 
 ---
 
-## 7) What the workflow validates automatically vs. what stays manual
+## 7) What each workflow validates automatically vs. what stays manual
 
-The `phase2-deploy.yml` pipeline now enforces a release-hardening gate.
-Be honest about what it covers and what it does not:
+Two Phase 2 workflows exist; each enforces a different gate. Be
+honest about which one is running and what it does not cover.
+
+### 7.1) `phase2-rollout-existing.yml` (default)
+
+**Automated (workflow-enforced):**
+
+- Required GitHub repo secrets are present and non-empty
+  (`AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID`).
+- Resource group exists (not created by the workflow).
+- ACR exists and is reachable.
+- Container Apps environment exists.
+- All five target Container Apps exist.
+- Analytics Container Apps Job exists.
+- Requested `image_tag` is published in ACR for **all six** Phase 2
+  images (one aggregated error if any are missing).
+- `az containerapp update --image` on each app (matrix, partial-set
+  selectable via `services`).
+- `az containerapp job update --image` on the analytics job (toggle
+  via `update_analytics_job`).
+- Post-rollout gateway smoke (same probe script as the legacy path):
+  `/healthz/live`, `/healthz/ready`, `/api/system/health` with
+  `sourceMode=="aggregated"` assertion, `/api/quote`,
+  `/api/constituents`, `/api/history?range=1D` with JSON-shape
+  assertion.
+- Optional gateway-only revision rollback assist (flip traffic back
+  to the pre-rollout revision captured in preflight) when
+  `rollback_on_smoke_failure=true`.
+
+**Still manual:**
+
+- Creation and configuration of every Azure resource in §0.1.
+- Rotation of app-level secrets (`Kafka__*`, `Redis__*`,
+  `Timescale__*`, `Tiingo__*`) on each Container App.
+- Analytics job execution (the workflow updates the job image but
+  does not start a run; kick a window via `az containerapp job
+  start` per §4).
+- Custom domain + TLS binding on the gateway external ingress.
+- Live SignalR fan-out validation.
+- Confirming real data flow (vs. documented cold-start 503s).
+
+### 7.2) `phase2-deploy.yml` (legacy Bicep provisioning)
 
 **Automated (workflow-enforced):**
 
@@ -169,11 +355,7 @@ Be honest about what it covers and what it does not:
 - Structured deployment summary (deployment name, image tag, RG,
   Container Apps env, gateway app + FQDN, gateway latest revision,
   analytics job).
-- Post-deploy gateway smoke: `/healthz/live`, `/healthz/ready`,
-  `/api/system/health` with `sourceMode=="aggregated"` assertion (so a
-  silent fall-back to the legacy/stub adapter is caught), `/api/quote`,
-  `/api/constituents`, `/api/history?range=1D` with JSON-shape
-  assertion.
+- Post-deploy gateway smoke (same probe script as the rollout path).
 - Optional analytics dry-run over a tight one-hour window (when
   `run_analytics_smoke=true`).
 - Optional gateway-only revision rollback assist (when
@@ -252,9 +434,42 @@ security configuration").
 
 ## 8a) Required GitHub Secrets / Variables for Azure deployment
 
-Authoritative list for the `phase2-deploy.yml` workflow. Anything
-marked **required** is enforced by the preflight job — the workflow
-fails fast (with one aggregated error) if any are missing or empty.
+### 8a.1) For `phase2-rollout-existing.yml` (default)
+
+Authoritative list. Anything marked **required** is enforced by
+the preflight job — the workflow fails fast (with one aggregated
+error) if any are missing or empty.
+
+**Repository secrets (required):**
+
+- `AZURE_CLIENT_ID` — federated credential for OIDC.
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+
+**GitHub Environment `phase2` secrets: none required.**
+App-level secrets (`Kafka__*`, `Redis__*`, `Timescale__*`,
+`Tiingo__*`) live on the Azure Container Apps themselves, not in
+GitHub. The environment exists only for optional approval
+reviewers.
+
+**Repository variables (with workflow-side defaults — set only to
+override):**
+
+- `PHASE2_RESOURCE_GROUP` — default `rg-hqqq-p2`.
+- `PHASE2_ACR_NAME` — default `acrhqqqp2`.
+- `PHASE2_CAE_NAME` — default `cae-hqqq-p2`.
+- `PHASE2_GATEWAY_APP` — default `ca-hqqq-gateway-p2`.
+- `PHASE2_REFDATA_APP` — default `ca-hqqq-reference-data-p2`.
+- `PHASE2_INGRESS_APP` — default `ca-hqqq-ingress-p2`.
+- `PHASE2_QUOTE_APP` — default `ca-hqqq-quote-engine-p2`.
+- `PHASE2_PERSISTENCE_APP` — default `ca-hqqq-persistence-p2`.
+- `PHASE2_ANALYTICS_JOB` — default `caj-hqqq-analytics-p2`.
+- `PHASE2_ENVIRONMENT_NAME` — default `phase2`.
+
+Same repo variables also feed `phase2-images.yml`
+(`PHASE2_ACR_NAME` only).
+
+### 8a.2) For `phase2-deploy.yml` (legacy Bicep provisioning)
 
 **Repository secrets (required):**
 
@@ -276,6 +491,8 @@ fails fast (with one aggregated error) if any are missing or empty.
 
 - `TIINGO_API_KEY` — only required if `hqqq-ingress` is configured to
   consume the Tiingo IEX feed; defaults to empty.
+- `POSTGRES_ADMIN_PASSWORD` — required only when
+  `provision_data_tier=true` (one-shot bootstrap).
 
 **Repository variables (with workflow-side defaults):**
 
@@ -575,3 +792,63 @@ Event Hubs Standard 1 TU ≈ $11). Standby / HA is off, geo-redundant
 backup is off, and Event Hubs auto-inflate is off, so the bill is
 predictable. Override per environment via
 `data.<env>.bicepparam` when prod sizing is needed.
+
+---
+
+## 12) Migrating from `phase2-deploy.yml` to `phase2-rollout-existing.yml`
+
+This section exists for operators who historically drove Phase 2
+through the Bicep provisioning workflow and are switching to the
+manual-resource operating model documented in §0.
+
+### 12.1 Workflow mapping
+
+| Old (`phase2-deploy.yml`) | New (`phase2-rollout-existing.yml`) |
+|---|---|
+| `preflight` (secrets, RG, ACR, 6-image) | `preflight` (repo secrets, RG, ACR, CAE, 5 apps, 1 job, 6-image) |
+| `provision-data` (data.bicep) | n/a — manually provision Redis / Postgres / Event Hubs in the portal once |
+| `deploy` (`az deployment group create` over `main.bicep`) | `rollout` matrix (`az containerapp update --image`, 5 apps) + `rollout-job` (`az containerapp job update --image`, 1 job) |
+| `smoke` (reuses `infra/azure/scripts/phase2-azure-smoke.sh`) | `smoke` (**same** script, reused verbatim) |
+| `rollback-assist` (pick "most recent other" revision) | `rollback-assist` (flip to the pre-rollout revision captured in preflight — deterministic) |
+
+### 12.2 One-time GitHub configuration
+
+1. Create a new GitHub Environment named `phase2` (Repo →
+   Settings → Environments → New environment). Add optional
+   reviewers if you want approval gating on rollouts; no
+   environment secrets are required.
+2. Make sure repo secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+   `AZURE_SUBSCRIPTION_ID` already exist (they are shared with
+   the legacy workflow).
+3. Override the resource-name repo variables from §8a.1 only if
+   your portal naming does not match the defaults.
+4. Grant the OIDC federated app registration `AcrPush` on
+   `acrhqqqp2` and `Container Apps Contributor` (or
+   `Contributor`) on `rg-hqqq-p2`. The legacy app registration
+   scoped to `rg-hqqq-p2-demo-eus-01` keeps working in parallel
+   — nothing to revoke.
+
+### 12.3 First rollout against existing resources
+
+1. Run `phase2-images.yml` on the target commit and note the
+   `vsha-...` tag.
+2. Run `phase2-rollout-existing.yml` with that tag. Preflight
+   will fail fast with an aggregated list if any resource is
+   still missing or misnamed — fix in the portal, re-run.
+3. On green smoke, the rollout is complete. The gateway FQDN,
+   per-app new revision names, and the analytics job image are
+   all printed in the run summary.
+
+### 12.4 Coexistence
+
+Both workflows can stay in the repo indefinitely; they target
+different RGs / ACRs / GitHub Environments and will not conflict.
+Pick one per environment:
+
+- New environments and the documented Phase 2 surface —
+  `phase2-rollout-existing.yml` against `rg-hqqq-p2`.
+- Any remaining `*-demo-*` environment still using IaC —
+  `phase2-deploy.yml` against `rg-hqqq-p2-demo-eus-01`.
+
+The `phase2-demo` GitHub Environment and its secrets can remain
+untouched; they are not required by the new workflow.

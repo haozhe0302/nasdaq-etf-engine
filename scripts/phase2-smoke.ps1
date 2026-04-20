@@ -7,14 +7,24 @@
 #   a clean, explicit result rather than a hard failure.
 #
 # Usage:
-#   .\scripts\phase2-smoke.ps1
+#   .\scripts\phase2-smoke.ps1                         # hybrid (default)
+#   .\scripts\phase2-smoke.ps1 -Mode standalone        # extra warmup checks
 #
 # Environment overrides:
 #   HQQQ_GATEWAY_BASE_URL (default: http://localhost:5030)
+#   HQQQ_SMOKE_WARMUP_SECONDS (default: 180; standalone-mode warmup window)
 #
 # Exit codes:
 #   0  — no critical failures (warnings are allowed)
-#   1  — a critical precondition failed (e.g. docker/compose not reachable)
+#   1  — a critical precondition failed (e.g. docker/compose not reachable,
+#                                         or standalone warmup expectations
+#                                         not satisfied within the window)
+
+[CmdletBinding()]
+param(
+    [ValidateSet("hybrid", "standalone")]
+    [string]$Mode = "hybrid"
+)
 
 $ErrorActionPreference = "Continue"
 
@@ -54,9 +64,20 @@ if ([string]::IsNullOrWhiteSpace($gatewayBase)) {
     $gatewayBase = "http://localhost:5030"
 }
 
+$warmupSeconds = $env:HQQQ_SMOKE_WARMUP_SECONDS
+if ([string]::IsNullOrWhiteSpace($warmupSeconds)) {
+    $warmupSeconds = 180
+} else {
+    $warmupSeconds = [int]$warmupSeconds
+}
+
 Write-Host ""
 Write-Host "HQQQ Phase 2 smoke helper" -ForegroundColor Green
-Write-Host "  gateway base : $gatewayBase"
+Write-Host "  gateway base    : $gatewayBase"
+Write-Host "  operating mode  : $Mode"
+if ($Mode -eq "standalone") {
+    Write-Host "  warmup window   : ${warmupSeconds}s"
+}
 
 # ------------------------------------------------------------------
 # 1. Docker compose infra reachable
@@ -226,6 +247,55 @@ if ([string]::IsNullOrWhiteSpace($analyticsStart) -or [string]::IsNullOrWhiteSpa
         }
     } finally {
         Pop-Location
+    }
+}
+
+# ------------------------------------------------------------------
+# 6. Standalone-mode warmup assertions
+# ------------------------------------------------------------------
+if ($Mode -eq "standalone") {
+    Write-Section "6. Standalone warmup (nav>0 & non-empty holdings)"
+
+    $deadline = (Get-Date).AddSeconds($warmupSeconds)
+    $quoteOk = $false
+    $consOk  = $false
+
+    while ((Get-Date) -lt $deadline) {
+        if (-not $quoteOk) {
+            try {
+                $resp = Invoke-WebRequest -Uri "$gatewayBase/api/quote" -Method GET -TimeoutSec 5 -ErrorAction Stop
+                if ($resp.StatusCode -eq 200) {
+                    $payload = $resp.Content | ConvertFrom-Json
+                    if ($payload.nav -ne $null -and [decimal]$payload.nav -gt 0) {
+                        Write-Pass "/api/quote : nav=$($payload.nav)"
+                        $quoteOk = $true
+                    }
+                }
+            } catch { }
+        }
+
+        if (-not $consOk) {
+            try {
+                $resp = Invoke-WebRequest -Uri "$gatewayBase/api/constituents" -Method GET -TimeoutSec 5 -ErrorAction Stop
+                if ($resp.StatusCode -eq 200) {
+                    $payload = $resp.Content | ConvertFrom-Json
+                    if ($payload.holdings -and $payload.holdings.Count -gt 0) {
+                        Write-Pass "/api/constituents : holdings.length=$($payload.holdings.Count)"
+                        $consOk = $true
+                    }
+                }
+            } catch { }
+        }
+
+        if ($quoteOk -and $consOk) { break }
+        Start-Sleep -Seconds 5
+    }
+
+    if (-not $quoteOk) {
+        Write-Fail "/api/quote : did not produce nav>0 within ${warmupSeconds}s warmup window" -Critical
+    }
+    if (-not $consOk) {
+        Write-Fail "/api/constituents : did not produce non-empty holdings within ${warmupSeconds}s warmup window" -Critical
     }
 }
 

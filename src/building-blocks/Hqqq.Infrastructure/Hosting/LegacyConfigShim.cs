@@ -16,6 +16,12 @@ public static class LegacyConfigShim
         ("TIINGO_REST_BASE_URL",   "Tiingo:RestBaseUrl"),
         ("KAFKA_BOOTSTRAP_SERVERS","Kafka:BootstrapServers"),
         ("REDIS_CONFIGURATION",    "Redis:Configuration"),
+        // Phase 2 standalone-mode toggle. The hierarchical form
+        // OperatingMode (scalar) is accepted directly by
+        // OperatingModeRegistration; the flat HQQQ_OPERATING_MODE alias
+        // mirrors the existing Phase 1 HQQQ_* convention so operators
+        // can stay in one naming scheme across both phases.
+        ("HQQQ_OPERATING_MODE",    "OperatingMode"),
     ];
 
     /// <summary>

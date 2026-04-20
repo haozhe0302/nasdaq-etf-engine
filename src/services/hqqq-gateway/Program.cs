@@ -12,6 +12,7 @@ builder.Configuration.AddLegacyFlatKeyFallback();
 builder.Services.AddHqqqRedis(builder.Configuration);
 builder.Services.AddHqqqRedisConnection();
 builder.Services.AddHqqqTimescale(builder.Configuration);
+builder.Services.AddHqqqOperatingMode(builder.Configuration);
 
 // Phase 2D1 — shared observability: ServiceIdentity, HqqqMetrics,
 // HealthChecks (self/live), Prometheus MeterProvider exporter.

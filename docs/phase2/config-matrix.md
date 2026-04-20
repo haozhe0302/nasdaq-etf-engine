@@ -27,10 +27,24 @@ Cross-references:
 
 | Section | Key | Where |
 |---------|-----|-------|
+| Operating mode | `OperatingMode` (canonical) or `HQQQ_OPERATING_MODE` (legacy flat alias) | env / `C` / `B` |
 | Kafka | `Kafka__BootstrapServers`, `Kafka__ClientId`, `Kafka__ConsumerGroupPrefix` | env / `C` / `B` |
 | Kafka (auth, optional) | `Kafka__SecurityProtocol`, `Kafka__SaslMechanism`, `Kafka__SaslUsername`, `Kafka__SaslPassword`, `Kafka__EnableTopicBootstrap` | env (operator-set) |
 | Redis | `Redis__Configuration` | env / `C` / `B` |
 | Timescale | `Timescale__ConnectionString` | env / `C` / `B` |
+
+> **Operating mode (Phase 2).** `OperatingMode=hybrid` (default) keeps
+> `hqqq-ingress` and `hqqq-reference-data` as stubs so the legacy
+> `hqqq-api` monolith remains the source of truth for live ticks and
+> the active basket. `OperatingMode=standalone` activates the Phase 2
+> native paths: `hqqq-ingress` consumes the Tiingo IEX websocket and
+> publishes `market.raw_ticks.v1` + `market.latest_by_symbol.v1`, and
+> `hqqq-reference-data` loads a deterministic basket seed and publishes
+> `refdata.basket.active.v1`. In standalone mode services fail fast
+> when their required native dependencies are missing (e.g. a Tiingo
+> API key for ingress, a parseable seed for reference-data). See
+> [`docs/phase2/azure-deploy.md` §0.2](azure-deploy.md) for the
+> hybrid-vs-standalone decision matrix.
 
 > **Kafka auth posture.** When `Kafka__SecurityProtocol` is unset (local
 > docker-compose), every producer/consumer/admin client connects
@@ -151,13 +165,24 @@ Dependencies:
 
 ## `hqqq-reference-data` (web)
 
-Basket registry. In-memory seed today; issuer feeds + corp-action
-pipeline still live in the legacy monolith.
+Basket registry. Behaviour depends on `OperatingMode`:
+- **Hybrid** (default): in-memory stub repository. The legacy
+  `hqqq-api` monolith owns issuer feeds, corp-action handling, and
+  publishing the active basket downstream.
+- **Standalone**: loads a deterministic basket seed (embedded
+  `Resources/basket-seed.json` by default; overridable with
+  `ReferenceData__Standalone__SeedPath`), exposes it via
+  `/api/basket/current`, and publishes a fully-materialized
+  `BasketActiveStateV1` to `refdata.basket.active.v1` on startup with a
+  slow re-publish (default every 5 min).
 
 | Env var | Required? | Default | Purpose |
 |---------|-----------|---------|---------|
 | `ASPNETCORE_URLS` | yes (containers) | `http://+:8080` (B) | Bind address. |
-| `Kafka__*` | optional today | — | Reserved for future basket-event publishing. |
+| `OperatingMode` | optional | `hybrid` | `hybrid` or `standalone`. Inherited from the shared `HQQQ_OPERATING_MODE` (env / C / B). |
+| `Kafka__BootstrapServers` | required in `standalone` | — | Producer for `refdata.basket.active.v1`. |
+| `ReferenceData__Standalone__SeedPath` | optional | empty (use embedded seed) | Filesystem path to a basket-seed JSON that overrides the embedded one. Useful for iterating on demo content without rebuilding the image. |
+| `ReferenceData__Standalone__RepublishIntervalSeconds` | optional | `300` (clamped to ≥ 30) | Slow re-publish cadence on the compacted active-basket topic. |
 | `Redis__Configuration` | optional today | — | Reserved for future basket-state mirror. |
 | `Timescale__ConnectionString` | optional today | — | Reserved for future basket persistence. |
 
@@ -167,24 +192,45 @@ pipeline still live in the legacy monolith.
 | Containerized (D3) | `hqqq-reference-data:8080` | `5020` (host) |
 | Azure Container Apps (D4) | `<referenceDataInternalFqdn>` (internal-only) | none |
 
-Dependencies (today): none beyond startup config binding. The gateway
-aggregator scrapes `/healthz/ready`.
+Dependencies:
+- **Hybrid**: none beyond startup config binding. The gateway
+  aggregator scrapes `/healthz/ready`.
+- **Standalone**: produces to Kafka topic `refdata.basket.active.v1`
+  (compacted, key = basket id). Startup fails fast on a missing or
+  invalid seed (so an unhealthy revision never goes Ready). The
+  readiness probe (`basket-seed`) exposes the loaded basket id,
+  version, as-of date, fingerprint, constituent count, and source.
 
 ---
 
 ## `hqqq-ingress` (worker)
 
-Tiingo ingest worker — **stub** today. Real Tiingo ingestion still
-lives in the legacy `hqqq-api` monolith. The host runs to expose its
-management surface so the gateway aggregator can include it in
-`/api/system/health`.
+Tiingo ingest worker. Behaviour depends on `OperatingMode`:
+- **Hybrid** (default): no-op stub. The legacy `hqqq-api` monolith
+  bridges live ticks. If `Tiingo__ApiKey` is set in hybrid mode the
+  worker logs a single warning and ignores the key (avoids
+  double-publish / split-brain with the monolith).
+- **Standalone**: connects to the Tiingo IEX websocket, runs an
+  optional REST snapshot warmup so consumers see a baseline price
+  before the first live tick, and publishes both `market.raw_ticks.v1`
+  (time-series) and `market.latest_by_symbol.v1` (compacted, key =
+  symbol) for every observed tick. Reconnects with bounded
+  exponential backoff. Fails fast at startup if `Tiingo__ApiKey` is
+  missing or a placeholder.
 
 | Env var | Required? | Default | Purpose |
 |---------|-----------|---------|---------|
-| `Tiingo__ApiKey` | required for real ingestion (deferred) | empty | When live ingestion is wired. |
+| `OperatingMode` | optional | `hybrid` | Inherited from `HQQQ_OPERATING_MODE`. Selects stub-vs-live behaviour. |
+| `Tiingo__ApiKey` | **required in standalone**, ignored in hybrid | empty | Personal Tiingo IEX API key. Standalone fail-fast also rejects placeholder values like `your_api_key`, `<set tiingo api key>`, `changeme`. |
 | `Tiingo__WsUrl` | optional | `wss://api.tiingo.com/iex` | Tiingo IEX WebSocket. |
-| `Tiingo__RestBaseUrl` | optional | `https://api.tiingo.com/iex` | Tiingo IEX REST. |
-| `Kafka__BootstrapServers` | required when live | — | Will produce `market.raw_ticks.v1` and `market.latest_by_symbol.v1`. |
+| `Tiingo__RestBaseUrl` | optional | `https://api.tiingo.com/iex` | Tiingo IEX REST (snapshot warmup). |
+| `Tiingo__Symbols` | optional | empty → falls back to a top-25 default that mirrors the standalone basket seed | Comma/semicolon-separated subscription override. |
+| `Tiingo__SnapshotOnStartup` | optional | `true` | Disable the REST warmup (e.g. in tests). |
+| `Tiingo__ReconnectBaseDelaySeconds` | optional | `5` | Initial websocket reconnect delay. |
+| `Tiingo__MaxReconnectDelaySeconds` | optional | `60` | Reconnect backoff cap. |
+| `Tiingo__StaleAfterSeconds` | optional | `60` | If no tick is observed for this long, `/healthz/ready` reports `Degraded`. |
+| `Tiingo__WebSocketThresholdLevel` | optional | `6` | Tiingo IEX threshold (matches the legacy monolith / free tier). |
+| `Kafka__BootstrapServers` | required in standalone | — | Producer for `market.raw_ticks.v1` and `market.latest_by_symbol.v1`. |
 | `Management__*` | yes (containers) | as for quote-engine | Management host. |
 
 | Surface | Container DNS:port | External port |
@@ -193,7 +239,13 @@ management surface so the gateway aggregator can include it in
 | Containerized (D3) | `hqqq-ingress:8081` | `5081` (host) |
 | Azure Container Apps (D4) | `<ingressInternalFqdn>` (internal-only) | none |
 
-Dependencies: none on the data plane today (stub).
+Dependencies:
+- **Hybrid**: none on the data plane (stub).
+- **Standalone**: outbound HTTPS to Tiingo (REST + WSS) and produces
+  to Kafka topics `market.raw_ticks.v1` (key = symbol) and
+  `market.latest_by_symbol.v1` (compacted, key = symbol). Health
+  surface (`ingress-upstream`) reports `isUpstreamConnected`,
+  `ticksIngested`, `lastDataUtc`, and `lastError`/`lastErrorAtUtc`.
 
 ---
 

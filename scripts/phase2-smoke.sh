@@ -8,19 +8,39 @@
 #   a clean, explicit result rather than a hard failure.
 #
 # Usage:
-#   ./scripts/phase2-smoke.sh
+#   ./scripts/phase2-smoke.sh                            # hybrid (default)
+#   ./scripts/phase2-smoke.sh --mode standalone          # extra warmup checks
+#   MODE=standalone ./scripts/phase2-smoke.sh            # same via env
 #
 # Environment overrides:
-#   HQQQ_GATEWAY_BASE_URL (default: http://localhost:5030)
+#   HQQQ_GATEWAY_BASE_URL     (default: http://localhost:5030)
+#   HQQQ_SMOKE_WARMUP_SECONDS (default: 180; standalone-mode warmup window)
 #
 # Exit codes:
 #   0  — no critical failures (warnings are allowed)
-#   1  — a critical precondition failed (e.g. docker/compose not reachable)
+#   1  — a critical precondition failed (e.g. docker/compose not reachable,
+#                                         or standalone warmup expectations
+#                                         not satisfied within the window)
 
 set -u
 
 critical_failures=0
 warnings=0
+
+mode="${MODE:-hybrid}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --mode) mode="${2:-hybrid}"; shift 2 ;;
+        --mode=*) mode="${1#*=}"; shift ;;
+        *) shift ;;
+    esac
+done
+if [ "$mode" != "hybrid" ] && [ "$mode" != "standalone" ]; then
+    printf "Invalid --mode '%s' (expected 'hybrid' or 'standalone')\n" "$mode" >&2
+    exit 2
+fi
+
+warmup_seconds="${HQQQ_SMOKE_WARMUP_SECONDS:-180}"
 
 color_reset="\033[0m"
 color_green="\033[32m"
@@ -38,7 +58,11 @@ fail()    { printf "  ${color_red}[FAIL]${color_reset} %s\n" "$1"; critical_fail
 gateway_base="${HQQQ_GATEWAY_BASE_URL:-http://localhost:5030}"
 
 printf "\n${color_green}HQQQ Phase 2 smoke helper${color_reset}\n"
-printf "  gateway base : %s\n" "$gateway_base"
+printf "  gateway base    : %s\n" "$gateway_base"
+printf "  operating mode  : %s\n" "$mode"
+if [ "$mode" = "standalone" ]; then
+    printf "  warmup window   : %ss\n" "$warmup_seconds"
+fi
 
 # ------------------------------------------------------------------
 # 1. Docker compose infra reachable
@@ -201,6 +225,59 @@ else
         2) warn "analytics exited 2 — unsupported Analytics__Mode" ;;
         *) warn "analytics exited $rc" ;;
     esac
+fi
+
+# ------------------------------------------------------------------
+# 6. Standalone-mode warmup assertions
+# ------------------------------------------------------------------
+if [ "$mode" = "standalone" ]; then
+    section "6. Standalone warmup (nav>0 & non-empty holdings)"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        fail "jq is not installed; cannot validate standalone payload shape"
+    else
+        deadline=$(( $(date +%s) + warmup_seconds ))
+        quote_ok=0
+        cons_ok=0
+
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            if [ "$quote_ok" -ne 1 ]; then
+                body="$(mktemp)"
+                code="$(curl -s -o "$body" -w '%{http_code}' --max-time 5 \
+                    "$gateway_base/api/quote" 2>/dev/null || echo '000')"
+                if [ "$code" = "200" ] && jq -e '.nav and (.nav > 0)' "$body" >/dev/null 2>&1; then
+                    nav="$(jq -r '.nav' "$body")"
+                    pass "/api/quote : nav=$nav"
+                    quote_ok=1
+                fi
+                rm -f "$body"
+            fi
+
+            if [ "$cons_ok" -ne 1 ]; then
+                body="$(mktemp)"
+                code="$(curl -s -o "$body" -w '%{http_code}' --max-time 5 \
+                    "$gateway_base/api/constituents" 2>/dev/null || echo '000')"
+                if [ "$code" = "200" ] && jq -e '.holdings | type == "array" and length > 0' "$body" >/dev/null 2>&1; then
+                    count="$(jq -r '.holdings | length' "$body")"
+                    pass "/api/constituents : holdings.length=$count"
+                    cons_ok=1
+                fi
+                rm -f "$body"
+            fi
+
+            if [ "$quote_ok" -eq 1 ] && [ "$cons_ok" -eq 1 ]; then
+                break
+            fi
+            sleep 5
+        done
+
+        if [ "$quote_ok" -ne 1 ]; then
+            fail "/api/quote : did not produce nav>0 within ${warmup_seconds}s warmup window"
+        fi
+        if [ "$cons_ok" -ne 1 ]; then
+            fail "/api/constituents : did not produce non-empty holdings within ${warmup_seconds}s warmup window"
+        fi
+    fi
 fi
 
 # ------------------------------------------------------------------

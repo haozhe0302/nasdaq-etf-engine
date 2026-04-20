@@ -39,6 +39,61 @@ Companion docs: [runbook.md](../runbook.md),
 
 ## 3) Pre-flight: required secrets + variables present
 
+Two Phase 2 workflows exist. Pick the one that matches your
+target environment and verify its specific prerequisites.
+
+### 3a) `phase2-rollout-existing.yml` (default — manual-resource model)
+
+> Automated by the `preflight` job in
+> [`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml).
+> The job fails fast with an aggregated error block if any of the
+> resources below are missing or misnamed, or if any repo secret
+> is empty. Verify the workflow's preflight job is green; you do
+> not need to re-check these by hand.
+
+Repository **secrets** (required, shared with `phase2-images.yml`
+and the legacy `phase2-deploy.yml`):
+
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+
+GitHub Environment **`phase2`** — **no** secrets required. App-level
+secrets (`Kafka__*`, `Redis__*`, `Timescale__*`, `Tiingo__*`) live on
+each Azure Container App's configuration and are never plumbed
+through this workflow. The environment exists only for optional
+approval reviewers.
+
+Repository **variables** (all optional — workflow defaults match
+the portal naming in
+[`docs/phase2/azure-deploy.md`](azure-deploy.md) §0.1):
+
+- `PHASE2_RESOURCE_GROUP` (default `rg-hqqq-p2`)
+- `PHASE2_ACR_NAME` (default `acrhqqqp2`)
+- `PHASE2_CAE_NAME` (default `cae-hqqq-p2`)
+- `PHASE2_GATEWAY_APP` (default `ca-hqqq-gateway-p2`)
+- `PHASE2_REFDATA_APP` (default `ca-hqqq-reference-data-p2`)
+- `PHASE2_INGRESS_APP` (default `ca-hqqq-ingress-p2`)
+- `PHASE2_QUOTE_APP` (default `ca-hqqq-quote-engine-p2`)
+- `PHASE2_PERSISTENCE_APP` (default `ca-hqqq-persistence-p2`)
+- `PHASE2_ANALYTICS_JOB` (default `caj-hqqq-analytics-p2`)
+- `PHASE2_ENVIRONMENT_NAME` (default `phase2`)
+
+Azure resources (must exist before the run — the workflow does
+not create them):
+
+- [ ] Resource group `rg-hqqq-p2`.
+- [ ] ACR `acrhqqqp2`.
+- [ ] Container Apps environment `cae-hqqq-p2`.
+- [ ] The five Container Apps listed above, each with a UAMI that
+      has `AcrPull` on `acrhqqqp2`.
+- [ ] Container Apps Job `caj-hqqq-analytics-p2`.
+- [ ] OIDC federated app with `AcrPush` on `acrhqqqp2` and
+      `Container Apps Contributor` (or `Contributor`) on
+      `rg-hqqq-p2`.
+
+### 3b) `phase2-deploy.yml` (legacy — Bicep provisioning)
+
 > Automated by the `preflight` job in
 > [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml).
 > The job fails fast with an explicit error block if any of the
@@ -83,12 +138,33 @@ must already exist and be reachable from the Container Apps environment:
       first start (`Persistence__SchemaBootstrapOnStart=true`); allow
       ~1 minute on a fresh database.
 
-## 5) Deploy: dry run first
+## 5) Rollout: dispatch the workflow
 
-> The workflow preflight already validates that the requested
-> `image_tag` is published in ACR for **all six** Phase 2 images
-> before any what-if runs, so this step is now mostly about reading
-> the what-if diff for surprise changes.
+Pick the path that matches your environment — do not run both
+against the same resource group.
+
+### 5a) Default path — `phase2-rollout-existing.yml`
+
+> The workflow preflight validates that the requested `image_tag`
+> is published in ACR for **all six** Phase 2 images, and that all
+> target resources already exist, before any update runs.
+
+- [ ] Run
+      [`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml)
+      with `image_tag=vsha-<short-sha>`. Leave `services=all`,
+      `update_analytics_job=true`, `skip_smoke=false`, and
+      `rollback_on_smoke_failure=false` unless you have a reason to
+      deviate.
+- [ ] Workflow run summary prints a structured table with:
+      - Resource group, ACR (+ login server), Container Apps env
+      - All five app names + the analytics job name
+      - Gateway FQDN + pre-rollout revision
+      - Per-app `new_revision` names after the matrix `rollout` legs
+      - Image tag (same across every service)
+
+### 5b) Legacy path — `phase2-deploy.yml` (Bicep provisioning, optional)
+
+Only use this path when intentionally re-applying infrastructure.
 
 - [ ] Run [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml)
       with `image_tag=vsha-<short-sha>`,
@@ -101,7 +177,7 @@ must already exist and be reachable from the Container Apps environment:
       - No surprise changes to `secrets`, `ingress`, or `identity`
         blocks.
 
-## 6) Deploy: real run
+## 6) Legacy path only — real Bicep run
 
 - [ ] Re-run `phase2-deploy.yml` with the same `image_tag` and
       `what_if_only=false`.
@@ -113,15 +189,21 @@ must already exist and be reachable from the Container Apps environment:
       - Analytics job name
       - Ready-to-paste manual smoke / analytics commands
 
+> For the default rollout path (§5a), the run summary already covers
+> the equivalent fields; §6 is a no-op when you are not using Bicep.
+
 ## 7) Post-deploy: health + smoke
 
-> Automated by the `smoke` job in
+> Automated by the `smoke` job in both
+> [`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml)
+> and
 > [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml),
-> which calls
-> [`infra/azure/scripts/phase2-azure-smoke.sh`](../../infra/azure/scripts/phase2-azure-smoke.sh).
-> The job fails the workflow if any endpoint below regresses. Verify
-> the smoke job is green; you do not need to re-run these `curl`s by
-> hand for the `safe-to-demo` gate.
+> each of which calls
+> [`infra/azure/scripts/phase2-azure-smoke.sh`](../../infra/azure/scripts/phase2-azure-smoke.sh)
+> (one shared probe script, no duplication). The job fails the
+> workflow if any endpoint below regresses. Verify the smoke job is
+> green; you do not need to re-run these `curl`s by hand for the
+> `safe-to-demo` gate.
 
 - Liveness: `GET /healthz/live` → `200`
 - Readiness: `GET /healthz/ready` → `200`
@@ -225,22 +307,36 @@ deploy, follow [rollback.md](rollback.md):
   fan-out broke.
 
 If smoke fails inside the workflow itself, optionally re-dispatch
-`phase2-deploy.yml` with `rollback_on_smoke_failure=true` to attempt a
-gateway-only revision flip; see [rollback.md](rollback.md) §1.5.
+either `phase2-rollout-existing.yml` (default) or
+`phase2-deploy.yml` (legacy) with `rollback_on_smoke_failure=true`
+to attempt a gateway-only revision flip. The rollout workflow
+flips back to the *pre-rollout* revision captured in its preflight
+(deterministic); the Bicep workflow picks the most-recent revision
+other than the one it just created. See [rollback.md](rollback.md)
+§1.5.
 
 ---
 
 ## 11) Promotion gates: "safe to demo" vs. "safe to promote beyond demo"
 
-**Safe to demo** — green check on `phase2-deploy.yml` with the target
-`image_tag`:
+**Safe to demo** — green check on the target workflow with the
+target `image_tag`:
 
-- `preflight` job green (secrets, RG, ACR, 6-image tag check).
-- `deploy` job green (`bicep build`, `what-if`, `create`).
-- `smoke` job green (gateway HTTPS probes incl.
-  `sourceMode=="aggregated"` and `/api/history` JSON shape).
+- Default path (`phase2-rollout-existing.yml`):
+  - `preflight` job green (repo secrets, RG, ACR, CAE, 5 apps, 1
+    job, 6-image tag check).
+  - `rollout` matrix green (`az containerapp update --image` on
+    all five apps).
+  - `rollout-job` green (`az containerapp job update --image` on
+    the analytics job) when `update_analytics_job=true`.
+  - `smoke` job green (gateway HTTPS probes incl.
+    `sourceMode=="aggregated"` and `/api/history` JSON shape).
+- Legacy path (`phase2-deploy.yml`):
+  - `preflight` job green (secrets, RG, ACR, 6-image tag check).
+  - `deploy` job green (`bicep build`, `what-if`, `create`).
+  - `smoke` job green (same shared probe script).
 
-That is the minimum gate the workflow now enforces automatically.
+That is the minimum gate each workflow now enforces automatically.
 
 **Safe to promote beyond demo** — additionally requires:
 

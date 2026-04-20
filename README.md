@@ -43,14 +43,7 @@ the legacy monolith.
 ```text
 External market data provider (Tiingo)
   |
-  +--> Phase 1 reference path (still live for public demo)
-  |      src/hqqq-api (monolith)
-  |        - real Tiingo WS/REST ingestion
-  |        - basket refresh + corp-action adjustment
-  |        - can publish market.raw_ticks.v1 bridge events for Phase 2 consumers
-  |        - legacy /api/system/health path
-  |
-  \--> Phase 2 service-based runtime (current app tier in repo)
+  \--> Service-based runtime
          (ingestion path depends on HQQQ_OPERATING_MODE:
             hybrid     = monolith bridges ticks; hqqq-ingress + hqqq-reference-data are stubs
             standalone = hqqq-ingress consumes Tiingo IEX directly;

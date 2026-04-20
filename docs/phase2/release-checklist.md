@@ -71,12 +71,12 @@ the portal naming in
 - `PHASE2_RESOURCE_GROUP` (default `rg-hqqq-p2`)
 - `PHASE2_ACR_NAME` (default `acrhqqqp2`)
 - `PHASE2_CAE_NAME` (default `cae-hqqq-p2`)
-- `PHASE2_GATEWAY_APP` (default `ca-hqqq-gateway-p2`)
-- `PHASE2_REFDATA_APP` (default `ca-hqqq-reference-data-p2`)
-- `PHASE2_INGRESS_APP` (default `ca-hqqq-ingress-p2`)
-- `PHASE2_QUOTE_APP` (default `ca-hqqq-quote-engine-p2`)
-- `PHASE2_PERSISTENCE_APP` (default `ca-hqqq-persistence-p2`)
-- `PHASE2_ANALYTICS_JOB` (default `caj-hqqq-analytics-p2`)
+- `PHASE2_GATEWAY_APP` (default `ca-hqqq-p2-gateway`)
+- `PHASE2_REFDATA_APP` (default `ca-hqqq-p2-refdata`)
+- `PHASE2_INGRESS_APP` (default `ca-hqqq-p2-ingress`)
+- `PHASE2_QUOTE_APP` (default `ca-hqqq-p2-quote-engine`)
+- `PHASE2_PERSISTENCE_APP` (default `ca-hqqq-p2-persist`)
+- `PHASE2_ANALYTICS_JOB` (default `caj-hqqq-p2-analytics`)
 - `PHASE2_ENVIRONMENT_NAME` (default `phase2`)
 
 Azure resources (must exist before the run — the workflow does
@@ -87,7 +87,7 @@ not create them):
 - [ ] Container Apps environment `cae-hqqq-p2`.
 - [ ] The five Container Apps listed above, each with a UAMI that
       has `AcrPull` on `acrhqqqp2`.
-- [ ] Container Apps Job `caj-hqqq-analytics-p2`.
+- [ ] Container Apps Job `caj-hqqq-p2-analytics`.
 - [ ] OIDC federated app with `AcrPush` on `acrhqqqp2` and
       `Container Apps Contributor` (or `Contributor`) on
       `rg-hqqq-p2`.
@@ -261,8 +261,8 @@ promoting beyond demo):
 - [ ] Trigger a short-window analytics report:
 
       ```bash
-      RG=rg-hqqq-p2-demo-eus-01
-      JOB=caj-hqqq-p2-analytics-demo-01
+      RG=rg-hqqq-p2
+      JOB=caj-hqqq-p2-analytics
 
       az containerapp job start \
         --name $JOB \

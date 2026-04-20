@@ -24,8 +24,10 @@ The repository is in a **transitional architecture**:
   `hqqq-gateway`, `hqqq-ingress`, `hqqq-quote-engine`,
   `hqqq-persistence`, and `hqqq-analytics` over Kafka / Redis /
   TimescaleDB. Runnable locally via Docker Compose and deployable to
-  Azure Container Apps via Bicep + GitHub OIDC. Multi-replica gateway
-  fan-out is real.
+  Azure Container Apps via GitHub Actions rolling images (OIDC) into
+  manually-provisioned Container Apps (`rg-hqqq-p2`,
+  `ca-hqqq-p2-*`); a legacy Bicep-provisioning path is retained as
+  a secondary option. Multi-replica gateway fan-out is real.
 - **Phase 3 (under construction)** — Kubernetes app-tier operationalization,
   HA topologies for stateful infra, multi-instance workers.
 
@@ -120,7 +122,7 @@ nasdaq-etf-engine/
 │       ├── topics.md
 │       └── redis-keys.md
 ├── infra/
-│   ├── azure/                            # Bicep + GitHub OIDC for Azure Container Apps
+│   ├── azure/                            # Bicep + smoke scripts for the legacy Azure Container Apps provisioning path
 │   └── prometheus/
 ├── docker-compose.yml                    # Infra base: Timescale, Redis, Kafka, Kafka UI, Prometheus, Grafana
 ├── docker-compose.phase2.yml             # Phase 2 app-tier overlay

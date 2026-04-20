@@ -39,12 +39,12 @@
 #   PHASE2_RESOURCE_GROUP     (default: rg-hqqq-p2)
 #   PHASE2_ACR_NAME           (default: acrhqqqp2)
 #   PHASE2_CAE_NAME           (default: cae-hqqq-p2)
-#   PHASE2_GATEWAY_APP        (default: ca-hqqq-gateway-p2)
-#   PHASE2_REFDATA_APP        (default: ca-hqqq-reference-data-p2)
-#   PHASE2_INGRESS_APP        (default: ca-hqqq-ingress-p2)
-#   PHASE2_QUOTE_APP          (default: ca-hqqq-quote-engine-p2)
-#   PHASE2_PERSISTENCE_APP    (default: ca-hqqq-persistence-p2)
-#   PHASE2_ANALYTICS_JOB      (default: caj-hqqq-analytics-p2)
+#   PHASE2_GATEWAY_APP        (default: ca-hqqq-p2-gateway)
+#   PHASE2_REFDATA_APP        (default: ca-hqqq-p2-refdata)
+#   PHASE2_INGRESS_APP        (default: ca-hqqq-p2-ingress)
+#   PHASE2_QUOTE_APP          (default: ca-hqqq-p2-quote-engine)
+#   PHASE2_PERSISTENCE_APP    (default: ca-hqqq-p2-persist)
+#   PHASE2_ANALYTICS_JOB      (default: caj-hqqq-p2-analytics)
 #   PHASE2_ENVIRONMENT_NAME   (default: phase2)   — name of the
 #                              GitHub Environment this workflow
 #                              attaches to for approval gating.
@@ -103,12 +103,12 @@ jobs:
       RESOURCE_GROUP: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2' }}
       ACR_NAME: ${{ vars.PHASE2_ACR_NAME != '' && vars.PHASE2_ACR_NAME || 'acrhqqqp2' }}
       CAE_NAME: ${{ vars.PHASE2_CAE_NAME != '' && vars.PHASE2_CAE_NAME || 'cae-hqqq-p2' }}
-      GATEWAY_APP: ${{ vars.PHASE2_GATEWAY_APP != '' && vars.PHASE2_GATEWAY_APP || 'ca-hqqq-gateway-p2' }}
-      REFDATA_APP: ${{ vars.PHASE2_REFDATA_APP != '' && vars.PHASE2_REFDATA_APP || 'ca-hqqq-reference-data-p2' }}
-      INGRESS_APP: ${{ vars.PHASE2_INGRESS_APP != '' && vars.PHASE2_INGRESS_APP || 'ca-hqqq-ingress-p2' }}
-      QUOTE_APP: ${{ vars.PHASE2_QUOTE_APP != '' && vars.PHASE2_QUOTE_APP || 'ca-hqqq-quote-engine-p2' }}
-      PERSISTENCE_APP: ${{ vars.PHASE2_PERSISTENCE_APP != '' && vars.PHASE2_PERSISTENCE_APP || 'ca-hqqq-persistence-p2' }}
-      ANALYTICS_JOB: ${{ vars.PHASE2_ANALYTICS_JOB != '' && vars.PHASE2_ANALYTICS_JOB || 'caj-hqqq-analytics-p2' }}
+      GATEWAY_APP: ${{ vars.PHASE2_GATEWAY_APP != '' && vars.PHASE2_GATEWAY_APP || 'ca-hqqq-p2-gateway' }}
+      REFDATA_APP: ${{ vars.PHASE2_REFDATA_APP != '' && vars.PHASE2_REFDATA_APP || 'ca-hqqq-p2-refdata' }}
+      INGRESS_APP: ${{ vars.PHASE2_INGRESS_APP != '' && vars.PHASE2_INGRESS_APP || 'ca-hqqq-p2-ingress' }}
+      QUOTE_APP: ${{ vars.PHASE2_QUOTE_APP != '' && vars.PHASE2_QUOTE_APP || 'ca-hqqq-p2-quote-engine' }}
+      PERSISTENCE_APP: ${{ vars.PHASE2_PERSISTENCE_APP != '' && vars.PHASE2_PERSISTENCE_APP || 'ca-hqqq-p2-persist' }}
+      ANALYTICS_JOB: ${{ vars.PHASE2_ANALYTICS_JOB != '' && vars.PHASE2_ANALYTICS_JOB || 'caj-hqqq-p2-analytics' }}
     outputs:
       resource_group: ${{ steps.export.outputs.resource_group }}
       acr_name: ${{ steps.export.outputs.acr_name }}
@@ -331,15 +331,15 @@ jobs:
       matrix:
         include:
           - service: hqqq-gateway
-            app: ${{ vars.PHASE2_GATEWAY_APP != '' && vars.PHASE2_GATEWAY_APP || 'ca-hqqq-gateway-p2' }}
+            app: ${{ vars.PHASE2_GATEWAY_APP != '' && vars.PHASE2_GATEWAY_APP || 'ca-hqqq-p2-gateway' }}
           - service: hqqq-reference-data
-            app: ${{ vars.PHASE2_REFDATA_APP != '' && vars.PHASE2_REFDATA_APP || 'ca-hqqq-reference-data-p2' }}
+            app: ${{ vars.PHASE2_REFDATA_APP != '' && vars.PHASE2_REFDATA_APP || 'ca-hqqq-p2-refdata' }}
           - service: hqqq-ingress
-            app: ${{ vars.PHASE2_INGRESS_APP != '' && vars.PHASE2_INGRESS_APP || 'ca-hqqq-ingress-p2' }}
+            app: ${{ vars.PHASE2_INGRESS_APP != '' && vars.PHASE2_INGRESS_APP || 'ca-hqqq-p2-ingress' }}
           - service: hqqq-quote-engine
-            app: ${{ vars.PHASE2_QUOTE_APP != '' && vars.PHASE2_QUOTE_APP || 'ca-hqqq-quote-engine-p2' }}
+            app: ${{ vars.PHASE2_QUOTE_APP != '' && vars.PHASE2_QUOTE_APP || 'ca-hqqq-p2-quote-engine' }}
           - service: hqqq-persistence
-            app: ${{ vars.PHASE2_PERSISTENCE_APP != '' && vars.PHASE2_PERSISTENCE_APP || 'ca-hqqq-persistence-p2' }}
+            app: ${{ vars.PHASE2_PERSISTENCE_APP != '' && vars.PHASE2_PERSISTENCE_APP || 'ca-hqqq-p2-persist' }}
     env:
       RESOURCE_GROUP: ${{ needs.preflight.outputs.resource_group }}
       ACR_LOGIN_SERVER: ${{ needs.preflight.outputs.acr_login_server }}

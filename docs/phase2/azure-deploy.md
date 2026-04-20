@@ -75,12 +75,12 @@ repo variables only if you deviate:
 | Resource group | `rg-hqqq-p2` |
 | Container Registry | `acrhqqqp2` |
 | Container Apps environment | `cae-hqqq-p2` |
-| Container App (gateway) | `ca-hqqq-gateway-p2` |
-| Container App (reference-data) | `ca-hqqq-reference-data-p2` |
-| Container App (ingress) | `ca-hqqq-ingress-p2` |
-| Container App (quote-engine) | `ca-hqqq-quote-engine-p2` |
-| Container App (persistence) | `ca-hqqq-persistence-p2` |
-| Container Apps Job (analytics) | `caj-hqqq-analytics-p2` |
+| Container App (gateway) | `ca-hqqq-p2-gateway` |
+| Container App (reference-data) | `ca-hqqq-p2-refdata` |
+| Container App (ingress) | `ca-hqqq-p2-ingress` |
+| Container App (quote-engine) | `ca-hqqq-p2-quote-engine` |
+| Container App (persistence) | `ca-hqqq-p2-persist` |
+| Container Apps Job (analytics) | `caj-hqqq-p2-analytics` |
 | Managed Redis | `redis-hqqq-p2` |
 | PostgreSQL Flexible Server | `psql-hqqq-p2` |
 | Event Hubs namespace | `evh-hqqq-p2` |
@@ -181,18 +181,18 @@ stated otherwise:
    placeholder images (e.g.
    `mcr.microsoft.com/k8se/quickstart:latest` for dashboards —
    they will be overwritten on the first rollout):
-   - `ca-hqqq-gateway-p2` (external ingress on :8080)
-   - `ca-hqqq-reference-data-p2` (internal ingress, :8080)
-   - `ca-hqqq-ingress-p2` (no ingress)
-   - `ca-hqqq-quote-engine-p2` (internal ingress, :8080)
-   - `ca-hqqq-persistence-p2` (no ingress)
+   - `ca-hqqq-p2-gateway` (external ingress on :8080)
+   - `ca-hqqq-p2-refdata` (internal ingress, :8080)
+   - `ca-hqqq-p2-ingress` (no ingress)
+   - `ca-hqqq-p2-quote-engine` (internal ingress, :8080)
+   - `ca-hqqq-p2-persist` (no ingress)
 
    Attach a user-assigned managed identity (UAMI) to each, grant
    the UAMI `AcrPull` on `acrhqqqp2`, and set each app's registry
    configuration to pull from `acrhqqqp2.azurecr.io` using that
    UAMI.
 6. **Create the analytics Container Apps Job**
-   `caj-hqqq-analytics-p2` in the same env, `triggerType=Manual`,
+   `caj-hqqq-p2-analytics` in the same env, `triggerType=Manual`,
    `parallelism=1`, `replicaCompletionCount=1`,
    `replicaTimeout=1800`, same UAMI/ACR config as the apps.
 7. **Wire app-level settings and secrets on each Container App**
@@ -226,6 +226,75 @@ stated otherwise:
 
 After this, every subsequent release is just steps 10 + 11.
 
+### 3a-bis) First manual Azure bring-up checklist
+
+Copy-paste pre-flight gate. The rollout workflow's preflight job
+will fail fast (with one aggregated error) if **any** of the
+boxes below are unchecked when you trigger the first run. Detail
+for each item is in §3a; this list exists so an operator can scan
+"have I done it?" in one screen before touching GitHub.
+
+**Required Azure infra (created manually in the portal):**
+
+- [ ] Resource group `rg-hqqq-p2`.
+- [ ] Container Registry `acrhqqqp2` (`adminUserEnabled=false`,
+  OIDC only).
+- [ ] Container Apps environment `cae-hqqq-p2` (Log Analytics
+  workspace attached).
+- [ ] Managed Redis `redis-hqqq-p2`.
+- [ ] PostgreSQL Flexible Server `psql-hqqq-p2` with the
+  TimescaleDB extension allow-listed and a `hqqq` database.
+- [ ] Event Hubs namespace `evh-hqqq-p2` with the six topics from
+  [`topics.md`](topics.md).
+- [ ] Static Web App `swa-hqqq-p2` (for the `hqqq-ui` frontend).
+
+**The 5 Container Apps in `cae-hqqq-p2` (placeholder image OK):**
+
+- [ ] `ca-hqqq-p2-gateway` — external ingress on :8080.
+- [ ] `ca-hqqq-p2-refdata` — internal ingress, :8080.
+- [ ] `ca-hqqq-p2-ingress` — no ingress.
+- [ ] `ca-hqqq-p2-quote-engine` — internal ingress, :8080.
+- [ ] `ca-hqqq-p2-persist` — no ingress.
+
+**The 1 Container Apps Job in `cae-hqqq-p2`:**
+
+- [ ] `caj-hqqq-p2-analytics` — `triggerType=Manual`,
+  `parallelism=1`, `replicaCompletionCount=1`,
+  `replicaTimeout=1800`.
+
+**Per-app wiring (each of the 5 apps + the job):**
+
+- [ ] User-assigned managed identity attached.
+- [ ] UAMI granted `AcrPull` on `acrhqqqp2`.
+- [ ] Registry config set to pull from `acrhqqqp2.azurecr.io`
+  using that UAMI.
+- [ ] App-level secrets set on the Container App config
+  (`Kafka__*`, `Redis__*`, `Timescale__*`, optional
+  `Tiingo__*` on `ca-hqqq-p2-ingress`,
+  `Analytics__Mode` knobs on `caj-hqqq-p2-analytics`).
+  These are **never** plumbed through the rollout workflow.
+
+**GitHub Actions auth + config:**
+
+- [ ] OIDC federated app registration has `AcrPush` on
+  `acrhqqqp2` and `Container Apps Contributor` (or broader)
+  on `rg-hqqq-p2`.
+- [ ] Repository **secrets** present and non-empty:
+  `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+  `AZURE_SUBSCRIPTION_ID`.
+- [ ] Repository **variable** `VITE_API_BASE_URL` set to the
+  gateway FQDN (`https://<ca-hqqq-p2-gateway-fqdn>`) — required
+  by the SWA workflow on `push` to `main` (see §8b).
+- [ ] GitHub Environment `phase2` exists (optional reviewers).
+  No environment-scoped secrets are required by the rollout
+  workflow.
+- [ ] Repository variables in §8a.1 left at default unless your
+  portal naming deviates.
+
+Once every box is checked, run `phase2-images.yml` on the target
+commit, then `phase2-rollout-existing.yml` with the resulting
+`vsha-...` tag.
+
 ---
 
 ## 4) Running analytics on demand
@@ -235,8 +304,8 @@ The analytics job is a `Microsoft.App/jobs` resource with
 report over a specific window:
 
 ```bash
-RG=rg-hqqq-p2-demo-eus-01
-JOB=caj-hqqq-p2-analytics-demo-01
+RG=rg-hqqq-p2
+JOB=caj-hqqq-p2-analytics
 
 az containerapp job start \
   --name $JOB \
@@ -281,7 +350,18 @@ base images — no Dockerfile changes required in D4.
 
 ## 6) Adding a second environment
 
-Phase 2 IaC is fully parameterized. Adding e.g. a `prod` boundary:
+> **Manual-resource model (default):** add a second environment by
+> repeating the §3a-bis bring-up checklist against a new RG (e.g.
+> `rg-hqqq-p2-prod`) with its own ACR / CAE / 5 apps / 1 job, then
+> create a matching GitHub Environment (e.g. `phase2-prod`),
+> override the `PHASE2_*` repo variables under that environment to
+> point at the new resource names, and trigger
+> `phase2-rollout-existing.yml` with the environment-scoped runs
+> gated by approval reviewers. No template / IaC changes required.
+
+The legacy Bicep-provisioning path supports a parallel parameterized
+flow for the same outcome (kept for environments still on
+`phase2-deploy.yml`):
 
 1. Copy `infra/azure/params/main.demo.bicepparam` to
    `main.prod.bicepparam` and rename every resource (e.g.
@@ -293,7 +373,7 @@ Phase 2 IaC is fully parameterized. Adding e.g. a `prod` boundary:
 5. Run `phase2-deploy.yml` with
    `bicep_param_file=infra/azure/params/main.prod.bicepparam`.
 
-No Bicep template changes required.
+No Bicep template changes required for the legacy flow.
 
 ---
 
@@ -447,10 +527,13 @@ error) if any are missing or empty.
 - `AZURE_SUBSCRIPTION_ID`
 
 **GitHub Environment `phase2` secrets: none required.**
-App-level secrets (`Kafka__*`, `Redis__*`, `Timescale__*`,
-`Tiingo__*`) live on the Azure Container Apps themselves, not in
-GitHub. The environment exists only for optional approval
-reviewers.
+The rollout-into-existing workflow does **not** consume any
+environment-scoped secret. App-level secrets (`Kafka__*`,
+`Redis__*`, `Timescale__*`, `Tiingo__*`) live on the Azure
+Container Apps themselves, not in GitHub, and rolling a new image
+tag does not rewrite them. The `phase2` GitHub Environment exists
+only as an attachment point for optional approval reviewers /
+deployment protection rules.
 
 **Repository variables (with workflow-side defaults — set only to
 override):**
@@ -458,12 +541,12 @@ override):**
 - `PHASE2_RESOURCE_GROUP` — default `rg-hqqq-p2`.
 - `PHASE2_ACR_NAME` — default `acrhqqqp2`.
 - `PHASE2_CAE_NAME` — default `cae-hqqq-p2`.
-- `PHASE2_GATEWAY_APP` — default `ca-hqqq-gateway-p2`.
-- `PHASE2_REFDATA_APP` — default `ca-hqqq-reference-data-p2`.
-- `PHASE2_INGRESS_APP` — default `ca-hqqq-ingress-p2`.
-- `PHASE2_QUOTE_APP` — default `ca-hqqq-quote-engine-p2`.
-- `PHASE2_PERSISTENCE_APP` — default `ca-hqqq-persistence-p2`.
-- `PHASE2_ANALYTICS_JOB` — default `caj-hqqq-analytics-p2`.
+- `PHASE2_GATEWAY_APP` — default `ca-hqqq-p2-gateway`.
+- `PHASE2_REFDATA_APP` — default `ca-hqqq-p2-refdata`.
+- `PHASE2_INGRESS_APP` — default `ca-hqqq-p2-ingress`.
+- `PHASE2_QUOTE_APP` — default `ca-hqqq-p2-quote-engine`.
+- `PHASE2_PERSISTENCE_APP` — default `ca-hqqq-p2-persist`.
+- `PHASE2_ANALYTICS_JOB` — default `caj-hqqq-p2-analytics`.
 - `PHASE2_ENVIRONMENT_NAME` — default `phase2`.
 
 Same repo variables also feed `phase2-images.yml`
@@ -568,6 +651,15 @@ replica restart. The deploy template has an opt-in Azure Files mount
 that promotes the checkpoint to durable storage without changing any
 quote-engine code or local-dev behaviour.
 
+> **Manual-resource model (default):** the same outcome is reached
+> by creating a `Microsoft.Storage/storageAccounts` (Standard_LRS,
+> StorageV2, TLS 1.2+, public blob access disabled) + an Azure Files
+> share in the portal once, defining it as a Container Apps
+> environment storage on `cae-hqqq-p2`, and adding the matching
+> `volumes` / `volumeMounts` entries on `ca-hqqq-p2-quote-engine`
+> with `QuoteEngine__CheckpointPath=/mnt/quote-engine/checkpoint.json`.
+> The toggle described below is the legacy Bicep-driven equivalent.
+
 The toggle lives in the Bicep param file:
 
 ```bicep
@@ -668,6 +760,15 @@ that don't want any storage cost can keep the historic posture.
 ---
 
 ## 11) Bootstrapping a brand-new environment with `data.bicep`
+
+> **Legacy / secondary path.** §§0–10 above are the primary
+> deployment story (manual-resource model, `rg-hqqq-p2` /
+> `ca-hqqq-p2-*` / `caj-hqqq-p2-analytics`,
+> `phase2-rollout-existing.yml`). This section documents the
+> historical Bicep-provisioning path against the `*-demo-eus-01`
+> naming and the `phase2-demo` GitHub Environment, retained for
+> environments that still want IaC-driven resource creation. Do
+> **not** mix the two against the same resource group.
 
 This is the one-command path for standing up an HQQQ environment
 from scratch — i.e., the operator does **not** already have a

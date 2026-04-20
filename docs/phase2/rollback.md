@@ -16,10 +16,16 @@ Companion docs: [release-checklist.md](release-checklist.md),
 ## 0) Common variables
 
 ```bash
-RG=rg-hqqq-p2-demo-eus-01           # PHASE2_RESOURCE_GROUP
-APP=ca-hqqq-p2-gateway-demo-01      # any app from infra/azure/params/main.demo.bicepparam
-JOB=caj-hqqq-p2-analytics-demo-01   # analytics job
+RG=rg-hqqq-p2                  # PHASE2_RESOURCE_GROUP (manual-resource default)
+APP=ca-hqqq-p2-gateway         # any of the 5 apps; matches phase2-rollout-existing.yml defaults
+JOB=caj-hqqq-p2-analytics      # analytics Container Apps Job
 ```
+
+> Override `RG` / `APP` / `JOB` if your portal naming deviates from
+> the manual-resource defaults documented in
+> [`azure-deploy.md` §0.1](azure-deploy.md). For environments still
+> on the legacy Bicep path, swap to the `*-demo-eus-01` names from
+> `infra/azure/params/main.demo.bicepparam`.
 
 ---
 
@@ -158,8 +164,8 @@ between the gateway and the workers it queries.
 If only the gateway image is broken and you need to revert it without
 also reverting the workers (e.g. quote-engine has accumulated useful
 checkpoint state since the last deploy), prefer **revision activation**
-(§1) on `ca-hqqq-p2-gateway-demo-01`. The image-tag deploy in §2 is
-all-or-nothing by design.
+(§1) on `$APP` (default `ca-hqqq-p2-gateway`). The image-tag deploy
+in §2 is all-or-nothing by design.
 
 ### 3.1 Workaround if you cannot activate a previous revision
 
@@ -234,7 +240,7 @@ the cutover is fast).
 
 ```bash
 az containerapp update \
-  --name ca-hqqq-p2-gateway-demo-01 \
+  --name $APP \
   --resource-group $RG \
   --set-env-vars \
     Gateway__Sources__History=stub

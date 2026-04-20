@@ -39,6 +39,26 @@ for environments that still want IaC-driven resource creation; its
 specifics stay in §11 and in the workflow itself. Do **not** run
 both workflows against the same resource group.
 
+> **Preflight contract — read this before triggering the rollout
+> workflow for the first time.** If these exact 5 Container Apps + 1
+> Container Apps Job do not already exist in `rg-hqqq-p2`,
+> [`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml)'s
+> preflight job fails with one aggregated error and rolls out
+> nothing:
+>
+> - `ca-hqqq-p2-gateway`
+> - `ca-hqqq-p2-refdata`
+> - `ca-hqqq-p2-ingress`
+> - `ca-hqqq-p2-quote-engine`
+> - `ca-hqqq-p2-persist`
+> - `caj-hqqq-p2-analytics`
+>
+> The same fail-fast applies to `acrhqqqp2`, `cae-hqqq-p2`, and to
+> the requested `image_tag` being present in ACR for all six Phase 2
+> images (`hqqq-gateway`, `hqqq-reference-data`, `hqqq-ingress`,
+> `hqqq-quote-engine`, `hqqq-persistence`, `hqqq-analytics`). The
+> full bring-up checklist is §3a-bis.
+
 ### 0.2) Hybrid vs Standalone operating mode
 
 Phase 2 runs in one of two operating modes, selected by the
@@ -463,18 +483,79 @@ real, populated window.
 
 ---
 
-## 8) Event Hubs Kafka — workflow-injected SASL auth
+## 8) Event Hubs Kafka — SASL auth (manual-resource model)
 
-Pointing the Phase 2 services at an Azure Event Hubs Kafka namespace
-is now a deploy-time concern, not a manual `az containerapp update`
-step. The four SASL values are passed as `@secure()` Bicep params
-from `phase2-deploy.yml` into [`main.bicep`](../../infra/azure/main.bicep)
-and surfaced into every Kafka-touching app via per-secret
-`secretRef` env vars in [`modules/containerApp.bicep`](../../infra/azure/modules/containerApp.bicep).
+In the manual-resource model the five Kafka SASL values live as
+**Container App secrets** on each Kafka-touching app (and the
+analytics job) directly in the Azure portal. They are configured
+once at bring-up time and **`phase2-rollout-existing.yml` does not
+rewrite them** — rolling a new `image_tag` preserves the existing
+secret references and the existing values.
 
-Apps that receive these env vars: `hqqq-reference-data`,
-`hqqq-ingress`, `hqqq-quote-engine`, `hqqq-persistence`. Gateway and
-analytics are deliberately excluded (no Kafka client usage).
+Apps that receive these env vars: `ca-hqqq-p2-refdata`,
+`ca-hqqq-p2-ingress`, `ca-hqqq-p2-quote-engine`,
+`ca-hqqq-p2-persist`, plus `caj-hqqq-p2-analytics`. The gateway
+(`ca-hqqq-p2-gateway`) is deliberately excluded — it does not
+construct a Kafka client.
+
+For each app/job above: portal → Settings → **Secrets** → add five
+secrets (kebab-case names below), then portal → **Containers** →
+**Edit and deploy** → set the corresponding env var to "Reference a
+secret" and pick the matching secret name. The mapping is the same
+for every Kafka-touching app:
+
+| Container App secret name (kebab-case) | Container App env var       | Example value (Event Hubs) |
+|----------------------------------------|-----------------------------|----------------------------|
+| `kafka-bootstrap-servers`              | `Kafka__BootstrapServers`   | `<namespace>.servicebus.windows.net:9093` |
+| `kafka-security-protocol`              | `Kafka__SecurityProtocol`   | `SaslSsl` |
+| `kafka-sasl-mechanism`                 | `Kafka__SaslMechanism`      | `Plain` |
+| `kafka-sasl-username`                  | `Kafka__SaslUsername`       | `$ConnectionString` (literal) |
+| `kafka-sasl-password`                  | `Kafka__SaslPassword`       | `Endpoint=sb://<namespace>.servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...` |
+
+`Kafka__EnableTopicBootstrap=false` is a **non-secret** env var on
+the same apps. Set it as a plain env var (not a secret) on each
+Kafka-touching Container App and on the analytics job. Pre-create
+every topic in [`docs/phase2/topics.md`](topics.md) on the namespace
+before triggering the rollout — Event Hubs Kafka does not honour
+the Kafka `CreateTopics` admin API, so without explicit topics the
+producers/consumers will not surface a friendly error, only metadata
+warnings.
+
+**Rotation procedure (manual-resource model):**
+
+1. Portal → Container App → **Secrets** → edit the value of the
+   secret you want to rotate (e.g. `kafka-sasl-password`).
+2. Container Apps materialises a new revision automatically when
+   any referenced secret value changes — no rollout workflow run is
+   required.
+3. Repeat for every Kafka-touching app + the analytics job that
+   shares the secret.
+
+Re-running `phase2-rollout-existing.yml` after a rotation is
+**not** needed and does **not** re-write the secret. The rollout
+workflow only swaps the image tag; the secret references it sets
+up at bring-up time stay attached.
+
+Local `docker-compose.phase2.yml` is unaffected — it stays on
+plaintext `kafka:29092` (`Kafka__SecurityProtocol` defaults to empty,
+which `KafkaConfigBuilder.ApplySecurity` interprets as "skip
+security configuration").
+
+### 8.x) Legacy: Bicep `@secure()` injection of Kafka SASL
+
+> **Legacy / secondary path.** This subsection documents how the
+> same five SASL values flow through the Bicep-provisioning workflow
+> ([`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml)
+> against the `phase2-demo` GitHub Environment). It is retained for
+> environments that still want IaC-driven secret pipelining; the
+> default manual-resource path is §8 above and does not use any of
+> the GitHub environment secrets below.
+
+In the legacy Bicep path the four SASL values are passed as
+`@secure()` Bicep params from `phase2-deploy.yml` into
+[`main.bicep`](../../infra/azure/main.bicep) and surfaced into every
+Kafka-touching app via per-secret `secretRef` env vars in
+[`modules/containerApp.bicep`](../../infra/azure/modules/containerApp.bicep).
 
 | GitHub environment secret (`phase2-demo`) | Bicep `@secure()` param   | Container App env var       | Example value (Event Hubs) |
 |-------------------------------------------|---------------------------|-----------------------------|----------------------------|
@@ -492,23 +573,11 @@ Container App secrets (kebab-case names like `kafka-sasl-password`),
 so they never appear inline in the Bicep template body or deployment
 history.
 
-`Kafka__EnableTopicBootstrap=false` is **not** wired through the
-deploy template (it is a non-secret static toggle): set it via
-`appsettings.json` / non-secret env override per environment if the
-broker rejects topic creation. Pre-create every topic in
-[`docs/phase2/topics.md`](topics.md) on the namespace before
-deploying — Event Hubs Kafka does not honour the `CreateTopics`
-admin API.
-
-To rotate any of the SASL values: update the corresponding secret
-under GitHub Environments → `phase2-demo`, then re-run
-`phase2-deploy.yml` against the current `image_tag`. Container Apps
-materialises a new revision when secret values change.
-
-Local `docker-compose.phase2.yml` is unaffected — it stays on
-plaintext `kafka:29092` (`Kafka__SecurityProtocol` defaults to empty,
-which `KafkaConfigBuilder.ApplySecurity` interprets as "skip
-security configuration").
+To rotate any of the SASL values in this legacy path: update the
+corresponding secret under GitHub Environments → `phase2-demo`,
+then re-run `phase2-deploy.yml` against the current `image_tag`.
+Container Apps materialises a new revision when secret values
+change.
 
 ---
 

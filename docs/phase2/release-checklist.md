@@ -26,14 +26,15 @@ Companion docs: [runbook.md](../runbook.md),
       ran on the target commit and pushed all six images
       (`hqqq-gateway`, `hqqq-reference-data`, `hqqq-ingress`,
       `hqqq-quote-engine`, `hqqq-persistence`, `hqqq-analytics`) to
-      ACR `acrhqqqp2demo01` (or your target ACR).
+      ACR `acrhqqqp2` (or your target ACR; legacy Bicep environments
+      use `acrhqqqp2demo01`).
 - [ ] Note the immutable `vsha-<short-sha>` tag from the workflow run
       summary. **Do not deploy `latest`** — pin to `vsha-...` for
       reproducibility.
 - [ ] Spot-check the tag exists in ACR:
 
       ```bash
-      az acr repository show-tags -n acrhqqqp2demo01 \
+      az acr repository show-tags -n acrhqqqp2 \
         --repository hqqq-gateway --orderby time_desc -o tsv | head
       ```
 

@@ -80,41 +80,59 @@ az containerapp ingress traffic set \
 
 The same gateway-only revision flip in §1 is also available as an
 optional automatic step inside
-[`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml).
+[`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml)
+(the manual-resource default).
 
-**How to opt in:** dispatch `phase2-deploy.yml` with
-`rollback_on_smoke_failure=true`. If the post-deploy `smoke` job
-fails, the `rollback-assist` job runs and:
+**How to opt in:** dispatch `phase2-rollout-existing.yml` with
+`rollback_on_smoke_failure=true`. The workflow's `preflight` job
+captures `gateway_pre_rollout_revision` — i.e. the exact revision
+that was serving traffic before this rollout — as a job output. If
+the post-rollout `smoke` job then fails, the `rollback-assist` job
+runs and:
 
-1. Identifies the previous gateway revision (most-recent revision on
-   the gateway app whose name is not the one this run created — the
-   workflow knows which revision its own deploy created via the
-   `gatewayLatestRevisionName` output of `main.bicep`).
-2. Activates that previous revision.
-3. Shifts 100% of gateway traffic back to it.
-4. Prints the resulting active-revision table to the run summary.
+1. Reads the pre-rollout revision name from the preflight output
+   (deterministic — no "most recent other" guessing).
+2. Activates that revision via `az containerapp revision activate`.
+3. Shifts 100% of gateway traffic back to it via
+   `az containerapp ingress traffic set --revision-weight ...=100`.
+4. Prints the resulting active-revision table to the run summary
+   alongside the gateway app name and the pre-rollout revision name.
 
 **Scope guarantees:**
 
-- Gateway-only. Worker apps (`hqqq-reference-data`, `hqqq-ingress`,
-  `hqqq-quote-engine`, `hqqq-persistence`) and the analytics job are
-  **not** touched. Use §2 (image-tag redeploy) for an all-services
-  rollback.
-- If no retained previous revision exists, the workflow does **not**
-  shift traffic; it only prints the manual `az` commands an operator
-  should run after building a known-good image set. This avoids
-  destructive action with an empty fallback.
-- The workflow's preflight + deploy outputs (image tag, RG, gateway
-  app name, gateway latest revision) are persisted to the run summary
-  so the rollback decision is auditable from the workflow run alone.
+- Gateway-only. Worker apps (`ca-hqqq-p2-refdata`,
+  `ca-hqqq-p2-ingress`, `ca-hqqq-p2-quote-engine`,
+  `ca-hqqq-p2-persist`) and the analytics job
+  (`caj-hqqq-p2-analytics`) are **not** touched by the assist. Use
+  §2 (image-tag redeploy) for an all-services rollback.
+- If no pre-rollout revision was captured (fresh app with no prior
+  revision), the workflow does **not** shift traffic; it only prints
+  a warning and leaves the rollout in place. This avoids destructive
+  action with an empty fallback.
+- The workflow's preflight + rollout + smoke outputs (image tag, RG,
+  gateway app name, gateway pre-rollout revision, per-app new
+  revisions) are persisted to the run summary so the rollback
+  decision is auditable from the workflow run alone.
 
-When `rollback_on_smoke_failure=false` (default), smoke failure simply
-fails the workflow and the run summary prints the manual `az`
-commands needed to inspect or roll back. No rollback is attempted.
+When `rollback_on_smoke_failure=false` (default), smoke failure
+simply fails the workflow and the run summary prints the manual
+`az` commands needed to inspect or roll back. No rollback is
+attempted.
+
+> **Legacy Bicep path.**
+> [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml)
+> exposes the same `rollback_on_smoke_failure` opt-in flag for
+> environments still on the Bicep-provisioning path. The mechanics
+> differ slightly: rather than the deterministic pre-rollout
+> revision captured in preflight, that workflow picks the
+> most-recent revision other than the one its own deploy created
+> (read off the `gatewayLatestRevisionName` output of
+> `main.bicep`). Same gateway-only scope, same empty-fallback
+> guarantee, same auditable summary.
 
 ---
 
-## 2) Image-tag rollback via the deploy workflow
+## 2) Image-tag rollback via the rollout workflow
 
 When you want a clean, auditable redeploy of a known-good image set —
 or when the previous revision is no longer retained.
@@ -123,39 +141,58 @@ or when the previous revision is no longer retained.
 
 ```bash
 az acr repository show-tags \
-  -n acrhqqqp2demo01 \
+  -n acrhqqqp2 \
   --repository hqqq-gateway \
   --orderby time_desc \
   -o tsv | head -n 5
 ```
 
-All six Phase 2 services share one `vsha-...` tag per deploy
-([`main.bicep`](../../infra/azure/main.bicep) accepts a single
-`imageTag` parameter), so the same tag must exist for `hqqq-gateway`,
-`hqqq-reference-data`, `hqqq-ingress`, `hqqq-quote-engine`,
-`hqqq-persistence`, and `hqqq-analytics`. Spot-check at least the
+> Legacy Bicep environments substitute `-n acrhqqqp2demo01` here.
+
+All six Phase 2 services share one `vsha-...` tag per release
+(both [`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml)
+and [`main.bicep`](../../infra/azure/main.bicep) take a single
+`image_tag` / `imageTag`), so the same tag must exist for
+`hqqq-gateway`, `hqqq-reference-data`, `hqqq-ingress`,
+`hqqq-quote-engine`, `hqqq-persistence`, and `hqqq-analytics`. Spot-check at least the
 gateway and the one most likely to have regressed.
 
-### 2.2 Re-run the deploy workflow
+### 2.2 Re-run the rollout workflow with the previous tag
 
-Re-run [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml)
+Re-run
+[`phase2-rollout-existing.yml`](../../.github/workflows/phase2-rollout-existing.yml)
 with:
 
 - `image_tag=vsha-<previous-short-sha>`
-- `bicep_param_file=infra/azure/params/main.demo.bicepparam`
-- `what_if_only=true` (first pass)
-- `what_if_only=false` (after reviewing the what-if diff)
+- `services=all` (default)
+- `update_analytics_job=true` (default; flip to `false` if you only
+  want to roll the long-running apps and leave the job at the
+  current image)
+- `skip_smoke=false`
+- `rollback_on_smoke_failure=false` (you are explicitly redeploying
+  a known-good tag; no need for the gateway-only assist)
 
-The deploy is idempotent: re-running with the previous tag is
-indistinguishable from a fresh deploy of that tag.
+Preflight will re-validate that the previous tag is still published
+in ACR for all six images before any update runs. The rollout is
+idempotent: re-running with the previous tag is indistinguishable
+from a fresh rollout of that tag (Container Apps suppresses a new
+revision when the image digest is unchanged).
+
+> **Legacy Bicep path.** The same outcome via
+> [`phase2-deploy.yml`](../../.github/workflows/phase2-deploy.yml):
+> dispatch with `image_tag=vsha-<previous-short-sha>`,
+> `bicep_param_file=infra/azure/params/main.demo.bicepparam`,
+> `what_if_only=true` first, then `what_if_only=false` after
+> reviewing the what-if diff.
 
 ### 2.3 Why this is "atomic across all six services"
 
-D4 deliberately ships one image tag for all six services per deploy.
-This means an image-tag rollback puts the whole app tier back into a
-known-good combined state — there is no risk of partially rolling back
-(e.g. only the gateway) and ending up with an image-version mismatch
-between the gateway and the workers it queries.
+D4 deliberately ships one image tag for all six services per
+release. This means an image-tag rollback puts the whole app tier
+back into a known-good combined state — there is no risk of
+partially rolling back (e.g. only the gateway) and ending up with an
+image-version mismatch between the gateway and the workers it
+queries.
 
 ---
 

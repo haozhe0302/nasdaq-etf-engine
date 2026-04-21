@@ -1,5 +1,6 @@
 using Hqqq.Domain.Entities;
 using Hqqq.Domain.ValueObjects;
+using Hqqq.ReferenceData.Basket;
 using Hqqq.ReferenceData.Configuration;
 using Microsoft.Extensions.Options;
 
@@ -21,6 +22,7 @@ public sealed class BasketService : IBasketService
     private readonly BasketRefreshPipeline _pipeline;
     private readonly PublishHealthTracker _publishHealth;
     private readonly PublishHealthOptions _publishHealthOptions;
+    private readonly PendingBasketStore? _pendingStore;
     private readonly TimeProvider _clock;
 
     public BasketService(
@@ -28,12 +30,14 @@ public sealed class BasketService : IBasketService
         BasketRefreshPipeline pipeline,
         PublishHealthTracker publishHealth,
         IOptions<ReferenceDataOptions>? options = null,
+        PendingBasketStore? pendingStore = null,
         TimeProvider? clock = null)
     {
         _store = store;
         _pipeline = pipeline;
         _publishHealth = publishHealth;
         _publishHealthOptions = options?.Value.PublishHealth ?? new PublishHealthOptions();
+        _pendingStore = pendingStore;
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -91,6 +95,22 @@ public sealed class BasketService : IBasketService
 
         var previous = _store.Previous;
 
+        var pending = _pendingStore?.Pending;
+        PendingBasketInfo? pendingInfo = null;
+        if (pending is not null && _pendingStore is not null)
+        {
+            pendingInfo = new PendingBasketInfo
+            {
+                ContentFingerprint16 = pending.ContentFingerprint16,
+                ConstituentCount = pending.ConstituentCount,
+                TailSource = pending.TailSource,
+                IsDegraded = pending.IsDegraded,
+                MergedAtUtc = pending.MergedAtUtc,
+                EffectiveAtUtc = _pendingStore.PendingEffectiveAtUtc ?? pending.MergedAtUtc,
+                AsOfDate = pending.Snapshot.AsOfDate,
+            };
+        }
+
         return Task.FromResult<BasketCurrentResult?>(new BasketCurrentResult
         {
             Active = version,
@@ -102,6 +122,7 @@ public sealed class BasketService : IBasketService
             LatestAdjustmentReport = _store.LatestAdjustmentReport,
             PreviousBasketId = previous?.Snapshot.BasketId,
             PreviousFingerprint = previous?.Fingerprint,
+            Pending = pendingInfo,
         });
     }
 

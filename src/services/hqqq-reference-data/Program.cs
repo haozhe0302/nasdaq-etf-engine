@@ -1,5 +1,6 @@
 using Hqqq.Infrastructure.Hosting;
 using Hqqq.Observability.Hosting;
+using Hqqq.ReferenceData.Basket;
 using Hqqq.ReferenceData.Configuration;
 using Hqqq.ReferenceData.CorporateActions.Contracts;
 using Hqqq.ReferenceData.CorporateActions.Providers;
@@ -11,6 +12,7 @@ using Hqqq.ReferenceData.Publishing;
 using Hqqq.ReferenceData.Services;
 using Hqqq.ReferenceData.Sources;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -39,7 +41,35 @@ builder.Services.AddSingleton<FallbackSeedHoldingsSource>();
 builder.Services.AddHttpClient("hqqq-refdata-live-holdings");
 builder.Services.AddSingleton<LiveHoldingsSource>();
 builder.Services.AddSingleton<HoldingsValidator>();
-builder.Services.AddSingleton<IHoldingsSource, CompositeHoldingsSource>();
+
+// Phase 2 basket pipeline (ported from the Phase 1 Basket module). JSON
+// adapters only; HTML scrapers are intentionally not ported. Mode=Seed
+// skips real-source registration so the composite chain degrades to
+// "live (file/http) → fallback-seed" just like before.
+builder.Services.AddHttpClient(AlphaVantageBasketAdapter.HttpClientName);
+builder.Services.AddHttpClient(NasdaqBasketAdapter.HttpClientName);
+builder.Services.AddSingleton<AlphaVantageBasketAdapter>();
+builder.Services.AddSingleton<NasdaqBasketAdapter>();
+builder.Services.AddSingleton<RawSourceCache>();
+builder.Services.AddSingleton<MergedBasketCache>();
+builder.Services.AddSingleton<PendingBasketStore>();
+builder.Services.AddSingleton<RealSourceBasketPipeline>();
+builder.Services.AddSingleton<RealSourceBasketHoldingsSource>();
+
+builder.Services.AddSingleton<IHoldingsSource>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<ReferenceDataOptions>>().Value;
+    var validator = sp.GetRequiredService<HoldingsValidator>();
+    var fallback = sp.GetRequiredService<FallbackSeedHoldingsSource>();
+    var logger = sp.GetRequiredService<ILogger<CompositeHoldingsSource>>();
+    var primaries = new List<IHoldingsSource>();
+    if (opts.Basket.Mode == BasketMode.RealSource)
+    {
+        primaries.Add(sp.GetRequiredService<RealSourceBasketHoldingsSource>());
+    }
+    primaries.Add(sp.GetRequiredService<LiveHoldingsSource>());
+    return new CompositeHoldingsSource(primaries, fallback, validator, logger);
+});
 
 // Phase-2-native corporate-action pipeline. File provider is
 // deterministic and offline-safe; Tiingo overlay is opt-in via
@@ -59,6 +89,7 @@ builder.Services.AddSingleton<BasketRefreshPipeline>();
 builder.Services.AddSingleton<IBasketService, BasketService>();
 builder.Services.AddSingleton<IBasketPublisher, KafkaBasketPublisher>();
 builder.Services.AddHostedService<BasketRefreshJob>();
+builder.Services.AddHostedService<BasketLifecycleScheduler>();
 
 healthChecks.Add(new HealthCheckRegistration(
     name: "active-basket",
@@ -78,6 +109,12 @@ app.Services.LogConfigurationPosture(
     "hqqq-reference-data",
     app.Logger,
     "Kafka", "Redis", "Timescale", "ReferenceData");
+
+// Production fail-fast: deterministic seed fallback and offline-only
+// corp-actions are only permitted with explicit operator opt-in.
+var refOptions = app.Services.GetRequiredService<IOptions<ReferenceDataOptions>>().Value;
+ReferenceDataStartupGuard.Validate(app.Environment, refOptions, app.Logger);
+ReferenceDataStartupGuard.ValidateCorporateActions(app.Environment, refOptions, app.Logger);
 
 // Eagerly instantiate PublishHealthMetrics so the observable gauges are
 // wired before the first /metrics scrape.

@@ -9,7 +9,7 @@ namespace Hqqq.ReferenceData.Tests.TestDoubles;
 /// records every published event and can optionally throw on publish to
 /// exercise failure handling.
 /// </summary>
-internal sealed class CapturingPublisher : IBasketPublisher
+public sealed class CapturingPublisher : IBasketPublisher
 {
     private readonly ConcurrentQueue<BasketActiveStateV1> _published = new();
 

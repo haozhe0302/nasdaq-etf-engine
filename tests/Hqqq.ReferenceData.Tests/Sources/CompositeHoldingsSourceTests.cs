@@ -137,10 +137,12 @@ public class CompositeHoldingsSourceTests
     {
         var constituents = oneConstituentOnly
             ? """[ { "symbol": "AAPL", "name": "Apple", "sector": "Technology", "sharesHeld": 100, "referencePrice": 215.30 } ]"""
-            : """[
+            : """
+              [
                 { "symbol": "AAPL", "name": "Apple", "sector": "Technology", "sharesHeld": 100, "referencePrice": 215.30 },
                 { "symbol": "MSFT", "name": "Microsoft", "sector": "Technology", "sharesHeld": 100, "referencePrice": 432.10 }
-              ]""";
+              ]
+              """;
 
         return $$"""
         {

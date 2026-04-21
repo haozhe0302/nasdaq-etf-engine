@@ -1,11 +1,13 @@
+extern alias IngressService;
+
 using Hqqq.Contracts.Events;
 using Hqqq.Infrastructure.Kafka;
-using Hqqq.Ingress.Clients;
-using Hqqq.Ingress.Configuration;
-using Hqqq.Ingress.Consumers;
-using Hqqq.Ingress.Publishing;
-using Hqqq.Ingress.State;
-using Hqqq.Ingress.Workers;
+using IngressService::Hqqq.Ingress.Clients;
+using IngressService::Hqqq.Ingress.Configuration;
+using IngressService::Hqqq.Ingress.Consumers;
+using IngressService::Hqqq.Ingress.Publishing;
+using IngressService::Hqqq.Ingress.State;
+using IngressService::Hqqq.Ingress.Workers;
 using Hqqq.ReferenceData.Publishing;
 using Hqqq.ReferenceData.Sources;
 using Hqqq.ReferenceData.Tests.TestDoubles;
@@ -44,7 +46,7 @@ public class Phase2SelfSufficientFlowTests
     public async Task RefDataActivatesBasket_IngressSubscribesAndPublishesTicks()
     {
         // ── ingress side: real universe + coordinator + state ───────────────
-        var universe = new Hqqq.Ingress.State.ActiveSymbolUniverse();
+        var universe = new IngressService::Hqqq.Ingress.State.ActiveSymbolUniverse();
         var state = new IngestionState();
         var streamClient = new EmittingStreamClient(emitOnConnect: 3);
         var coordinator = new BasketSubscriptionCoordinator(
@@ -78,7 +80,7 @@ public class Phase2SelfSufficientFlowTests
 
         // ── refdata side: real pipeline + bridge publisher ──────────────────
         var bridge = new ConsumerBridgePublisher(basketConsumer);
-        var bench = PipelineBuilder.Build(publisher: bridge);
+        var bench = PipelineBuilder.BuildWithPublisher(bridge);
         bench.Source.Enqueue(HoldingsFetchResult.Ok(SnapshotBuilder.Build(count: 60)));
 
         // Start the worker first so it is parked in ResolveInitialSymbolsAsync

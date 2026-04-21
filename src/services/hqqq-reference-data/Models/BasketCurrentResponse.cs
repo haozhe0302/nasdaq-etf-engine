@@ -30,6 +30,37 @@ public sealed record BasketCurrentResponse
 
     /// <summary>BasketId of the basket that was active before the current one, if any.</summary>
     public string? PreviousBasketId { get; init; }
+
+    /// <summary>
+    /// Pending basket info from the ported Phase 1 lifecycle: the 08:30
+    /// ET merge result waiting on the 09:30 ET market-open activation.
+    /// Null if the service is running on the seed-only composite arm or
+    /// the pipeline has not yet produced a merged candidate today.
+    /// </summary>
+    public PendingBasketDto? Pending { get; init; }
+}
+
+/// <summary>HTTP projection of the pending basket lifecycle state.</summary>
+public sealed record PendingBasketDto
+{
+    public required string ContentFingerprint16 { get; init; }
+    public required int ConstituentCount { get; init; }
+    public required string TailSource { get; init; }
+    public required bool IsDegraded { get; init; }
+    public required DateTimeOffset MergedAtUtc { get; init; }
+    public required DateTimeOffset EffectiveAtUtc { get; init; }
+    public required DateOnly AsOfDate { get; init; }
+
+    public static PendingBasketDto FromDomain(PendingBasketInfo p) => new()
+    {
+        ContentFingerprint16 = p.ContentFingerprint16,
+        ConstituentCount = p.ConstituentCount,
+        TailSource = p.TailSource,
+        IsDegraded = p.IsDegraded,
+        MergedAtUtc = p.MergedAtUtc,
+        EffectiveAtUtc = p.EffectiveAtUtc,
+        AsOfDate = p.AsOfDate,
+    };
 }
 
 /// <summary>

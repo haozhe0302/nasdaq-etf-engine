@@ -95,8 +95,9 @@ public sealed class TiingoCorporateActionProvider : ICorporateActionProvider
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
+        var perSymbolErrors = new ConcurrentBag<string>();
         var tasks = uniqueSymbols
-            .Select(s => GetSplitsForSymbolAsync(s, from, to, ct))
+            .Select(s => GetSplitsForSymbolAsync(s, from, to, perSymbolErrors, ct))
             .ToArray();
 
         IReadOnlyList<SplitEvent>[] results;
@@ -110,17 +111,26 @@ public sealed class TiingoCorporateActionProvider : ICorporateActionProvider
         }
 
         var flat = results.SelectMany(r => r).ToList();
+        string? aggregateError = null;
+        if (!perSymbolErrors.IsEmpty)
+        {
+            var distinctErrors = perSymbolErrors.Distinct().Take(3).ToArray();
+            aggregateError = $"{perSymbolErrors.Count}/{uniqueSymbols.Length} symbols failed: " +
+                             string.Join(" | ", distinctErrors);
+        }
+
         return new CorporateActionFeed
         {
             Splits = flat,
             Renames = Array.Empty<SymbolRenameEvent>(),
             Source = Name,
             FetchedAtUtc = DateTimeOffset.UtcNow,
+            Error = aggregateError,
         };
     }
 
     private async Task<IReadOnlyList<SplitEvent>> GetSplitsForSymbolAsync(
-        string symbol, DateOnly from, DateOnly to, CancellationToken ct)
+        string symbol, DateOnly from, DateOnly to, ConcurrentBag<string> errors, CancellationToken ct)
     {
         var ttl = TimeSpan.FromMinutes(Math.Max(1, _options.CacheTtlMinutes));
 
@@ -145,6 +155,7 @@ public sealed class TiingoCorporateActionProvider : ICorporateActionProvider
         {
             _logger.LogWarning(ex,
                 "TiingoCorporateActionProvider: failed to fetch splits for {Symbol}", symbol);
+            errors.Add(ex.Message);
             return Array.Empty<SplitEvent>();
         }
         finally
@@ -170,7 +181,18 @@ public sealed class TiingoCorporateActionProvider : ICorporateActionProvider
         http.Timeout = TimeSpan.FromSeconds(Math.Max(1, _options.TimeoutSeconds));
 
         var response = await http.GetAsync(url, ct).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
+        if (!response.IsSuccessStatusCode)
+        {
+            // Bad HTTP status on a single symbol is a non-fatal partial
+            // outage — log, return empty, do NOT surface as a feed-level
+            // error. Connection-level exceptions (DNS/TCP/TLS failures)
+            // are caught one frame up and DO surface as feed.Error so
+            // the composite marks the lineage as degraded.
+            _logger.LogWarning(
+                "TiingoCorporateActionProvider: HTTP {Status} for {Symbol}; swallowing per-symbol error",
+                (int)response.StatusCode, symbol);
+            return Array.Empty<SplitEvent>();
+        }
 
         var json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         return ParseSplits(symbol, json);

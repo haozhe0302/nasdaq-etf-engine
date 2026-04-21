@@ -38,6 +38,7 @@ public static class BasketEndpoints
                     : AdjustmentSummaryDto.FromDomain(result.LatestAdjustmentReport),
                 PreviousBasketId = result.PreviousBasketId,
                 PreviousFingerprint = result.PreviousFingerprint,
+                Pending = result.Pending is null ? null : PendingBasketDto.FromDomain(result.Pending),
             };
             return Results.Ok(response);
         })

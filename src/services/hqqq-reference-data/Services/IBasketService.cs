@@ -50,6 +50,30 @@ public sealed record BasketCurrentResult
 
     /// <summary>BasketId of the basket that was active before the current one, if any.</summary>
     public string? PreviousBasketId { get; init; }
+
+    /// <summary>
+    /// Pending (merged-but-not-yet-activated) basket produced by the
+    /// ported Phase 1 lifecycle. Null when running on the seed-only
+    /// composite arm or before the first merge tick has fired.
+    /// </summary>
+    public PendingBasketInfo? Pending { get; init; }
+}
+
+/// <summary>
+/// Projection of the in-memory pending basket produced by the ported
+/// Phase 1 basket lifecycle. Exposes enough for an operator to see
+/// whether the 08:30 merge has produced a candidate that is waiting on
+/// the 09:30 market-open activation gate.
+/// </summary>
+public sealed record PendingBasketInfo
+{
+    public required string ContentFingerprint16 { get; init; }
+    public required int ConstituentCount { get; init; }
+    public required string TailSource { get; init; }
+    public required bool IsDegraded { get; init; }
+    public required DateTimeOffset MergedAtUtc { get; init; }
+    public required DateTimeOffset EffectiveAtUtc { get; init; }
+    public required DateOnly AsOfDate { get; init; }
 }
 
 /// <summary>

@@ -230,9 +230,12 @@ param kafkaConsumerGroupPrefix string = 'hqqq'
 @description('Default basket ID surfaced by the gateway.')
 param gatewayBasketId string = 'HQQQ'
 
-@description('Operating mode for Phase 2 services. `hybrid` keeps the legacy monolith bridge for ticks/baskets (default; ingress + reference-data run as stubs). `standalone` activates the native Tiingo ingress and the deterministic basket seed in reference-data so the Phase 2 stack runs without the legacy monolith. Required Tiingo__ApiKey when set to `standalone`.')
+@description('Operating-mode logging-posture tag for Phase 2 services. `standalone` (default) is the Phase 2 runtime — ingress runs natively against Tiingo, reference-data runs the real-source basket pipeline, gateway reads Redis/Timescale directly. `hybrid` is retained only as a logging label for legacy rollbacks during cutover; it does NOT change runtime behaviour in Phase 2. The hybrid/standalone runtime split has been removed from every Phase 2 service and this parameter only controls the cross-service posture log line.')
 @allowed([ 'hybrid', 'standalone' ])
-param operatingMode string = 'hybrid'
+param operatingMode string = 'standalone'
+
+@description('If true (default, matching deploy_posture=with-ingress in the deploy workflow), deploys the hqqq-ingress Container App. If false (deploy_posture=no-ingress-offline), the ingress app is NOT deployed and tiingoApiKey can be empty; reference-data / gateway / quote-engine still come up and serve cached baskets and Redis/Timescale state.')
+param deployIngress bool = true
 
 // ── Provision platform resources ─────────────────────────────────
 
@@ -392,7 +395,7 @@ module refDataApp 'modules/containerApp.bicep' = {
   ]
 }
 
-module ingressApp 'modules/containerApp.bicep' = {
+module ingressApp 'modules/containerApp.bicep' = if (deployIngress) {
   name: 'phase2-app-ingress'
   params: {
     name: ingressAppName
@@ -446,6 +449,17 @@ var quoteEngineVolumeMounts = quoteEngineCheckpointPersistence ? [
     volumeName: quoteEngineVolumeName
     mountPath: quoteEngineMountPath
   }
+] : []
+
+// When ingress is not deployed (deploy_posture=no-ingress-offline), the
+// gateway's aggregated health probe set omits the Ingress entry. The
+// gateway's health aggregator tolerates missing entries and reports
+// the missing service as `idle / not-configured` so an operator sees
+// the posture directly on /api/system/health instead of a probe
+// timeout.
+#disable-next-line BCP318
+var ingressHealthProbeEnv = deployIngress ? [
+  { name: 'Gateway__Health__Services__Ingress__BaseUrl', value: 'https://${ingressApp.outputs.fqdn}' }
 ] : []
 
 module quoteEngineApp 'modules/containerApp.bicep' = {
@@ -550,10 +564,9 @@ module gatewayApp 'modules/containerApp.bicep' = {
       { name: 'Gateway__Health__IncludeRedis', value: 'true' }
       { name: 'Gateway__Health__IncludeTimescale', value: 'true' }
       { name: 'Gateway__Health__Services__ReferenceData__BaseUrl', value: 'https://${refDataApp.outputs.fqdn}' }
-      { name: 'Gateway__Health__Services__Ingress__BaseUrl', value: 'https://${ingressApp.outputs.fqdn}' }
       { name: 'Gateway__Health__Services__QuoteEngine__BaseUrl', value: 'https://${quoteEngineApp.outputs.fqdn}' }
       { name: 'Gateway__Health__Services__Persistence__BaseUrl', value: 'https://${persistenceApp.outputs.fqdn}' }
-    ])
+    ], ingressHealthProbeEnv)
     redisConfiguration: redisConfiguration
     timescaleConnectionString: timescaleConnectionString
     cpu: gatewayCpu
@@ -614,7 +627,9 @@ output gatewayUrl string = 'https://${gatewayApp.outputs.fqdn}'
 // fall back to" without re-parsing revision lists.
 output gatewayLatestRevisionName string = gatewayApp.outputs.latestRevisionName
 output referenceDataInternalFqdn string = refDataApp.outputs.fqdn
-output ingressInternalFqdn string = ingressApp.outputs.fqdn
+#disable-next-line BCP318
+output ingressInternalFqdn string = deployIngress ? ingressApp.outputs.fqdn : ''
+output ingressDeployed bool = deployIngress
 output quoteEngineInternalFqdn string = quoteEngineApp.outputs.fqdn
 output persistenceInternalFqdn string = persistenceApp.outputs.fqdn
 output analyticsJobName string = analyticsJob.outputs.name

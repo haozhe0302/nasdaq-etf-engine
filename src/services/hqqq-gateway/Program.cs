@@ -48,6 +48,15 @@ app.Services.LogConfigurationPosture(
 // silently become production behaviour.
 {
     var resolvedModes = app.Services.GetRequiredService<ResolvedSourceModes>();
+
+    // Phase-2-native resolved-mode startup summary. Printed once per
+    // container start so the exact source wiring is visible in
+    // centralised logs without having to scrape DI diagnostics.
+    app.Logger.LogInformation(
+        "[gateway:resolved-modes] Quote={Quote} Constituents={Constituents} History={History} SystemHealth={SystemHealth}",
+        resolvedModes.Quote, resolvedModes.Constituents,
+        resolvedModes.History, resolvedModes.SystemHealth);
+
     var legacyEndpoints = new List<string>();
     if (resolvedModes.Quote == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("Quote");
     if (resolvedModes.Constituents == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("Constituents");

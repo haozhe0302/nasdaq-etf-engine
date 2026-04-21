@@ -43,6 +43,29 @@ public static class GatewaySourceRegistration
             History: historyMode,
             SystemHealth: systemHealthMode));
 
+        // Production guard: Stub is a development/demo shim. If any of
+        // Quote / Constituents / History resolved to Stub in Production
+        // we fail the container start — a Phase 2 prod instance on Stub
+        // is always a silent misconfiguration (missing Redis config,
+        // missing Timescale connection string, etc.). Legacy remains an
+        // explicit opt-in because the operator chose it.
+        if (environment.IsProduction())
+        {
+            var stubbed = new List<string>();
+            if (quoteMode == GatewayDataSourceMode.Stub) stubbed.Add("Quote");
+            if (constituentsMode == GatewayDataSourceMode.Stub) stubbed.Add("Constituents");
+            if (historyMode == GatewayDataSourceMode.Stub) stubbed.Add("History");
+
+            if (stubbed.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Gateway sources resolved to Stub in Production for: {string.Join(", ", stubbed)}. " +
+                    "Stub is a development shim and is never a valid Production posture. " +
+                    "Configure Gateway:Sources:Quote=redis, Gateway:Sources:Constituents=redis, " +
+                    "Gateway:Sources:History=timescale, or explicitly opt into Legacy forwarding.");
+            }
+        }
+
         var anyLegacy =
             quoteMode == GatewayDataSourceMode.Legacy
             || constituentsMode == GatewayDataSourceMode.Legacy

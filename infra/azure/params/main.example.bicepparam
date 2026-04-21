@@ -58,12 +58,14 @@ param kafkaClientId = 'hqqq-azure'
 param kafkaConsumerGroupPrefix = 'hqqq'
 param gatewayBasketId = 'HQQQ'
 
-// Operating mode for Phase 2 services.
-//   hybrid     : legacy hqqq-api monolith bridges live ticks/baskets;
-//                ingress + reference-data run as no-op stubs.
-//   standalone : Phase 2 native ingress + deterministic basket seed
-//                drive the system end-to-end. Requires tiingoApiKey.
-param operatingMode = 'hybrid'
+// Operating mode is a Phase 2 logging-posture tag only; it does NOT
+// control runtime behaviour (reference-data owns the basket
+// unconditionally and ingress runs natively against Tiingo when the
+// ingress Container App is deployed). `standalone` is the correct
+// Phase 2 default and is retained here for cross-service consistency;
+// the `hybrid` value is kept only so historical runbooks continue to
+// parse.
+param operatingMode = 'standalone'
 
 // Required @secure() params — placeholders only; supply real values
 // via --parameters at deploy time:

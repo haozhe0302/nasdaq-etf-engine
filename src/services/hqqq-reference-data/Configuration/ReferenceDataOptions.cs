@@ -20,12 +20,139 @@ public sealed class ReferenceDataOptions
     public CorporateActionOptions CorporateActions { get; set; } = new();
 
     /// <summary>
+    /// Real-source basket pipeline ported from the Phase 1 Basket module.
+    /// <see cref="BasketOptions.Mode"/> selects between the ported
+    /// <c>RealSource</c> posture (production default: AlphaVantage + Nasdaq
+    /// JSON adapters with 08:00 / 08:30 / 09:30 ET lifecycle and market-
+    /// open activation) and <c>Seed</c> (deterministic fallback for
+    /// local/offline/dev). In Production, <c>Seed</c> requires the
+    /// explicit <see cref="BasketOptions.AllowDeterministicSeedInProduction"/>
+    /// override or startup fails loudly.
+    /// </summary>
+    public BasketOptions Basket { get; set; } = new();
+
+    /// <summary>
     /// Optional override for the deterministic fallback seed path. When set
     /// and the file exists, the loader reads it instead of the embedded
     /// resource. Useful when iterating on demo content without rebuilding
     /// the image.
     /// </summary>
     public string? SeedPath { get; set; }
+}
+
+/// <summary>
+/// Production-grade basket pipeline configuration. Mirrors the Phase 1
+/// Basket module (<c>src/hqqq-api/Modules/Basket</c>) lifecycle and
+/// sources but lives natively in <c>hqqq-reference-data</c> with no
+/// runtime dependency on the monolith.
+/// </summary>
+/// <remarks>
+/// <para>
+/// JSON adapters only. The Phase 1 HTML scrapers (StockAnalysis, Schwab)
+/// are intentionally NOT ported as Phase 2 production sources — they
+/// would bring an HtmlAgilityPack dependency and live scraping risk to
+/// the deployment gate. <see cref="IBasketSourceAdapter"/> keeps the
+/// shape required to re-introduce them later if ever needed.
+/// </para>
+/// </remarks>
+public sealed class BasketOptions
+{
+    /// <summary>
+    /// Selects the basket pipeline posture. <see cref="BasketMode.RealSource"/>
+    /// is the Production default and runs the ported lifecycle
+    /// (fetch → merge → candidate → activate at market open).
+    /// <see cref="BasketMode.Seed"/> is the explicit local/offline
+    /// posture; in Production it fails startup unless
+    /// <see cref="AllowDeterministicSeedInProduction"/> is true.
+    /// </summary>
+    public BasketMode Mode { get; set; } = BasketMode.RealSource;
+
+    /// <summary>
+    /// Operator acknowledgement that running Production on deterministic
+    /// seed fallback is an accepted risk. Only honored when
+    /// <c>ASPNETCORE_ENVIRONMENT=Production</c>. Must be set explicitly;
+    /// there is no implicit production-seed path.
+    /// </summary>
+    public bool AllowDeterministicSeedInProduction { get; set; } = false;
+
+    /// <summary>IANA or Windows zone id for market-hours calculations. Default <c>America/New_York</c>.</summary>
+    public string MarketTimeZone { get; set; } = "America/New_York";
+
+    public BasketSourcesOptions Sources { get; set; } = new();
+    public BasketScheduleOptions Schedule { get; set; } = new();
+    public BasketCacheOptions Cache { get; set; } = new();
+}
+
+public enum BasketMode
+{
+    /// <summary>Run the ported Phase 1 basket pipeline against real JSON upstreams.</summary>
+    RealSource = 0,
+    /// <summary>Local/offline posture — composite fall-through to the deterministic seed.</summary>
+    Seed = 1,
+}
+
+/// <summary>
+/// Per-adapter configuration for the ported basket pipeline. Disabling
+/// every adapter in Production while also keeping <see cref="BasketOptions.Mode"/>
+/// on <see cref="BasketMode.RealSource"/> is treated the same as running
+/// on the seed and is rejected by the startup guard.
+/// </summary>
+public sealed class BasketSourcesOptions
+{
+    public AlphaVantageSourceOptions AlphaVantage { get; set; } = new();
+    public NasdaqSourceOptions Nasdaq { get; set; } = new();
+}
+
+public sealed class AlphaVantageSourceOptions
+{
+    /// <summary>Opt-in toggle. Disabled by default because it requires an API key.</summary>
+    public bool Enabled { get; set; } = false;
+    public string BaseUrl { get; set; } = "https://www.alphavantage.co/query";
+    public string? ApiKey { get; set; }
+    public int TimeoutSeconds { get; set; } = 10;
+}
+
+public sealed class NasdaqSourceOptions
+{
+    /// <summary>
+    /// Nasdaq public list-type endpoint. No API key required, but subject
+    /// to occasional rate limits and schema drift; the adapter tolerates
+    /// both gracefully and falls back to the raw-source cache.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+    public string Url { get; set; } = "https://api.nasdaq.com/api/quote/list-type/nasdaq100";
+    public int TimeoutSeconds { get; set; } = 10;
+}
+
+/// <summary>
+/// 08:00 / 08:30 / 09:30 ET lifecycle — mirrors the Phase 1 scheduler
+/// (<c>BasketRefreshService</c>). Times are parsed as local wall-clock in
+/// <see cref="BasketOptions.MarketTimeZone"/>.
+/// </summary>
+public sealed class BasketScheduleOptions
+{
+    /// <summary>Fetch raw sources into the per-source cache (default 08:00 local).</summary>
+    public string FetchTimeLocal { get; set; } = "08:00";
+
+    /// <summary>Merge cached sources into a candidate basket (default 08:30 local).</summary>
+    public string MergeTimeLocal { get; set; } = "08:30";
+
+    /// <summary>Promote pending → active iff the market is open (default 09:30 local).</summary>
+    public string ActivateTimeLocal { get; set; } = "09:30";
+}
+
+/// <summary>
+/// On-disk cache paths mirroring Phase 1's <c>RawSourceCacheService</c>
+/// and <c>BasketCacheService</c>. Opt-in; when the directory is absent
+/// the pipeline degrades to in-memory only.
+/// </summary>
+public sealed class BasketCacheOptions
+{
+    /// <summary>Per-source raw JSON cache directory (0 disables on-disk caching).</summary>
+    public string RawCacheDir { get; set; } = "data/raw";
+
+    /// <summary>Last-good merged snapshot file path.</summary>
+    public string MergedCacheFilePath { get; set; } = "data/basket-cache.json";
 }
 
 /// <summary>
@@ -177,6 +304,16 @@ public sealed class CorporateActionOptions
     /// bound applied when the as-of is unexpectedly ancient.
     /// </summary>
     public int LookbackDays { get; set; } = 365;
+
+    /// <summary>
+    /// Operator acknowledgement that running Production with only the
+    /// offline/file corp-action provider is an accepted risk (i.e. no
+    /// Tiingo overlay). Only honored when
+    /// <c>ASPNETCORE_ENVIRONMENT=Production</c>; when false and Tiingo is
+    /// disabled, startup fails loudly. Default false so silent
+    /// offline-only production boots are impossible.
+    /// </summary>
+    public bool AllowOfflineOnlyInProduction { get; set; } = false;
 }
 
 public sealed class FileCorporateActionOptions

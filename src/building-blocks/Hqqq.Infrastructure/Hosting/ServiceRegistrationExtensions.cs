@@ -47,7 +47,16 @@ public static class ServiceRegistrationExtensions
         services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
             var options = sp.GetRequiredService<IOptions<RedisOptions>>().Value;
-            return ConnectionMultiplexer.Connect(options.Configuration);
+            // Parse rather than pass the raw string so we can force
+            // AbortOnConnectFail=false. With the default (true) a missing
+            // broker on the first resolve throws synchronously and takes
+            // the whole host down, which is fatal for in-process
+            // integration tests that only use Redis via mocked seams.
+            // The downstream Redis health check still reports "unhealthy"
+            // on a real outage, so the operator signal is preserved.
+            var config = ConfigurationOptions.Parse(options.Configuration);
+            config.AbortOnConnectFail = false;
+            return ConnectionMultiplexer.Connect(config);
         });
         services.AddSingleton<IRedisStringCache, RedisStringCache>();
         return services;

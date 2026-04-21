@@ -56,8 +56,13 @@
 #   POSTGRES_ADMIN_PASSWORD   (used as the Postgres Flexible Server
 #                              admin password; must satisfy Azure
 #                              complexity rules)
-# Optional environment secret:
+# Required environment secret — when deploy_posture=with-ingress
+# (the default runtime path):
 #   TIINGO_API_KEY
+# Not required when deploy_posture=no-ingress-offline (ingress Container
+# App is skipped entirely; the gateway / reference-data / quote-engine
+# deploy normally and will run on cached baskets and Redis/Timescale
+# state until the operator provisions a live upstream).
 #
 # Optional repository variables (defaults baked in):
 #   PHASE2_RESOURCE_GROUP   (default: rg-hqqq-p2-demo-eus-01)
@@ -101,6 +106,14 @@ on:
         type: boolean
         required: false
         default: false
+      deploy_posture:
+        description: "Runtime posture for this deployment. 'with-ingress' (default) is the standard Phase 2 path — deploys hqqq-ingress and requires a valid TIINGO_API_KEY. 'no-ingress-offline' is an explicit offline posture that skips the ingress Container App entirely and therefore does NOT require a Tiingo key; use it for reference-data-only demos or when Tiingo is unavailable."
+        type: choice
+        required: false
+        default: "with-ingress"
+        options:
+          - with-ingress
+          - no-ingress-offline
 
 concurrency:
   group: phase2-deploy-${{ github.event.inputs.bicep_param_file }}
@@ -139,13 +152,16 @@ jobs:
           REDIS_CONFIGURATION: ${{ secrets.REDIS_CONFIGURATION }}
           TIMESCALE_CONNECTION_STRING: ${{ secrets.TIMESCALE_CONNECTION_STRING }}
           POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           PROVISION_DATA_TIER: ${{ github.event.inputs.provision_data_tier }}
+          DEPLOY_POSTURE: ${{ github.event.inputs.deploy_posture }}
         run: |
           set -uo pipefail
           # Aggregate every missing secret in one error block so an
           # operator with a fresh environment sees every gap at once.
           # The set of required secrets depends on whether the
-          # data tier will be provisioned in this run.
+          # data tier will be provisioned in this run and on the
+          # requested deploy_posture.
           missing=()
           required_repo=( AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID )
           if [[ "$PROVISION_DATA_TIER" == "true" ]]; then
@@ -155,6 +171,38 @@ jobs:
                            KAFKA_SASL_MECHANISM KAFKA_SASL_USERNAME KAFKA_SASL_PASSWORD \
                            REDIS_CONFIGURATION TIMESCALE_CONNECTION_STRING )
           fi
+
+          # Deploy posture contract:
+          #   with-ingress      (default) → deploys hqqq-ingress; TIINGO_API_KEY is REQUIRED.
+          #   no-ingress-offline          → ingress is NOT deployed; Tiingo key is OPTIONAL.
+          # Anything else is a contract violation and fails preflight.
+          case "$DEPLOY_POSTURE" in
+            with-ingress)
+              required_env+=( TIINGO_API_KEY )
+              ;;
+            no-ingress-offline)
+              ;;
+            *)
+              echo "::error::Unknown deploy_posture='$DEPLOY_POSTURE'. Valid values: with-ingress, no-ingress-offline."
+              exit 1
+              ;;
+          esac
+
+          # Reject a Tiingo key that is present but an obvious placeholder
+          # when we are in with-ingress mode — this maps to the runtime
+          # hard-fail inside hqqq-ingress and prevents a successful deploy
+          # of a Container App that will then crash on startup.
+          if [[ "$DEPLOY_POSTURE" == "with-ingress" ]]; then
+            case "${TIINGO_API_KEY:-}" in
+              ""|REPLACE_ME*|YOUR_*|changeme*|placeholder*)
+                echo "::error::deploy_posture=with-ingress requires a real TIINGO_API_KEY secret in the 'phase2-demo' environment."
+                echo "::error::The current value is empty or looks like a placeholder; the ingress container has a runtime hard-fail on placeholder keys."
+                echo "::error::Either supply the real key, or re-run with deploy_posture=no-ingress-offline to skip the ingress container."
+                exit 1
+                ;;
+            esac
+          fi
+
           for s in "${required_repo[@]}" "${required_env[@]}"; do
             v="${!s:-}"
             if [[ -z "$v" ]]; then
@@ -171,9 +219,12 @@ jobs:
               echo "::error::Environment 'phase2-demo': KAFKA_BOOTSTRAP_SERVERS, KAFKA_SECURITY_PROTOCOL, KAFKA_SASL_MECHANISM, KAFKA_SASL_USERNAME, KAFKA_SASL_PASSWORD, REDIS_CONFIGURATION, TIMESCALE_CONNECTION_STRING."
               echo "::error::To bootstrap a brand-new environment without these secrets, re-run with provision_data_tier=true (and set POSTGRES_ADMIN_PASSWORD)."
             fi
+            if [[ "$DEPLOY_POSTURE" == "with-ingress" ]]; then
+              echo "::error::deploy_posture=with-ingress also requires TIINGO_API_KEY. Either provision it or re-run with deploy_posture=no-ingress-offline."
+            fi
             exit 1
           fi
-          echo "All required secrets present (values not logged)."
+          echo "All required secrets present for deploy_posture='$DEPLOY_POSTURE' (values not logged)."
 
       - name: Validate bicep param files exist
         env:
@@ -453,6 +504,7 @@ jobs:
       image_tag: ${{ github.event.inputs.image_tag }}
       resource_group: ${{ vars.PHASE2_RESOURCE_GROUP != '' && vars.PHASE2_RESOURCE_GROUP || 'rg-hqqq-p2-demo-eus-01' }}
       what_if_only: ${{ github.event.inputs.what_if_only }}
+      deploy_posture: ${{ github.event.inputs.deploy_posture }}
     steps:
       - uses: actions/checkout@v4
 
@@ -550,6 +602,19 @@ jobs:
             echo "__EOF__"
           } >> "$GITHUB_ENV"
 
+      - name: Resolve deploy posture parameters
+        id: posture
+        env:
+          DEPLOY_POSTURE: ${{ github.event.inputs.deploy_posture }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_POSTURE" in
+            no-ingress-offline) DEPLOY_INGRESS=false ;;
+            *)                  DEPLOY_INGRESS=true ;;
+          esac
+          echo "deploy_ingress=$DEPLOY_INGRESS" >> "$GITHUB_OUTPUT"
+          echo "Resolved deploy_posture='$DEPLOY_POSTURE' -> deployIngress=$DEPLOY_INGRESS"
+
       - name: Deployment what-if
         env:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
@@ -568,7 +633,8 @@ jobs:
               kafkaSaslPassword="$KAFKA_SASL_PASSWORD" \
               redisConfiguration="$REDIS_CONFIGURATION" \
               timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
-              tiingoApiKey="${TIINGO_API_KEY:-}"
+              tiingoApiKey="${TIINGO_API_KEY:-}" \
+              deployIngress=${{ steps.posture.outputs.deploy_ingress }}
 
       - name: Deployment create
         if: ${{ github.event.inputs.what_if_only != 'true' }}
@@ -594,6 +660,7 @@ jobs:
               redisConfiguration="$REDIS_CONFIGURATION" \
               timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
               tiingoApiKey="${TIINGO_API_KEY:-}" \
+              deployIngress=${{ steps.posture.outputs.deploy_ingress }} \
             --query properties.outputs \
             --output json > "$OUT_FILE"
 
@@ -678,6 +745,7 @@ jobs:
       GATEWAY_FQDN: ${{ needs.deploy.outputs.gateway_fqdn }}
       GATEWAY_APP_NAME: ${{ needs.deploy.outputs.gateway_app_name }}
       ANALYTICS_JOB_NAME: ${{ needs.deploy.outputs.analytics_job_name }}
+      DEPLOY_POSTURE: ${{ needs.deploy.outputs.deploy_posture }}
     steps:
       - uses: actions/checkout@v4
 
@@ -699,6 +767,8 @@ jobs:
           chmod +x infra/azure/scripts/phase2-azure-smoke.sh
           GATEWAY_FQDN="$GATEWAY_FQDN" \
           EXPECT_AGGREGATED=true \
+          MODE=standalone \
+          DEPLOY_POSTURE="${DEPLOY_POSTURE:-with-ingress}" \
             infra/azure/scripts/phase2-azure-smoke.sh
 
       - name: Analytics dry-run (optional)

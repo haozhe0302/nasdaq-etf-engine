@@ -22,8 +22,9 @@ public class BasketRefreshJobTests
 
         var (job, store, publisher) = BuildJob(source, refreshSeconds: 0, republishSeconds: 0, startupSeconds: 5);
 
-        using var cts = new CancellationTokenSource();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await job.StartAsync(cts.Token);
+        await WaitUntilAsync(() => store.Current is not null, cts.Token);
         await job.StopAsync(cts.Token);
 
         Assert.NotNull(store.Current);
@@ -39,11 +40,22 @@ public class BasketRefreshJobTests
 
         var (job, store, publisher) = BuildJob(source, refreshSeconds: 0, republishSeconds: 0, startupSeconds: 5);
 
-        await job.StartAsync(CancellationToken.None);
-        await job.StopAsync(CancellationToken.None);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await job.StartAsync(cts.Token);
+        await WaitUntilAsync(() => source.FetchCount >= 1, cts.Token);
+        await job.StopAsync(cts.Token);
 
         Assert.Null(store.Current);
         Assert.Empty(publisher.Published);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> predicate, CancellationToken ct)
+    {
+        while (!predicate())
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Delay(25, ct);
+        }
     }
 
     private static (BasketRefreshJob Job, ActiveBasketStore Store, CapturingPublisher Publisher) BuildJob(

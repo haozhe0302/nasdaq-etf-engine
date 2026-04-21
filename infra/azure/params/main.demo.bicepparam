@@ -115,11 +115,13 @@ param kafkaConsumerGroupPrefix = 'hqqq'
 param gatewayBasketId = 'HQQQ'
 
 // ── Operating mode ───────────────────────────────────────────────
-// `hybrid` keeps the legacy hqqq-api monolith in the bridging role
-// (current Phase 2 demo posture). Switch to `standalone` to run the
-// Phase 2 stack end-to-end with the native Tiingo ingress and the
-// deterministic basket seed (requires a real tiingoApiKey secret).
-param operatingMode = 'hybrid'
+// Phase 2 runs `standalone` unconditionally: reference-data owns the
+// basket (real-source + seed-fallback), ingress runs natively against
+// Tiingo when deployed, the gateway reads Redis/Timescale directly.
+// `operatingMode` has been demoted to a cross-service logging tag in
+// Phase 2; `hybrid` is accepted for legacy-runbook compatibility only
+// and behaves identically to `standalone` at runtime.
+param operatingMode = 'standalone'
 
 // ── Secrets — placeholders so `bicep build` succeeds locally ────
 // The deploy workflow supplies real values via --parameters.

@@ -1,6 +1,7 @@
 using Hqqq.ReferenceData.Configuration;
 using Hqqq.ReferenceData.CorporateActions.Contracts;
 using Hqqq.ReferenceData.CorporateActions.Services;
+using Hqqq.ReferenceData.Publishing;
 using Hqqq.ReferenceData.Services;
 using Hqqq.ReferenceData.Sources;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,9 +24,43 @@ internal static class PipelineBuilder
         ReferenceDataOptions? options = null,
         ICorporateActionProvider? corpActionProvider = null,
         TimeProvider? clock = null)
+        => BuildCore(
+            source,
+            publisher ?? new CapturingPublisher(),
+            externalPublisher: null,
+            store, publishHealth, options, corpActionProvider, clock);
+
+    /// <summary>
+    /// Builds a bench wired to an arbitrary <see cref="IBasketPublisher"/>.
+    /// The <see cref="Bench.Publisher"/> is a no-op
+    /// <see cref="CapturingPublisher"/> kept only to preserve the existing
+    /// shape for callers that do not care about publish-side assertions.
+    /// </summary>
+    public static Bench BuildWithPublisher(
+        IBasketPublisher publisher,
+        StubHoldingsSource? source = null,
+        ActiveBasketStore? store = null,
+        PublishHealthTracker? publishHealth = null,
+        ReferenceDataOptions? options = null,
+        ICorporateActionProvider? corpActionProvider = null,
+        TimeProvider? clock = null)
+        => BuildCore(
+            source,
+            new CapturingPublisher(),
+            externalPublisher: publisher,
+            store, publishHealth, options, corpActionProvider, clock);
+
+    private static Bench BuildCore(
+        StubHoldingsSource? source,
+        CapturingPublisher publisher,
+        IBasketPublisher? externalPublisher,
+        ActiveBasketStore? store,
+        PublishHealthTracker? publishHealth,
+        ReferenceDataOptions? options,
+        ICorporateActionProvider? corpActionProvider,
+        TimeProvider? clock)
     {
         source ??= new StubHoldingsSource();
-        publisher ??= new CapturingPublisher();
         store ??= new ActiveBasketStore();
         publishHealth ??= new PublishHealthTracker();
         options ??= new ReferenceDataOptions
@@ -44,7 +79,8 @@ internal static class PipelineBuilder
         var transition = new BasketTransitionPlanner();
 
         var pipeline = new BasketRefreshPipeline(
-            source, validator, adjustments, transition, store, publisher, publishHealth,
+            source, validator, adjustments, transition, store,
+            externalPublisher ?? publisher, publishHealth,
             NullLogger<BasketRefreshPipeline>.Instance, clock);
 
         return new Bench(pipeline, source, publisher, store, publishHealth);

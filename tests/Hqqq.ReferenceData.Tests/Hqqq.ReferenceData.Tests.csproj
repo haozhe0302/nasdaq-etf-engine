@@ -22,8 +22,12 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\services\hqqq-reference-data\hqqq-reference-data.csproj" />
     <!-- Pulled in for the Phase 2 self-sufficient integration test that
-         drives reference-data → ingress in-process without a broker. -->
-    <ProjectReference Include="..\..\src\services\hqqq-ingress\hqqq-ingress.csproj" />
+         drives reference-data → ingress in-process without a broker.
+         Aliased so its public `Program` class does not collide with the
+         reference-data `Program` type referenced via
+         `WebApplicationFactory<Program>` in the default global namespace. -->
+    <ProjectReference Include="..\..\src\services\hqqq-ingress\hqqq-ingress.csproj"
+                      Aliases="IngressService" />
   </ItemGroup>
 
 </Project>

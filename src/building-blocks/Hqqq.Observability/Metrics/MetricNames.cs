@@ -25,4 +25,10 @@ public static class MetricNames
     public const string GatewayQuoteUpdatesMalformed = "hqqq.gateway.quote_updates_malformed";
     public const string GatewaySignalrBroadcasts = "hqqq.gateway.signalr_broadcasts";
     public const string GatewaySignalrBroadcastFailures = "hqqq.gateway.signalr_broadcast_failures";
+
+    // hqqq-reference-data — active-basket publish health (readiness-grade)
+    public const string RefdataLastPublishOkTimestamp = "hqqq.refdata.last_publish_ok_timestamp";
+    public const string RefdataConsecutivePublishFailures = "hqqq.refdata.consecutive_publish_failures";
+    public const string RefdataPublishFailuresTotal = "hqqq.refdata.publish_failures_total";
+    public const string RefdataPublishOutageSeconds = "hqqq.refdata.publish_outage_seconds";
 }

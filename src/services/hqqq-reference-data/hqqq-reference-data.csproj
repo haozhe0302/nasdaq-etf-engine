@@ -12,10 +12,11 @@
   </ItemGroup>
 
   <!--
-    Standalone-mode basket seed. Embedded so the published binary is
+    Deterministic basket seed. Embedded so the published binary is
     self-contained, AND copied to the output directory so an operator can
-    point ReferenceData:Standalone:SeedPath at a forked file when
-    iterating without a rebuild.
+    point ReferenceData:SeedPath at a forked file when iterating without a
+    rebuild. Read both by the fallback source and by live-file operators
+    who want a starting shape.
   -->
   <ItemGroup>
     <EmbeddedResource Include="Resources\basket-seed.json" />

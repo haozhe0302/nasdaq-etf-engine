@@ -167,7 +167,7 @@ Service tier (under `src/services/`):
 | `hqqq-quote-engine` | Consumes `market.raw_ticks.v1` + `refdata.basket.active.v1`, runs iNAV compute, writes `hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, and publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update`. |
 | `hqqq-persistence` | Consumes `pricing.snapshots.v1` + `market.raw_ticks.v1` into TimescaleDB hypertables; bootstraps `quote_snapshots_1m` / `quote_snapshots_5m` continuous aggregates and retention policies. |
 | `hqqq-analytics` | One-shot Timescale report job (`Analytics:Mode=report`) — not a long-running service. Replay / backfill / anomaly detection are deferred. |
-| `hqqq-reference-data` | **Hybrid (default):** in-memory stub; monolith owns issuer feeds + corp-action adjustment + basket activation. **Standalone:** loads a deterministic repo-controlled basket seed (`Resources/basket-seed.json`, ~25 N100 names, override via `ReferenceData__Standalone__SeedPath`) and publishes a fully-materialized `BasketActiveStateV1` to `refdata.basket.active.v1` on startup with a slow re-publish; fails fast on a missing/invalid seed. |
+| `hqqq-reference-data` | Composite holdings pipeline: live file/HTTP drop first (`ReferenceData__LiveHoldings__SourceType=File|Http`), committed ~100-name deterministic fallback seed (`Resources/basket-seed.json`, override via `ReferenceData__SeedPath`) otherwise. Publishes the **full** `BasketActiveStateV1` payload (every constituent + pricing basis) to `refdata.basket.active.v1` on change and on a slow re-publish cadence. `GET /api/basket/current` and `POST /api/basket/refresh` are real. |
 
 Infrastructure roles:
 
@@ -262,7 +262,7 @@ Frontend pages (`hqqq-ui`):
 
 | Tool | Version | Notes |
 |---|---|---|
-| .NET SDK | 10.0+ | `dotnet --version` |
+| .NET SDK | **pinned in `global.json`** (`10.0.202`, `rollForward=latestFeature`, `allowPrerelease=false`) | `dotnet --version` must print `10.0.202` or a higher `10.0.2xx` stable feature band. RC/preview SDKs (e.g. `10.0.100-rc.*`) will intentionally fail SDK resolution — install the pinned stable SDK rather than loosening `global.json`. CI enforces the same pin via `actions/setup-dotnet@v4` with `global-json-file`. See [docs/phase2/local-dev.md](docs/phase2/local-dev.md#required-net-sdk) for install + verification steps. |
 | Node.js | 22 LTS | Pinned in `src/hqqq-ui/.nvmrc` |
 | npm | 10.x | Bundled with Node 22 |
 | Docker / Docker Compose | recent | Required for Phase 2 local infra and the Phase 2 app-tier overlay |

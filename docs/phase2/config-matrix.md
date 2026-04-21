@@ -165,24 +165,37 @@ Dependencies:
 
 ## `hqqq-reference-data` (web)
 
-Basket registry. Behaviour depends on `OperatingMode`:
-- **Hybrid** (default): in-memory stub repository. The legacy
-  `hqqq-api` monolith owns issuer feeds, corp-action handling, and
-  publishing the active basket downstream.
-- **Standalone**: loads a deterministic basket seed (embedded
-  `Resources/basket-seed.json` by default; overridable with
-  `ReferenceData__Standalone__SeedPath`), exposes it via
-  `/api/basket/current`, and publishes a fully-materialized
-  `BasketActiveStateV1` to `refdata.basket.active.v1` on startup with a
-  slow re-publish (default every 5 min).
+Basket registry. **Owns the active basket in both operating modes** —
+behaviour is identical in `hybrid` and `standalone`; basket ownership no
+longer varies by mode. The service runs a composite holdings pipeline:
+live source first (config-driven file or HTTP drop), with a committed
+~100-name deterministic fallback seed as the safety net. It publishes
+the fully-materialized `BasketActiveStateV1` payload (including every
+constituent) to `refdata.basket.active.v1` on change and on a slow
+re-publish cadence so late consumers hydrate without operator action.
 
 | Env var | Required? | Default | Purpose |
 |---------|-----------|---------|---------|
 | `ASPNETCORE_URLS` | yes (containers) | `http://+:8080` (B) | Bind address. |
-| `OperatingMode` | optional | `hybrid` | `hybrid` or `standalone`. Inherited from the shared `HQQQ_OPERATING_MODE` (env / C / B). |
-| `Kafka__BootstrapServers` | required in `standalone` | — | Producer for `refdata.basket.active.v1`. |
-| `ReferenceData__Standalone__SeedPath` | optional | empty (use embedded seed) | Filesystem path to a basket-seed JSON that overrides the embedded one. Useful for iterating on demo content without rebuilding the image. |
-| `ReferenceData__Standalone__RepublishIntervalSeconds` | optional | `300` (clamped to ≥ 30) | Slow re-publish cadence on the compacted active-basket topic. |
+| `OperatingMode` | optional | `hybrid` | `hybrid` or `standalone`. Inherited from the shared `HQQQ_OPERATING_MODE` (env / C / B). Affects cross-cutting posture only — does not change basket ownership. |
+| `Kafka__BootstrapServers` | required | — | Producer for `refdata.basket.active.v1`. |
+| `ReferenceData__SeedPath` | optional | empty (use embedded seed) | Filesystem override for the deterministic fallback seed. Unset → embedded resource. |
+| `ReferenceData__LiveHoldings__SourceType` | optional | `None` | `None` / `File` / `Http`. `None` is the demo posture — composite goes straight to the fallback seed. |
+| `ReferenceData__LiveHoldings__FilePath` | optional | empty | Used when `SourceType=File`. |
+| `ReferenceData__LiveHoldings__HttpUrl` | optional | empty | Used when `SourceType=Http`. |
+| `ReferenceData__LiveHoldings__HttpTimeoutSeconds` | optional | `10` | HTTP per-request timeout for the live source. |
+| `ReferenceData__LiveHoldings__StaleAfterHours` | optional | `0` | `0` disables the `asOfDate`-based staleness check. |
+| `ReferenceData__Refresh__IntervalSeconds` | optional | `600` | Periodic refresh cadence. `0` disables the timer (startup-only). |
+| `ReferenceData__Refresh__RepublishIntervalSeconds` | optional | `300` | Slow re-publish so late consumers hydrate. `0` disables. |
+| `ReferenceData__Refresh__StartupMaxWaitSeconds` | optional | `30` | Upper bound on the startup refresh attempt. |
+| `ReferenceData__Validation__Strict` | optional | `true` | Strict: any validator error → fall back to seed. Permissive: tolerate per-row issues. |
+| `ReferenceData__Validation__MinConstituents` | optional | `50` | Soft lower bound on constituent count. |
+| `ReferenceData__Validation__MaxConstituents` | optional | `150` | Soft upper bound (guards duplicated feeds). |
+| `ReferenceData__Publish__TopicName` | optional | empty (`refdata.basket.active.v1`) | Override topic name. |
+| `ReferenceData__PublishHealth__FirstActivationGraceSeconds` | optional | `60` | Grace window after first activation before a never-published basket degrades readiness. |
+| `ReferenceData__PublishHealth__DegradedAfterConsecutiveFailures` | optional | `1` | Consecutive publish failures before `/healthz/ready` flips to Degraded (503). |
+| `ReferenceData__PublishHealth__UnhealthyAfterConsecutiveFailures` | optional | `5` | Consecutive publish failures before `/healthz/ready` flips to Unhealthy (503). |
+| `ReferenceData__PublishHealth__MaxSilenceSeconds` | optional | `900` | Maximum tolerated silence between successful publishes before Unhealthy. |
 | `Redis__Configuration` | optional today | — | Reserved for future basket-state mirror. |
 | `Timescale__ConnectionString` | optional today | — | Reserved for future basket persistence. |
 
@@ -193,13 +206,13 @@ Basket registry. Behaviour depends on `OperatingMode`:
 | Azure Container Apps (D4) | `<referenceDataInternalFqdn>` (internal-only) | none |
 
 Dependencies:
-- **Hybrid**: none beyond startup config binding. The gateway
-  aggregator scrapes `/healthz/ready`.
-- **Standalone**: produces to Kafka topic `refdata.basket.active.v1`
-  (compacted, key = basket id). Startup fails fast on a missing or
-  invalid seed (so an unhealthy revision never goes Ready). The
-  readiness probe (`basket-seed`) exposes the loaded basket id,
-  version, as-of date, fingerprint, constituent count, and source.
+- Produces to Kafka topic `refdata.basket.active.v1` (compacted,
+  key = basket id) — **full constituent payload**, never header-only.
+- The readiness probe (`active-basket`) is `Unhealthy` until the first
+  successful refresh activates a basket; afterwards it exposes
+  basketId, version, as-of date, fingerprint, constituent count, and
+  lineage source (e.g. `live:file`, `live:http`, `fallback-seed`).
+- The gateway aggregator scrapes `/healthz/ready`.
 
 ---
 

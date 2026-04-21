@@ -2,16 +2,44 @@
 
 ## Prerequisites
 
-- **.NET 10 SDK** — see `global.json` for the exact version
+- **.NET 10 SDK** pinned to the exact version in `global.json`
 - **Docker Desktop** (or compatible Docker/Compose runtime)
 - **Git**
 - A Tiingo API key (free tier sufficient) if you intend to test ingress
+
+### Required .NET SDK
+
+This repository pins the SDK via `global.json`:
+
+```json
+{
+  "sdk": {
+    "version": "10.0.202",
+    "rollForward": "latestFeature",
+    "allowPrerelease": false
+  }
+}
+```
+
+Install the pinned stable SDK (or any later `10.0.2xx` feature band) —
+see the [.NET downloads page](https://dotnet.microsoft.com/en-us/download/dotnet/10.0).
+An RC / preview build such as `10.0.100-rc.2` will intentionally fail SDK
+resolution because `allowPrerelease=false`; this is by design for
+reproducibility. Do **not** relax `global.json` — fix the environment.
 
 Verify your SDK:
 
 ```
 dotnet --version
+# expected: 10.0.202 (or a higher 10.0.2xx feature-band stable release)
+
+dotnet --list-sdks
+# expected to include: 10.0.202 [<install path>]
 ```
+
+CI (`.github/workflows/phase2-ci.yml`) uses the same pin via
+`actions/setup-dotnet@v4` with `global-json-file: global.json`, so the
+local and CI toolchains stay in lockstep.
 
 ## Setup
 

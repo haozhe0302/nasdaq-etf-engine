@@ -243,7 +243,8 @@ D-phase delivered (no longer transitional):
 | Deferred item | Target |
 |---|---|
 | Real Tiingo ingestion in `hqqq-ingress` | Phase 2B (ingress cutover, remaining) |
-| Issuer-feed + corporate-action pipeline in `hqqq-reference-data` | Phase 2B/C reference-data cutover |
+| Provider-specific holdings scrape adapters (Schwab / StockAnalysis / AlphaVantage) ported into `hqqq-reference-data` behind `IHoldingsSource` | Phase 2B/C reference-data cutover |
+| Corporate-action pipeline (splits / distributions / rebalances) in `hqqq-reference-data` | Phase 2B/C reference-data cutover |
 | Replay / backfill / anomaly detection in `hqqq-analytics` | Phase 2C5+ |
 | `constituent_snapshots` / `basket_versions` persistence tables | Phase 2C5+ |
 | Re-pointing the gateway `/api/history` read-side at the 1m/5m rollups | Phase 2C5+ |
@@ -280,8 +281,12 @@ D-phase items that were on this list and are now delivered:
 
 ## Next steps
 
-- **Phase 2B** (remaining): Wire real Tiingo ingestion in `hqqq-ingress`;
-  complete `hqqq-reference-data` issuer feeds + corporate-action adjustment.
+- **Phase 2B** (remaining): Wire real Tiingo ingestion in `hqqq-ingress`.
+  `hqqq-reference-data` already owns the active basket end-to-end (live
+  file/HTTP source with a committed ~100-name fallback seed, full Kafka
+  payload on `refdata.basket.active.v1`, real refresh + current APIs);
+  provider-specific holdings scrape adapters and corporate-action
+  adjustment are the remaining work behind `IHoldingsSource`.
 - **Phase 2C5+**: Add replay, backfill, and anomaly detection in
   `hqqq-analytics`; introduce `constituent_snapshots` / `basket_versions`;
   optionally re-point gateway `/api/history` at the 1m/5m continuous

@@ -1,12 +1,13 @@
-using Hqqq.ReferenceData.Standalone;
+using Hqqq.ReferenceData.Configuration;
+using Hqqq.ReferenceData.Sources;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-namespace Hqqq.ReferenceData.Tests;
+namespace Hqqq.ReferenceData.Tests.Sources;
 
 /// <summary>
-/// Validates the standalone basket seed loader: embedded fallback works,
-/// fingerprint is deterministic across processes, and validation errors
+/// Validates the committed basket-seed loader: embedded fallback works,
+/// the seed is a realistic ~100-name basket, and validation errors
 /// surface as startup-friendly <see cref="InvalidOperationException"/>s.
 /// </summary>
 public class BasketSeedLoaderTests
@@ -15,17 +16,22 @@ public class BasketSeedLoaderTests
     public void Load_FromEmbeddedResource_ReturnsValidatedSeed()
     {
         var loader = BuildLoader(seedPath: null);
-        var seed = loader.Load();
+        var snapshot = loader.Load();
 
-        Assert.Equal("HQQQ", seed.BasketId);
-        Assert.False(string.IsNullOrWhiteSpace(seed.Version));
-        Assert.True(seed.Constituents.Count >= 25,
-            $"expected at least 25 constituents, got {seed.Constituents.Count}");
-        Assert.True(seed.ScaleFactor > 0);
-        Assert.False(string.IsNullOrWhiteSpace(seed.Fingerprint));
-        Assert.Equal(64, seed.Fingerprint.Length); // SHA-256 hex
-        Assert.StartsWith("resource://", seed.Source);
-        Assert.Contains(seed.Constituents, c => c.Symbol == "AAPL");
+        Assert.Equal("HQQQ", snapshot.BasketId);
+        Assert.False(string.IsNullOrWhiteSpace(snapshot.Version));
+        // Soft lower bound: the committed seed ships with ~100 names and
+        // the service tolerates drift around that number. We assert >= 90
+        // rather than == 100 so the test is not brittle to index-event
+        // adjustments.
+        Assert.True(snapshot.Constituents.Count >= 90,
+            $"expected at least 90 constituents, got {snapshot.Constituents.Count}");
+        Assert.True(snapshot.ScaleFactor > 0);
+        Assert.Equal(BasketSeedLoader.SourceTag, snapshot.Source);
+        Assert.Contains(snapshot.Constituents, c => c.Symbol == "AAPL");
+        Assert.Contains(snapshot.Constituents, c => c.Symbol == "NVDA");
+        Assert.All(snapshot.Constituents, c => Assert.True(c.SharesHeld > 0));
+        Assert.All(snapshot.Constituents, c => Assert.True(c.ReferencePrice > 0));
     }
 
     [Fact]
@@ -36,11 +42,11 @@ public class BasketSeedLoaderTests
         try
         {
             var loader = BuildLoader(seedPath: path);
-            var seed = loader.Load();
+            var snapshot = loader.Load();
 
-            Assert.Equal("OVR", seed.BasketId);
-            Assert.Equal("v-override", seed.Version);
-            Assert.Equal(path, seed.Source);
+            Assert.Equal("OVR", snapshot.BasketId);
+            Assert.Equal("v-override", snapshot.Version);
+            Assert.Equal(BasketSeedLoader.SourceTag, snapshot.Source);
         }
         finally
         {
@@ -56,49 +62,6 @@ public class BasketSeedLoaderTests
         Assert.Contains("does not exist", ex.Message);
     }
 
-    [Fact]
-    public void ComputeFingerprint_IsStableAcrossInvocations()
-    {
-        var file = LoadSampleFile();
-        var first = BasketSeedLoader.ComputeFingerprint(file);
-        var second = BasketSeedLoader.ComputeFingerprint(file);
-        Assert.Equal(first, second);
-    }
-
-    [Fact]
-    public void ComputeFingerprint_IsStableAcrossConstituentOrder()
-    {
-        var file = LoadSampleFile();
-        var reordered = new BasketSeedFile
-        {
-            BasketId = file.BasketId,
-            Version = file.Version,
-            AsOfDate = file.AsOfDate,
-            ScaleFactor = file.ScaleFactor,
-            NavPreviousClose = file.NavPreviousClose,
-            QqqPreviousClose = file.QqqPreviousClose,
-            Constituents = file.Constituents
-                .OrderByDescending(c => c.Symbol, StringComparer.Ordinal)
-                .ToList(),
-        };
-
-        Assert.Equal(
-            BasketSeedLoader.ComputeFingerprint(file),
-            BasketSeedLoader.ComputeFingerprint(reordered));
-    }
-
-    [Fact]
-    public void ComputeFingerprint_ChangesWhenAReferencePriceChanges()
-    {
-        var a = LoadSampleFile();
-        var b = LoadSampleFile();
-        b.Constituents[0].ReferencePrice = a.Constituents[0].ReferencePrice + 1m;
-
-        Assert.NotEqual(
-            BasketSeedLoader.ComputeFingerprint(a),
-            BasketSeedLoader.ComputeFingerprint(b));
-    }
-
     [Theory]
     [InlineData("basketId is required", "basketId")]
     [InlineData("version is required", "version")]
@@ -106,8 +69,6 @@ public class BasketSeedLoaderTests
     [InlineData("constituents must be non-empty", "constituents")]
     public void Load_FailsValidation_WhenRequiredFieldsMissing(string expectedFragment, string fieldToBlank)
     {
-        // Sanity-check the error surfaces operator-friendly hints rather
-        // than a JSON exception.
         var json = BuildBrokenSeedJson(fieldToBlank);
         var path = WriteTempSeed(json);
         try
@@ -167,20 +128,12 @@ public class BasketSeedLoaderTests
         }
     }
 
-    private static BasketSeedLoader BuildLoader(string? seedPath)
+    internal static BasketSeedLoader BuildLoader(string? seedPath)
         => new(
-            Options.Create(new BasketSeedOptions { SeedPath = seedPath }),
+            Options.Create(new ReferenceDataOptions { SeedPath = seedPath }),
             NullLogger<BasketSeedLoader>.Instance);
 
-    private static BasketSeedFile LoadSampleFile()
-    {
-        // Use the embedded seed as a stable fixture so the test data
-        // tracks the production seed shape automatically.
-        var json = BasketSeedLoader.LoadEmbedded(typeof(BasketSeedLoader).Assembly);
-        return System.Text.Json.JsonSerializer.Deserialize<BasketSeedFile>(json)!;
-    }
-
-    private static string WriteTempSeed(string json)
+    internal static string WriteTempSeed(string json)
     {
         var path = Path.Combine(Path.GetTempPath(),
             $"hqqq-seed-{Guid.NewGuid():N}.json");
@@ -188,7 +141,7 @@ public class BasketSeedLoaderTests
         return path;
     }
 
-    private static string SampleSeedJson(
+    internal static string SampleSeedJson(
         string basketId, string version, string asOfDate = "2026-04-15")
     {
         return $$"""

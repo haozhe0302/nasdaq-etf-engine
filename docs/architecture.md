@@ -26,12 +26,14 @@ Two deployable "faces" coexist today:
     `pricing.snapshots.v1` and `market.raw_ticks.v1`; bootstraps
     hypertables, continuous aggregates, and retention policies.
   - `hqqq-analytics` (worker) — one-shot report over Timescale.
-  - `hqqq-reference-data` (web) — basket registry. In **hybrid** mode
-    keeps an in-memory seed and lets the legacy monolith bridge the
-    active basket. In **standalone** mode loads a deterministic
-    repo-controlled basket seed (~25 N100 names) and publishes a
-    fully-materialized `BasketActiveStateV1` to
-    `refdata.basket.active.v1` on startup with a slow re-publish.
+  - `hqqq-reference-data` (web) — **owns the active basket in both
+    operating modes**. Composite holdings pipeline: config-driven live
+    source (`File` or `Http` drop) first, with a committed ~100-name
+    deterministic fallback seed (`Resources/basket-seed.json`) as the
+    safety net. Publishes the **full** `BasketActiveStateV1` payload
+    (every constituent + pricing basis) to `refdata.basket.active.v1`
+    on change and on a slow re-publish cadence. Exposes real
+    `GET /api/basket/current` + `POST /api/basket/refresh`.
   - `hqqq-ingress` (worker) — Tiingo IEX ingest. In **hybrid** mode a
     no-op stub: the legacy monolith still bridges live ticks; if a
     Tiingo API key is set the worker logs a warning and ignores it
@@ -304,7 +306,7 @@ two rows is unchanged across modes.
 | Responsibility | Owner today (hybrid) | Owner in standalone | Notes |
 |---|---|---|---|
 | Tiingo WS / REST ingestion | `hqqq-api` (monolith) | `hqqq-ingress` (real Tiingo IEX websocket + REST snapshot warmup) | Standalone fails fast if `Tiingo__ApiKey` is missing |
-| Basket refresh + corp-action adjustment | `hqqq-api` (monolith) | `hqqq-reference-data` publishes a deterministic seed (no corp-actions); issuer-feed ingest stays out of scope for Phase 2 | Standalone publishes a full `BasketActiveStateV1` to `refdata.basket.active.v1` with a slow re-publish |
+| Basket refresh + active-basket publication | `hqqq-reference-data` (in **both** modes) — composite holdings source: live file/HTTP drop first, committed ~100-name fallback seed otherwise. Corp-actions remain deferred. | `hqqq-reference-data` (identical pipeline) | Publishes the **full** `BasketActiveStateV1` payload (every constituent + pricing basis) to `refdata.basket.active.v1` on change and on a slow re-publish cadence. `GET /api/basket/current` + `POST /api/basket/refresh` are real in both modes. |
 | iNAV compute + Redis materialization | `hqqq-quote-engine` | Real Kafka consumers, writes `hqqq:snapshot:{basketId}` + `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update` |
 | `pricing.snapshots.v1` + `market.raw_ticks.v1` → Timescale | `hqqq-persistence` | Bootstraps hypertables, `quote_snapshots_1m`/`quote_snapshots_5m` continuous aggregates, and retention policies |
 | Latest-state serving (`/api/quote`, `/api/constituents`) | `hqqq-gateway` (Redis) | Per-endpoint `Gateway:Sources:Quote=redis` / `Gateway:Sources:Constituents=redis` |
@@ -315,10 +317,11 @@ two rows is unchanged across modes.
 
 ### 4.2 Data plane
 
-In **hybrid** mode the legacy monolith bridges Tiingo ticks and the
-active basket onto Kafka. In **standalone** mode the same Kafka
-contracts are produced natively by `hqqq-ingress` and
-`hqqq-reference-data`; the rest of the data plane is identical.
+`hqqq-reference-data` is the sole publisher of `refdata.basket.active.v1`
+in **both** operating modes. Only the **tick stream** varies by mode: in
+**hybrid** the legacy monolith still bridges Tiingo ticks; in
+**standalone** `hqqq-ingress` produces them natively. The rest of the
+data plane is identical.
 
 ```text
 Tiingo WebSocket
@@ -326,7 +329,7 @@ Tiingo WebSocket
       v
 [hqqq-api (legacy ingestion, HYBRID)]   ──┐
 [hqqq-ingress (standalone)             ]  ├─►  market.raw_ticks.v1
-[hqqq-reference-data (standalone)      ]  ├─►  refdata.basket.active.v1
+[hqqq-reference-data (both modes)      ]  ├─►  refdata.basket.active.v1
                                           │
                                           ▼
                                    +======== Kafka =========+
@@ -389,13 +392,16 @@ Tiingo WebSocket
 
 - Real Tiingo WebSocket / REST ingestion **in hybrid mode**.
   `hqqq-ingress` takes ownership when `HQQQ_OPERATING_MODE=standalone`.
-- Basket refresh from external issuer feeds and corporate-action
-  adjustment. `hqqq-reference-data` in standalone mode publishes a
-  *deterministic* repo-controlled basket so the Phase 2 stack runs
-  end-to-end without the monolith, but it deliberately does not yet
-  ingest live issuer feeds or apply corp-actions — that pipeline
-  stays in the monolith and is the next candidate for extraction
-  (Phase 2B).
+- Provider-specific **holdings-source scrape adapters** (Schwab /
+  StockAnalysis / AlphaVantage). `hqqq-reference-data` already owns the
+  active basket end-to-end (live file/HTTP drop → ~100-name fallback
+  seed → full Kafka payload → real refresh + current APIs) in both
+  modes; what still lives in the monolith are the specific external
+  scrapers, which can be ported behind `IHoldingsSource` later without
+  touching the refresh pipeline.
+- Corporate-action adjustment (splits / distributions / rebalances) —
+  still the monolith's responsibility and the next candidate for
+  extraction.
 - Recorder / benchmark tooling (`Benchmark` module).
 
 `/api/system/health` aggregation has already moved to the gateway
@@ -413,8 +419,9 @@ child degrades the rollup), in `hybrid` they remain advisory.
   duplicates the gateway).
 - Multi-instance quote-engine / persistence / ingress / reference-data
   (singletons today by design).
-- Real Tiingo ingestion in `hqqq-ingress`; real issuer-feed and
-  corporate-action pipeline in `hqqq-reference-data`; both still served
+- Real Tiingo ingestion in `hqqq-ingress`; provider-specific holdings
+  scrape adapters + corporate-action pipeline in
+  `hqqq-reference-data`; both still served
   by the legacy monolith.
 - Replay / anomaly / backfill in `hqqq-analytics`.
 - Custom domain + TLS, scheduled trigger for the analytics job, image

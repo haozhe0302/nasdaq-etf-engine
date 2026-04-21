@@ -52,4 +52,13 @@ public sealed class HqqqMetrics
 
     public Counter<long> GatewaySignalrBroadcastFailures { get; } =
         Meter.CreateCounter<long>(MetricNames.GatewaySignalrBroadcastFailures, "failures");
+
+    // hqqq-reference-data — Kafka publish-health instrumentation. Gauges
+    // are observable and pull their value from an
+    // <c>IObservableGaugeSource</c> wired up in the service that owns the
+    // state (see Hqqq.ReferenceData.Services.PublishHealthMetrics). The
+    // counter below is incremented inline from the refresh pipeline on
+    // every failed publish attempt.
+    public Counter<long> RefdataPublishFailuresTotal { get; } =
+        Meter.CreateCounter<long>(MetricNames.RefdataPublishFailuresTotal, "failures");
 }

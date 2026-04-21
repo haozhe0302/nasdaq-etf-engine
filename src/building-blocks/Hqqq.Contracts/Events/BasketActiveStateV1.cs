@@ -34,6 +34,20 @@ public sealed record BasketActiveStateV1
 
     /// <summary>Reference anchor previous close (e.g. QQQ).</summary>
     public decimal? QqqPreviousClose { get; init; }
+
+    /// <summary>
+    /// Lineage tag for the basket payload (e.g. <c>"live:file"</c>,
+    /// <c>"live:http"</c>, <c>"fallback-seed"</c>). Additive: existing
+    /// historical messages on the compacted topic that lack this field
+    /// deserialize to <c>"unknown"</c>.
+    /// </summary>
+    public string Source { get; init; } = "unknown";
+
+    /// <summary>
+    /// Number of constituents in the published payload. Convenience for
+    /// downstream consumers; equal to <c>Constituents.Count</c>.
+    /// </summary>
+    public int ConstituentCount { get; init; }
 }
 
 /// <summary>Constituent metadata carried inline on the active-basket event.</summary>

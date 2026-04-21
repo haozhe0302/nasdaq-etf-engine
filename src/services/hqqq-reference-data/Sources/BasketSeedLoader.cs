@@ -1,29 +1,31 @@
 using System.Globalization;
 using System.Reflection;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Hqqq.ReferenceData.Configuration;
 using Microsoft.Extensions.Options;
 
-namespace Hqqq.ReferenceData.Standalone;
+namespace Hqqq.ReferenceData.Sources;
 
 /// <summary>
-/// Loads the deterministic basket seed used by standalone-mode
-/// <c>hqqq-reference-data</c>. Resolves from
-/// <see cref="BasketSeedOptions.SeedPath"/> when set, otherwise from the
-/// embedded resource <c>Resources/basket-seed.json</c>. Validates the
-/// shape and throws <see cref="InvalidOperationException"/> with an
-/// operator-friendly message on any failure.
+/// Loads the deterministic basket seed shipped with <c>hqqq-reference-data</c>.
+/// Resolves from <see cref="ReferenceDataOptions.SeedPath"/> when set,
+/// otherwise from the embedded resource <c>Resources/basket-seed.json</c>.
+///
+/// Always throws <see cref="InvalidOperationException"/> with an
+/// operator-friendly message on any structural problem so standalone
+/// startup fails fast (the host exits, the orchestrator restarts, the
+/// operator sees the validation message in logs).
 /// </summary>
 public sealed class BasketSeedLoader
 {
     private const string EmbeddedResourceName = "Hqqq.ReferenceData.Resources.basket-seed.json";
 
-    private readonly BasketSeedOptions _options;
+    private readonly ReferenceDataOptions _options;
     private readonly ILogger<BasketSeedLoader> _logger;
 
     public BasketSeedLoader(
-        IOptions<BasketSeedOptions> options,
+        IOptions<ReferenceDataOptions> options,
         ILogger<BasketSeedLoader> logger)
     {
         _options = options.Value;
@@ -31,24 +33,30 @@ public sealed class BasketSeedLoader
     }
 
     /// <summary>
-    /// Loads + validates the seed. Throws on any structural problem so
-    /// standalone startup fails fast (the host will exit, the orchestrator
-    /// will restart, and the operator sees the validation message in logs).
+    /// Reads + validates the seed and returns it as a normalized
+    /// <see cref="HoldingsSnapshot"/> tagged with <c>Source = "fallback-seed"</c>.
     /// </summary>
-    public BasketSeed Load()
+    public HoldingsSnapshot Load()
     {
         var (json, source) = ReadJson();
         var file = Deserialize(json, source);
-        Validate(file, source);
+        ValidateStructural(file, source);
 
         var asOfDate = ParseAsOfDate(file.AsOfDate, source);
-        var fingerprint = ComputeFingerprint(file);
 
-        _logger.LogInformation(
-            "Basket seed loaded from {Source} — basketId={BasketId} version={Version} asOfDate={AsOfDate} fingerprint={Fingerprint} constituents={Count}",
-            source, file.BasketId, file.Version, asOfDate, fingerprint, file.Constituents.Count);
+        var constituents = file.Constituents
+            .Select(c => new HoldingsConstituent
+            {
+                Symbol = c.Symbol.ToUpperInvariant(),
+                Name = c.Name,
+                Sector = c.Sector,
+                SharesHeld = c.SharesHeld,
+                ReferencePrice = c.ReferencePrice,
+                TargetWeight = c.TargetWeight,
+            })
+            .ToArray();
 
-        return new BasketSeed
+        var snapshot = new HoldingsSnapshot
         {
             BasketId = file.BasketId,
             Version = file.Version,
@@ -56,13 +64,21 @@ public sealed class BasketSeedLoader
             ScaleFactor = file.ScaleFactor,
             NavPreviousClose = file.NavPreviousClose,
             QqqPreviousClose = file.QqqPreviousClose,
-            Constituents = file.Constituents,
-            Fingerprint = fingerprint,
-            Source = source,
+            Constituents = constituents,
+            Source = SourceTag,
         };
+
+        _logger.LogInformation(
+            "Basket seed loaded from {SourcePath} — basketId={BasketId} version={Version} asOfDate={AsOfDate} constituents={Count}",
+            source, file.BasketId, file.Version, asOfDate, file.Constituents.Count);
+
+        return snapshot;
     }
 
-    private (string Json, string Source) ReadJson()
+    /// <summary>Canonical lineage tag emitted by this loader.</summary>
+    public const string SourceTag = "fallback-seed";
+
+    private (string Json, string SourcePath) ReadJson()
     {
         var overridePath = _options.SeedPath;
         if (!string.IsNullOrWhiteSpace(overridePath))
@@ -70,7 +86,7 @@ public sealed class BasketSeedLoader
             if (!File.Exists(overridePath))
             {
                 throw new InvalidOperationException(
-                    $"BasketSeedLoader: ReferenceData:Standalone:SeedPath='{overridePath}' does not exist.");
+                    $"BasketSeedLoader: ReferenceData:SeedPath='{overridePath}' does not exist.");
             }
             return (File.ReadAllText(overridePath), overridePath);
         }
@@ -79,7 +95,7 @@ public sealed class BasketSeedLoader
         return (LoadEmbedded(asm), $"resource://{EmbeddedResourceName}");
     }
 
-    /// <summary>Public for unit tests so they can verify the embedded resource is wired up.</summary>
+    /// <summary>Public for tests so they can verify the embedded resource is wired up.</summary>
     public static string LoadEmbedded(Assembly assembly)
     {
         using var stream = assembly.GetManifestResourceStream(EmbeddedResourceName)
@@ -89,12 +105,12 @@ public sealed class BasketSeedLoader
         return reader.ReadToEnd();
     }
 
-    private static BasketSeedFile Deserialize(string json, string source)
+    private static HoldingsFileSchema Deserialize(string json, string source)
     {
-        BasketSeedFile? file;
+        HoldingsFileSchema? file;
         try
         {
-            file = JsonSerializer.Deserialize<BasketSeedFile>(json, new JsonSerializerOptions
+            file = JsonSerializer.Deserialize<HoldingsFileSchema>(json, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true,
                 ReadCommentHandling = JsonCommentHandling.Skip,
@@ -111,7 +127,14 @@ public sealed class BasketSeedLoader
             $"BasketSeedLoader: seed JSON from {source} deserialized to null.");
     }
 
-    private static void Validate(BasketSeedFile file, string source)
+    /// <summary>
+    /// Structural-only validation (required fields present + shape is parsable).
+    /// Semantic validation (bounds, duplicates, positive shares) is the
+    /// <see cref="HoldingsValidator"/>'s job so live + seed go through the same
+    /// gate. We still check here because the seed is meant to fail fast at
+    /// startup with a targeted error message.
+    /// </summary>
+    private static void ValidateStructural(HoldingsFileSchema file, string source)
     {
         var errors = new List<string>();
 
@@ -162,47 +185,5 @@ public sealed class BasketSeedLoader
         }
         throw new InvalidOperationException(
             $"BasketSeedLoader: seed from {source} has invalid asOfDate '{raw}' (expected yyyy-MM-dd).");
-    }
-
-    /// <summary>
-    /// Deterministic SHA-256 of a canonical projection of the seed
-    /// (basketId + version + asOfDate + scaleFactor + ordered constituents).
-    /// Two processes loading the same seed file produce the same
-    /// fingerprint, which is what the quote-engine's idempotency guard
-    /// relies on so a re-publish doesn't reset state.
-    /// </summary>
-    public static string ComputeFingerprint(BasketSeedFile file)
-    {
-        var canonical = new
-        {
-            basketId = file.BasketId,
-            version = file.Version,
-            asOfDate = file.AsOfDate,
-            scaleFactor = file.ScaleFactor,
-            navPreviousClose = file.NavPreviousClose,
-            qqqPreviousClose = file.QqqPreviousClose,
-            constituents = file.Constituents
-                .OrderBy(c => c.Symbol, StringComparer.Ordinal)
-                .Select(c => new
-                {
-                    symbol = c.Symbol,
-                    name = c.Name,
-                    sector = c.Sector,
-                    sharesHeld = c.SharesHeld,
-                    referencePrice = c.ReferencePrice,
-                    targetWeight = c.TargetWeight,
-                })
-                .ToArray(),
-        };
-
-        var json = JsonSerializer.Serialize(canonical, new JsonSerializerOptions
-        {
-            WriteIndented = false,
-        });
-
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
-        var hex = new StringBuilder(bytes.Length * 2);
-        foreach (var b in bytes) hex.Append(b.ToString("x2", CultureInfo.InvariantCulture));
-        return hex.ToString();
     }
 }

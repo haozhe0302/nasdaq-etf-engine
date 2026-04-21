@@ -82,8 +82,21 @@ public static class ObservabilityRegistration
     /// Maps the standard set of management endpoints on the given application:
     /// <c>GET /healthz/live</c>, <c>GET /healthz/ready</c>, and the
     /// Prometheus scrape endpoint at <c>GET /metrics</c>.
+    ///
+    /// <para>
+    /// <paramref name="readyResultStatusCodes"/> lets a service opt into a
+    /// stricter HTTP status mapping for <c>/healthz/ready</c>. The default
+    /// ASP.NET mapping returns 200 for <c>Healthy</c> AND <c>Degraded</c>,
+    /// which is wrong when <c>Degraded</c> is meant to signal a real
+    /// operational regression (e.g. the active-basket publisher is failing).
+    /// Services that want <c>Degraded</c> → 503 should pass e.g.
+    /// <c>{ Healthy: 200, Degraded: 503, Unhealthy: 503 }</c>. Left null,
+    /// behavior is unchanged for every other service in the repo.
+    /// </para>
     /// </summary>
-    public static IEndpointRouteBuilder MapHqqqHealthEndpoints(this IEndpointRouteBuilder app)
+    public static IEndpointRouteBuilder MapHqqqHealthEndpoints(
+        this IEndpointRouteBuilder app,
+        IDictionary<HealthStatus, int>? readyResultStatusCodes = null)
     {
         app.MapHealthChecks("/healthz/live", new()
         {
@@ -91,10 +104,15 @@ public static class ObservabilityRegistration
             ResponseWriter = WriteHealthzResponse,
         });
 
-        app.MapHealthChecks("/healthz/ready", new()
+        var readyOptions = new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
         {
             ResponseWriter = WriteHealthzResponse,
-        });
+        };
+        if (readyResultStatusCodes is not null)
+        {
+            readyOptions.ResultStatusCodes = readyResultStatusCodes;
+        }
+        app.MapHealthChecks("/healthz/ready", readyOptions);
 
         app.MapPrometheusScrapingEndpoint("/metrics");
         return app;

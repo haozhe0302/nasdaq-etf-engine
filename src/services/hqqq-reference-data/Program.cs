@@ -1,12 +1,12 @@
 using Hqqq.Infrastructure.Hosting;
 using Hqqq.Observability.Hosting;
+using Hqqq.ReferenceData.Configuration;
 using Hqqq.ReferenceData.Endpoints;
 using Hqqq.ReferenceData.Health;
 using Hqqq.ReferenceData.Jobs;
 using Hqqq.ReferenceData.Publishing;
-using Hqqq.ReferenceData.Repositories;
 using Hqqq.ReferenceData.Services;
-using Hqqq.ReferenceData.Standalone;
+using Hqqq.ReferenceData.Sources;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,42 +16,45 @@ builder.Configuration.AddLegacyFlatKeyFallback();
 builder.Services.AddHqqqKafka(builder.Configuration);
 builder.Services.AddHqqqRedis(builder.Configuration);
 builder.Services.AddHqqqTimescale(builder.Configuration);
+// Operating mode still participates in cross-cutting concerns (auth posture,
+// logging enrichment) but no longer branches basket ownership — reference-data
+// owns the active basket in BOTH Hybrid and Standalone modes; the only
+// remaining mode-specific concern is ingress (handled elsewhere).
 builder.Services.AddHqqqOperatingMode(builder.Configuration);
 
-builder.Services.Configure<BasketSeedOptions>(
-    builder.Configuration.GetSection(BasketSeedOptions.SectionName));
+builder.Services.Configure<ReferenceDataOptions>(
+    builder.Configuration.GetSection(ReferenceDataOptions.SectionName));
 
 var healthChecks = builder.Services.AddHqqqObservability("hqqq-reference-data", builder.Environment)
     .AddKafkaHealthCheck();
 builder.Services.AddHqqqMetricsExporter();
 
-var mode = OperatingModeRegistration.ResolveMode(builder.Configuration);
+// Holdings-source pipeline.
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<BasketSeedLoader>();
+builder.Services.AddSingleton<FallbackSeedHoldingsSource>();
+builder.Services.AddHttpClient("hqqq-refdata-live-holdings");
+builder.Services.AddSingleton<LiveHoldingsSource>();
+builder.Services.AddSingleton<HoldingsValidator>();
+builder.Services.AddSingleton<IHoldingsSource, CompositeHoldingsSource>();
 
-if (mode == OperatingMode.Standalone)
-{
-    // Standalone: load deterministic seed up-front so a malformed seed
-    // surfaces as a startup crash (the Container Apps revision will fail
-    // to become Ready, which is what we want).
-    builder.Services.AddSingleton<BasketSeedLoader>();
-    builder.Services.AddSingleton(sp => sp.GetRequiredService<BasketSeedLoader>().Load());
-    builder.Services.AddSingleton<SeedFileBasketRepository>();
-    builder.Services.AddSingleton<IBasketRepository>(sp => sp.GetRequiredService<SeedFileBasketRepository>());
-    builder.Services.AddSingleton<IBasketPublisher, KafkaBasketPublisher>();
-    builder.Services.AddHostedService<StandalonePublishJob>();
-
-    healthChecks.Add(new HealthCheckRegistration(
-        name: "basket-seed",
-        factory: sp => ActivatorUtilities.CreateInstance<BasketSeedHealthCheck>(sp),
-        failureStatus: null,
-        tags: new[] { ObservabilityRegistration.ReadyTag }));
-}
-else
-{
-    builder.Services.AddSingleton<IBasketRepository, InMemoryBasketRepository>();
-}
-
-builder.Services.AddSingleton<IBasketService, StubBasketService>();
+// Active-basket lifecycle.
+builder.Services.AddSingleton<ActiveBasketStore>();
+builder.Services.AddSingleton<PublishHealthTracker>();
+// Observable Prometheus gauges for publish health. Instantiated eagerly
+// so the gauge callbacks are registered before the first scrape.
+builder.Services.AddSingleton<PublishHealthMetrics>();
+builder.Services.AddSingleton<BasketRefreshPipeline>();
+builder.Services.AddSingleton<IBasketService, BasketService>();
+builder.Services.AddSingleton<IBasketPublisher, KafkaBasketPublisher>();
 builder.Services.AddHostedService<BasketRefreshJob>();
+
+// Active-basket readiness probe (reports live vs fallback lineage to operators).
+healthChecks.Add(new HealthCheckRegistration(
+    name: "active-basket",
+    factory: sp => ActivatorUtilities.CreateInstance<ActiveBasketHealthCheck>(sp),
+    failureStatus: null,
+    tags: new[] { ObservabilityRegistration.ReadyTag }));
 
 var app = builder.Build();
 
@@ -60,12 +63,23 @@ app.Services.LogConfigurationPosture(
     app.Logger,
     "Kafka", "Redis", "Timescale");
 
-app.MapHqqqHealthEndpoints();
+// Eagerly instantiate PublishHealthMetrics so the observable gauges are
+// wired before the first /metrics scrape.
+_ = app.Services.GetRequiredService<PublishHealthMetrics>();
 
+// /healthz/ready must reflect Kafka publish health: Degraded and Unhealthy
+// both map to HTTP 503 so Kubernetes-style readiness probes stop routing to
+// a service whose downstream basket topic has stalled. ASP.NET's default
+// mapping silently returns 200 for Degraded, which would defeat the whole
+// state machine in ActiveBasketHealthCheck.
+var readyStatusCodes = new Dictionary<HealthStatus, int>
+{
+    [HealthStatus.Healthy] = StatusCodes.Status200OK,
+    [HealthStatus.Degraded] = StatusCodes.Status503ServiceUnavailable,
+    [HealthStatus.Unhealthy] = StatusCodes.Status503ServiceUnavailable,
+};
+app.MapHqqqHealthEndpoints(readyStatusCodes);
 app.MapBasketEndpoints();
-
-// TODO: Phase 2B — replace SeedFileBasketRepository with Timescale-backed implementation
-// TODO: Phase 2B — wire real basket refresh from issuer feeds (corp actions, NAV recalibration)
 
 app.Run();
 

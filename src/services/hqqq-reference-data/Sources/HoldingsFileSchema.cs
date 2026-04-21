@@ -1,13 +1,14 @@
 using System.Text.Json.Serialization;
 
-namespace Hqqq.ReferenceData.Standalone;
+namespace Hqqq.ReferenceData.Sources;
 
 /// <summary>
-/// Wire-shape DTOs for the deterministic basket seed JSON consumed by
-/// <see cref="BasketSeedLoader"/>. Decoupled from the domain entities so
-/// the seed schema can evolve without touching the engine contracts.
+/// Wire-shape DTOs for the holdings JSON consumed by <see cref="BasketSeedLoader"/>
+/// (fallback seed) and <see cref="LiveHoldingsSource"/> (file/http drop).
+/// Decoupled from the domain + event contracts so the JSON schema can evolve
+/// without touching the engine contracts.
 /// </summary>
-public sealed class BasketSeedFile
+public sealed class HoldingsFileSchema
 {
     [JsonPropertyName("basketId")]
     public string BasketId { get; set; } = string.Empty;
@@ -28,10 +29,10 @@ public sealed class BasketSeedFile
     public decimal? QqqPreviousClose { get; set; }
 
     [JsonPropertyName("constituents")]
-    public List<BasketSeedConstituent> Constituents { get; set; } = new();
+    public List<HoldingsFileConstituent> Constituents { get; set; } = new();
 }
 
-public sealed class BasketSeedConstituent
+public sealed class HoldingsFileConstituent
 {
     [JsonPropertyName("symbol")]
     public string Symbol { get; set; } = string.Empty;

@@ -223,6 +223,10 @@ param tiingoApiKey string = ''
 @secure()
 param refdataTiingoApiKey string = ''
 
+@description('AlphaVantage API key for the reference-data basket tail adapter. Required by the standard Azure Production posture (four-source anchored pipeline: StockAnalysis/Schwab anchor + AlphaVantage tail + Nasdaq guardrail). Empty string disables the AlphaVantage source entirely; when combined with `refdataAllowNasdaqTailOnlyInProduction=true` this is the explicit degraded Nasdaq-tail-only posture. When combined with `refdataAllowNasdaqTailOnlyInProduction=false` the reference-data startup guard fails fast so a Production deploy never silently narrows to a 3-source posture.')
+@secure()
+param alphaVantageApiKey string = ''
+
 // ── Reference-data Production posture (deploy_posture-driven) ────
 
 @description('When true, reference-data overlays Tiingo EOD splits on top of the file corp-action provider. Driven by deploy_posture: true for with-ingress, false for no-ingress-offline.')
@@ -236,6 +240,9 @@ param refdataStockAnalysisEnabled bool = true
 
 @description('When true, reference-data enables the Schwab HTML scraper as a secondary anchor source. The standard Azure Production path turns this on so anchor selection can pick the freshest of StockAnalysis vs Schwab.')
 param refdataSchwabEnabled bool = true
+
+@description('Explicit per-run operator override: accept a narrower Production posture (anchor + Nasdaq tail only, no AlphaVantage) for the reference-data service. Default false — the standard with-ingress Production contract is the full four-source anchored pipeline and the reference-data startup guard fails fast when AlphaVantage is not configured. Driven by the deploy workflow `allow_nasdaq_tail_only` input and mirrored by the `REFDATA_ALLOW_NASDAQ_TAIL_ONLY` env that `phase2-azure-smoke.sh` reads.')
+param refdataAllowNasdaqTailOnlyInProduction bool = false
 
 // ── Generic non-secret app config ────────────────────────────────
 
@@ -390,8 +397,10 @@ var refdataPostureEnv = [
   { name: 'ReferenceData__Basket__AllowDeterministicSeedInProduction', value: 'false' }
   { name: 'ReferenceData__Basket__RequireAnchorInProduction', value: 'true' }
   { name: 'ReferenceData__Basket__AllowAnchorlessProxyInProduction', value: 'false' }
+  { name: 'ReferenceData__Basket__AllowNasdaqTailOnlyInProduction', value: string(refdataAllowNasdaqTailOnlyInProduction) }
   { name: 'ReferenceData__Basket__Sources__StockAnalysis__Enabled', value: string(refdataStockAnalysisEnabled) }
   { name: 'ReferenceData__Basket__Sources__Schwab__Enabled', value: string(refdataSchwabEnabled) }
+  { name: 'ReferenceData__Basket__Sources__AlphaVantage__Enabled', value: string(!empty(alphaVantageApiKey)) }
   { name: 'ReferenceData__Basket__Sources__Nasdaq__Enabled', value: 'true' }
   { name: 'ReferenceData__CorporateActions__Tiingo__Enabled', value: string(refdataTiingoCorpActionsEnabled) }
   { name: 'ReferenceData__CorporateActions__AllowOfflineOnlyInProduction', value: string(refdataAllowOfflineOnlyInProduction) }
@@ -420,6 +429,7 @@ module refDataApp 'modules/containerApp.bicep' = {
     redisConfiguration: redisConfiguration
     timescaleConnectionString: timescaleConnectionString
     refdataTiingoApiKey: refdataTiingoApiKey
+    alphaVantageApiKey: alphaVantageApiKey
     cpu: refDataCpu
     memory: refDataMemory
     minReplicas: refDataMinReplicas
@@ -662,6 +672,7 @@ output gatewayUrl string = 'https://${gatewayApp.outputs.fqdn}'
 // distinguish "the revision this run created" from "the revision to
 // fall back to" without re-parsing revision lists.
 output gatewayLatestRevisionName string = gatewayApp.outputs.latestRevisionName
+output referenceDataAppName string = refDataApp.outputs.name
 output referenceDataInternalFqdn string = refDataApp.outputs.fqdn
 #disable-next-line BCP318
 output ingressInternalFqdn string = deployIngress ? ingressApp.outputs.fqdn : ''

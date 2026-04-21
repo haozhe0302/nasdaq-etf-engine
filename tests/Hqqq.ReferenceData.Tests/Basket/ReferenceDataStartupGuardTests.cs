@@ -75,11 +75,14 @@ public class ReferenceDataStartupGuardTests
     }
 
     [Fact]
-    public void Validate_Production_RealSource_StockAnalysisAnchorEnabled_Allowed()
+    public void Validate_Production_RealSource_StockAnalysisAnchorEnabled_WithAlphaVantage_Allowed()
     {
         // The standard Production path is the full four-source anchored
-        // pipeline. Enabling the StockAnalysis scraper as an anchor
-        // satisfies RequireAnchorInProduction=true.
+        // pipeline: StockAnalysis/Schwab anchor + AlphaVantage tail +
+        // Nasdaq guardrail. Enabling StockAnalysis as the anchor AND
+        // AlphaVantage with a real key satisfies both
+        // RequireAnchorInProduction=true and the strict AlphaVantage
+        // contract, so the guard passes quietly.
         var opts = new ReferenceDataOptions
         {
             Basket = new BasketOptions
@@ -88,6 +91,7 @@ public class ReferenceDataStartupGuardTests
                 Sources = new BasketSourcesOptions
                 {
                     StockAnalysis = new StockAnalysisSourceOptions { Enabled = true },
+                    AlphaVantage = new AlphaVantageSourceOptions { Enabled = true, ApiKey = "real-key" },
                     Nasdaq = new NasdaqSourceOptions { Enabled = true },
                 },
             },
@@ -97,9 +101,11 @@ public class ReferenceDataStartupGuardTests
     }
 
     [Fact]
-    public void Validate_Production_RealSource_SchwabAnchorEnabled_Allowed()
+    public void Validate_Production_RealSource_SchwabAnchorEnabled_WithAlphaVantage_Allowed()
     {
-        // Either anchor scraper alone is enough for RequireAnchor.
+        // Either anchor scraper alone is enough for RequireAnchor, but
+        // the strict four-source contract still requires AlphaVantage
+        // to be effectively enabled.
         var opts = new ReferenceDataOptions
         {
             Basket = new BasketOptions
@@ -108,12 +114,95 @@ public class ReferenceDataStartupGuardTests
                 Sources = new BasketSourcesOptions
                 {
                     Schwab = new SchwabSourceOptions { Enabled = true },
+                    AlphaVantage = new AlphaVantageSourceOptions { Enabled = true, ApiKey = "real-key" },
                     Nasdaq = new NasdaqSourceOptions { Enabled = true },
                 },
             },
         };
 
         ReferenceDataStartupGuard.Validate(Env("Production"), opts, NullLogger.Instance);
+    }
+
+    [Fact]
+    public void Validate_Production_RealSource_WithoutAlphaVantage_Throws_WhenOverrideFalse()
+    {
+        // Anchored path (StockAnalysis on), AlphaVantage not configured,
+        // AllowNasdaqTailOnlyInProduction=false (default). The strict
+        // four-source contract fails startup so the Production deploy
+        // does not silently narrow to a 3-source posture.
+        var opts = new ReferenceDataOptions
+        {
+            Basket = new BasketOptions
+            {
+                Mode = BasketMode.RealSource,
+                Sources = new BasketSourcesOptions
+                {
+                    StockAnalysis = new StockAnalysisSourceOptions { Enabled = true },
+                    AlphaVantage = new AlphaVantageSourceOptions { Enabled = false },
+                    Nasdaq = new NasdaqSourceOptions { Enabled = true },
+                },
+            },
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => ReferenceDataStartupGuard.Validate(Env("Production"), opts, NullLogger.Instance));
+        Assert.Contains("AlphaVantage", ex.Message);
+        Assert.Contains("AllowNasdaqTailOnlyInProduction", ex.Message);
+    }
+
+    [Fact]
+    public void Validate_Production_RealSource_WithoutAlphaVantage_Allowed_WhenOverrideTrue()
+    {
+        // Explicit operator override: accept the degraded anchor +
+        // Nasdaq-tail-only Production posture. Guard must not throw;
+        // Program.cs emits a loud DEGRADED warning through the logger.
+        var opts = new ReferenceDataOptions
+        {
+            Basket = new BasketOptions
+            {
+                Mode = BasketMode.RealSource,
+                AllowNasdaqTailOnlyInProduction = true,
+                Sources = new BasketSourcesOptions
+                {
+                    StockAnalysis = new StockAnalysisSourceOptions { Enabled = true },
+                    AlphaVantage = new AlphaVantageSourceOptions { Enabled = false },
+                    Nasdaq = new NasdaqSourceOptions { Enabled = true },
+                },
+            },
+        };
+
+        ReferenceDataStartupGuard.Validate(Env("Production"), opts, NullLogger.Instance);
+    }
+
+    [Fact]
+    public void Validate_Production_RealSource_AlphaVantageEnabled_ButPlaceholderKey_TreatedAsMissing()
+    {
+        // Matches the guard's own placeholder filter (`YOUR_` prefix).
+        // Placeholder keys must be treated as "not configured" so a
+        // deploy that forgot to inject the real secret fails fast
+        // instead of silently running with an unusable AlphaVantage
+        // adapter.
+        var opts = new ReferenceDataOptions
+        {
+            Basket = new BasketOptions
+            {
+                Mode = BasketMode.RealSource,
+                Sources = new BasketSourcesOptions
+                {
+                    StockAnalysis = new StockAnalysisSourceOptions { Enabled = true },
+                    AlphaVantage = new AlphaVantageSourceOptions
+                    {
+                        Enabled = true,
+                        ApiKey = "YOUR_ALPHAVANTAGE_KEY",
+                    },
+                    Nasdaq = new NasdaqSourceOptions { Enabled = true },
+                },
+            },
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => ReferenceDataStartupGuard.Validate(Env("Production"), opts, NullLogger.Instance));
+        Assert.Contains("AlphaVantage", ex.Message);
     }
 
     [Fact]

@@ -84,6 +84,10 @@ param tiingoApiKey string = ''
 @secure()
 param refdataTiingoApiKey string = ''
 
+@description('AlphaVantage API key for the reference-data basket tail adapter. Empty string = not used by this app. In the standard Azure Production posture this is required so the merged basket has an authoritative AlphaVantage tail; re-run the deploy workflow with allow_nasdaq_tail_only=true to accept the degraded Nasdaq-tail-only posture without an AlphaVantage key.')
+@secure()
+param alphaVantageApiKey string = ''
+
 @description('CPU cores per replica (e.g. 0.25, 0.5, 1.0).')
 param cpu string = '0.5'
 
@@ -121,7 +125,8 @@ var platformSecrets = union(
   empty(redisConfiguration) ? [] : [ { name: 'redis-configuration', value: redisConfiguration } ],
   empty(timescaleConnectionString) ? [] : [ { name: 'timescale-connection-string', value: timescaleConnectionString } ],
   empty(tiingoApiKey) ? [] : [ { name: 'tiingo-api-key', value: tiingoApiKey } ],
-  empty(refdataTiingoApiKey) ? [] : [ { name: 'refdata-tiingo-api-key', value: refdataTiingoApiKey } ]
+  empty(refdataTiingoApiKey) ? [] : [ { name: 'refdata-tiingo-api-key', value: refdataTiingoApiKey } ],
+  empty(alphaVantageApiKey) ? [] : [ { name: 'alphavantage-api-key', value: alphaVantageApiKey } ]
 )
 
 // Map each populated secret to the .NET hierarchical config key the
@@ -135,7 +140,8 @@ var secretEnvVars = union(
   empty(redisConfiguration) ? [] : [ { name: 'Redis__Configuration', secretRef: 'redis-configuration' } ],
   empty(timescaleConnectionString) ? [] : [ { name: 'Timescale__ConnectionString', secretRef: 'timescale-connection-string' } ],
   empty(tiingoApiKey) ? [] : [ { name: 'Tiingo__ApiKey', secretRef: 'tiingo-api-key' } ],
-  empty(refdataTiingoApiKey) ? [] : [ { name: 'ReferenceData__CorporateActions__Tiingo__ApiKey', secretRef: 'refdata-tiingo-api-key' } ]
+  empty(refdataTiingoApiKey) ? [] : [ { name: 'ReferenceData__CorporateActions__Tiingo__ApiKey', secretRef: 'refdata-tiingo-api-key' } ],
+  empty(alphaVantageApiKey) ? [] : [ { name: 'ReferenceData__Basket__Sources__AlphaVantage__ApiKey', secretRef: 'alphavantage-api-key' } ]
 )
 
 var ingressBlock = ingressMode == 'none' ? null : {

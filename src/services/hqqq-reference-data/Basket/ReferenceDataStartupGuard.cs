@@ -89,9 +89,46 @@ public static class ReferenceDataStartupGuard
                 basket.RequireAnchorInProduction, basket.AllowAnchorlessProxyInProduction);
         }
 
+        // The standard `with-ingress` Azure Production contract is the
+        // full four-source anchored pipeline: StockAnalysis/Schwab
+        // anchor + AlphaVantage authoritative tail + Nasdaq universe
+        // guardrail. When we are on the anchored path (at least one
+        // anchor scraper is enabled AND anchor-less proxy has not been
+        // opted into), AlphaVantage is required unless the operator
+        // has explicitly acknowledged the narrower Nasdaq-tail-only
+        // posture via AllowNasdaqTailOnlyInProduction=true. This
+        // prevents a Production deploy from silently drifting into a
+        // 3-source (anchor + Nasdaq only) contract.
+        var onAnchoredPath = (stockAnalysisEnabled || schwabEnabled)
+            && !basket.AllowAnchorlessProxyInProduction;
+
+        if (onAnchoredPath && !alphaEnabled)
+        {
+            if (!basket.AllowNasdaqTailOnlyInProduction)
+            {
+                throw new InvalidOperationException(
+                    "ReferenceData:Basket standard Production posture requires AlphaVantage to be " +
+                    "configured as the authoritative tail (the four-source anchored pipeline: " +
+                    "StockAnalysis/Schwab anchor + AlphaVantage tail + Nasdaq guardrail). " +
+                    "Either set ReferenceData:Basket:Sources:AlphaVantage:Enabled=true with a " +
+                    "real ReferenceData:Basket:Sources:AlphaVantage:ApiKey, OR explicitly " +
+                    "opt in to the degraded anchor+Nasdaq-tail-only posture by setting " +
+                    "ReferenceData:Basket:AllowNasdaqTailOnlyInProduction=true " +
+                    "(re-run the deploy workflow with allow_nasdaq_tail_only=true — the " +
+                    "override is mirrored end-to-end through bicep, the startup guard, and " +
+                    "phase2-azure-smoke.sh).");
+            }
+
+            logger.LogWarning(
+                "ReferenceDataStartupGuard: Production posture is DEGRADED (Nasdaq-tail-only) — " +
+                "AllowNasdaqTailOnlyInProduction=true is an explicit operator override. " +
+                "Standard Production is the four-source anchored pipeline; the merged basket " +
+                "will fall back to the Nasdaq tail with no AlphaVantage weights.");
+        }
+
         logger.LogInformation(
-            "ReferenceDataStartupGuard: Production posture OK — stockanalysis={SA} schwab={SC} alphavantage={Alpha} nasdaq={Nasdaq} requireAnchor={RequireAnchor}",
-            stockAnalysisEnabled, schwabEnabled, alphaEnabled, nasdaqEnabled, basket.RequireAnchorInProduction);
+            "ReferenceDataStartupGuard: Production posture OK — stockanalysis={SA} schwab={SC} alphavantage={Alpha} nasdaq={Nasdaq} requireAnchor={RequireAnchor} allowNasdaqTailOnly={AllowTailOnly}",
+            stockAnalysisEnabled, schwabEnabled, alphaEnabled, nasdaqEnabled, basket.RequireAnchorInProduction, basket.AllowNasdaqTailOnlyInProduction);
     }
 
     /// <summary>

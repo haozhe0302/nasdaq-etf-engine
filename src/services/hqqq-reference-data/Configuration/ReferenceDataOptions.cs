@@ -97,6 +97,24 @@ public sealed class BasketOptions
     /// </summary>
     public bool AllowAnchorlessProxyInProduction { get; set; } = false;
 
+    /// <summary>
+    /// Explicit operator override: accept a narrower Production posture
+    /// (anchor + Nasdaq tail only, no AlphaVantage). The standard
+    /// <c>with-ingress</c> Azure Production contract is the full
+    /// four-source anchored pipeline (StockAnalysis/Schwab anchor +
+    /// AlphaVantage tail + Nasdaq universe guardrail); without this
+    /// override, <see cref="ReferenceDataStartupGuard.Validate"/> fails
+    /// fast in Production when AlphaVantage is not effectively enabled
+    /// (toggle OFF, missing/placeholder key). Setting this to
+    /// <c>true</c> is an auditable per-run decision plumbed from the
+    /// deploy workflow <c>allow_nasdaq_tail_only</c> input; it must be
+    /// mirrored by the <c>REFDATA_ALLOW_NASDAQ_TAIL_ONLY=true</c> env
+    /// that <c>phase2-azure-smoke.sh</c> reads so runtime and smoke
+    /// agree on the chosen posture. Only honored when
+    /// <c>ASPNETCORE_ENVIRONMENT=Production</c>.
+    /// </summary>
+    public bool AllowNasdaqTailOnlyInProduction { get; set; } = false;
+
     /// <summary>IANA or Windows zone id for market-hours calculations. Default <c>America/New_York</c>.</summary>
     public string MarketTimeZone { get; set; } = "America/New_York";
 

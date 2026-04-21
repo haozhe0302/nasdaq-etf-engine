@@ -40,6 +40,16 @@
 #                       with-ingress deploys. Default "false"; mirrors
 #                       the runtime ReferenceData:Basket:AllowDeterministicSeedInProduction
 #                       guard.
+#   REFDATA_ALLOW_NASDAQ_TAIL_ONLY
+#                     - "true" accepts a degraded anchor+Nasdaq-tail-only
+#                       posture in with-ingress deploys (tail_source=nasdaq
+#                       or empty-AlphaVantage). Default "false" — the
+#                       standard Production contract is the four-source
+#                       anchored pipeline and tail_source MUST equal
+#                       "alphavantage". This env mirrors the runtime
+#                       ReferenceData:Basket:AllowNasdaqTailOnlyInProduction
+#                       guard and the deploy workflow's
+#                       allow_nasdaq_tail_only input end-to-end.
 #
 # Exit codes:
 #   0 - all probes passed
@@ -54,6 +64,7 @@ DEPLOY_POSTURE="${DEPLOY_POSTURE:-with-ingress}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-180}"
 ALLOW_PROXY_IN_PRODUCTION="${ALLOW_PROXY_IN_PRODUCTION:-false}"
 ALLOW_SEED_IN_PRODUCTION="${ALLOW_SEED_IN_PRODUCTION:-false}"
+REFDATA_ALLOW_NASDAQ_TAIL_ONLY="${REFDATA_ALLOW_NASDAQ_TAIL_ONLY:-false}"
 
 base="https://${GATEWAY_FQDN}"
 
@@ -452,10 +463,37 @@ else
                 ;;
         esac
 
-        # ── Tail must be populated. ───────────────────────────────
+        # ── Tail must prove the chosen Production contract. ───────
+        # Strict default: the four-source anchored pipeline produces
+        # tail_source="alphavantage". A tail_source of "nasdaq" (or
+        # anything non-alphavantage / non-empty) is the degraded
+        # anchor+Nasdaq-tail-only posture and is only accepted when
+        # the operator explicitly opted in via
+        # REFDATA_ALLOW_NASDAQ_TAIL_ONLY=true. Empty/none always
+        # fails — it means the whole tail merge collapsed.
         if [[ -z "$tail_source" || "$tail_source" == "none" ]]; then
-            log_fail "reference-data tailSource is empty. The anchored pipeline always produces a tail (alphavantage preferred, nasdaq proxy as fallback)."
+            log_fail "reference-data tailSource is empty. The anchored pipeline always produces a tail (alphavantage preferred, nasdaq proxy as the explicit degraded fallback)."
             emit_body_excerpt "$body"
+        elif [[ "$REFDATA_ALLOW_NASDAQ_TAIL_ONLY" == "true" ]]; then
+            case "$tail_source" in
+                alphavantage)
+                    log_pass "reference-data tailSource=\"alphavantage\" (standard four-source anchored pipeline) — override REFDATA_ALLOW_NASDAQ_TAIL_ONLY=true was redundant for this run."
+                    ;;
+                nasdaq)
+                    log_info "reference-data tailSource=\"nasdaq\" accepted under explicit operator override REFDATA_ALLOW_NASDAQ_TAIL_ONLY=true (degraded anchor+Nasdaq-tail-only Production posture)."
+                    ;;
+                *)
+                    log_fail "reference-data tailSource=\"$tail_source\" is not a recognized tail (expected alphavantage for standard Production, or nasdaq under the degraded override)."
+                    emit_body_excerpt "$body"
+                    ;;
+            esac
+        else
+            if [[ "$tail_source" == "alphavantage" ]]; then
+                log_pass "reference-data tailSource=\"alphavantage\" (standard four-source anchored Production posture)"
+            else
+                log_fail "reference-data tailSource=\"$tail_source\" is not the standard four-source contract. with-ingress expects tailSource=\"alphavantage\". Either wire an AlphaVantage API key into the reference-data Container App (ReferenceData__Basket__Sources__AlphaVantage__ApiKey), or re-run the deploy workflow with allow_nasdaq_tail_only=true to explicitly accept the degraded anchor+Nasdaq-tail-only posture."
+                emit_body_excerpt "$body"
+            fi
         fi
 
         # ── isDegraded must be false unless operator opted in. ────

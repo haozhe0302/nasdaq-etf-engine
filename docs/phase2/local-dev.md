@@ -5,7 +5,9 @@
 - **.NET 10 SDK** pinned to the exact version in `global.json`
 - **Docker Desktop** (or compatible Docker/Compose runtime)
 - **Git**
-- A Tiingo API key (free tier sufficient) if you intend to test ingress
+- **A Tiingo API key** (free tier sufficient) — **required** for the
+  Phase 2 app tier. `hqqq-ingress` fails fast at startup if the key is
+  missing or a placeholder; there is no stub / hybrid / log-only path.
 
 ### Required .NET SDK
 
@@ -37,9 +39,31 @@ dotnet --list-sdks
 # expected to include: 10.0.202 [<install path>]
 ```
 
+If `dotnet --version` errors with
+`Requested SDK version: 10.0.202 … not found`, the runner has only an
+RC/preview SDK installed. Resolve **by installing the pinned SDK**
+(below), not by relaxing `global.json`:
+
+- **Windows / macOS:** install the latest `10.0.2xx` stable release from
+  <https://dotnet.microsoft.com/en-us/download/dotnet/10.0>.
+- **Linux:** use the upstream installer script with the same pin —
+  `curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --version 10.0.202`.
+
+Once installed, re-run `dotnet --list-sdks` to confirm `10.0.202`
+appears, then re-run the build/test commands.
+
 CI (`.github/workflows/phase2-ci.yml`) uses the same pin via
-`actions/setup-dotnet@v4` with `global-json-file: global.json`, so the
-local and CI toolchains stay in lockstep.
+`actions/setup-dotnet@v4` with `global-json-file: global.json` and
+fails the build with an explicit error if the resolved SDK is not in
+the `10.0.2xx` feature band — local and CI toolchains stay in lockstep.
+
+To execute the full Phase 2 test suite locally exactly as CI does:
+
+```
+dotnet restore Hqqq.sln
+dotnet build   Hqqq.sln --no-restore --configuration Release
+dotnet test    Hqqq.sln --no-build   --configuration Release --verbosity normal
+```
 
 ## Setup
 
@@ -49,13 +73,15 @@ local and CI toolchains stay in lockstep.
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and fill in your Tiingo API key if needed:
+Edit `.env` and fill in your Tiingo API key — **required** for Phase 2:
 
 ```
 Tiingo__ApiKey=your-real-key-here
 ```
 
-All other values have sensible local-dev defaults.
+All other values have sensible local-dev defaults. The legacy
+`hqqq-api` monolith is NOT required to run Phase 2 — `scripts/phase2-up.{ps1,sh}`
+never start it.
 
 ### 2. Start infrastructure
 
@@ -143,13 +169,14 @@ Run the Phase 2 services in the order below. Each step is an independent
 terminal / process — no single orchestrator starts them all today.
 
 ```powershell
-# 1. Reference data (basket registry; in-memory seed today)
+# 1. Reference data (active basket owner; composite holdings + corp-actions)
 dotnet run --project src/services/hqqq-reference-data
 
 # 2. Quote engine (Kafka consumer + iNAV compute + Redis + pricing.snapshots.v1)
 dotnet run --project src/services/hqqq-quote-engine
 
-# 3. Ingress (still stub; run only when exercising the host)
+# 3. Ingress (real Tiingo IEX websocket + REST snapshot warmup; basket-driven
+#    subscription. Requires Tiingo__ApiKey — fails fast otherwise.)
 dotnet run --project src/services/hqqq-ingress
 
 # 4. Persistence (pricing.snapshots.v1 + market.raw_ticks.v1 → TimescaleDB)
@@ -165,50 +192,39 @@ dotnet run --project src/services/hqqq-analytics
 
 Startup order rationale:
 
-1. `hqqq-reference-data` publishes/holds the active basket that downstream
-   services key off.
-2. `hqqq-quote-engine` starts before the gateway so that, in B5 Redis mode,
-   the first `/api/quote` / `/api/constituents` request can find a snapshot
-   in Redis. It also produces `pricing.snapshots.v1`.
-3. `hqqq-ingress` is a placeholder — live Tiingo ingestion today is still
-   done by the legacy `hqqq-api` monolith.
-4. `hqqq-persistence` consumes both Kafka topics and is the only writer of
-   Timescale history that the gateway's C2 mode reads.
-5. `hqqq-gateway` is the serving edge and is last so its probes come up
-   against a populated Redis / Timescale state.
-6. `hqqq-analytics` is a one-shot job; run it only when you actually want
-   a report.
+1. `hqqq-reference-data` activates and publishes the active basket
+   (`refdata.basket.active.v1`) that downstream services key off.
+2. `hqqq-quote-engine` starts before the gateway so that, in Redis-mode,
+   the first `/api/quote` / `/api/constituents` request can find a
+   snapshot in Redis. It also produces `pricing.snapshots.v1`.
+3. `hqqq-ingress` consumes the active basket, opens the Tiingo IEX
+   websocket, and publishes `market.raw_ticks.v1` +
+   `market.latest_by_symbol.v1`. Subscriptions are driven by
+   `BasketActiveStateV1.Constituents`; static `Tiingo:Symbols` is a
+   bootstrap fallback only.
+4. `hqqq-persistence` consumes both market topics and is the only
+   writer of the Timescale history that the gateway reads in
+   `Gateway:Sources:History=timescale`.
+5. `hqqq-gateway` is the serving edge and is last so its probes come
+   up against a populated Redis / Timescale state. The default
+   per-endpoint posture is `redis` / `redis` / `timescale` /
+   `aggregated` — the legacy `hqqq-api` monolith is **not** required.
+6. `hqqq-analytics` is a one-shot job; run it only when you actually
+   want a report.
 
 ## 6. Operating modes for the gateway
 
-The gateway supports three realistic local-dev modes, all configured via
-`Gateway:DataSource` plus per-endpoint `Gateway:Sources:*` overrides.
-See [../../src/services/hqqq-gateway/README.md](../../src/services/hqqq-gateway/README.md)
-for the full matrix.
+The gateway's default Phase 2 posture is the per-endpoint mix
+(`Gateway:Sources:Quote=redis`, `…Constituents=redis`, `…History=timescale`,
+`…SystemHealth=aggregated`). The full matrix lives in
+[../../src/services/hqqq-gateway/README.md](../../src/services/hqqq-gateway/README.md).
 
-### Legacy proxy mode (parity with Phase 1)
+### Default Phase 2 posture (recommended)
 
-Requires `hqqq-api` running.
-
-```powershell
-$env:Gateway__DataSource = "legacy"
-$env:Gateway__LegacyBaseUrl = "http://localhost:5000"
-dotnet run --project src/services/hqqq-gateway
-```
-
-### Mixed B5 + C2 cutover mode (recommended)
-
-Serve live quote/constituents from Redis and history from Timescale. Requires
-Redis + `hqqq-quote-engine` running (for Redis snapshots) and TimescaleDB +
-`hqqq-persistence` running (for history rows). System-health still stays on
-stub or legacy forwarding.
+No `hqqq-api` involvement. Requires Redis + `hqqq-quote-engine` (for
+Redis snapshots) and TimescaleDB + `hqqq-persistence` (for history rows).
 
 ```powershell
-$env:Gateway__DataSource = "legacy"                # or "stub"
-$env:Gateway__LegacyBaseUrl = "http://localhost:5000"  # only if DataSource=legacy
-$env:Gateway__Sources__Quote = "redis"
-$env:Gateway__Sources__Constituents = "redis"
-$env:Gateway__Sources__History = "timescale"
 $env:Gateway__BasketId = "HQQQ"
 $env:Redis__Configuration = "localhost:6379"
 $env:Timescale__ConnectionString = "Host=localhost;Port=5432;Database=hqqq;Username=admin;Password=changeme"
@@ -219,6 +235,20 @@ dotnet run --project src/services/hqqq-gateway
 
 ```powershell
 $env:Gateway__DataSource = "stub"
+dotnet run --project src/services/hqqq-gateway
+```
+
+### Legacy proxy mode (legacy parity only — NOT a Phase 2 path)
+
+Forwards to a separately-running `hqqq-api` monolith. The Phase 2
+default never selects this; it remains in the codebase only for
+side-by-side parity testing during a future regression bisect. The
+gateway logs a loud warning at startup when any endpoint resolves to
+`legacy`.
+
+```powershell
+$env:Gateway__DataSource = "legacy"
+$env:Gateway__LegacyBaseUrl = "http://localhost:5000"
 dotnet run --project src/services/hqqq-gateway
 ```
 
@@ -244,11 +274,13 @@ Exit codes: `0` success (including empty-window), `1` job failure, `2`
 unsupported `Analytics:Mode`. An empty window is **not** a failure — the
 host logs a single `WARN`, emits `hasData=false`, and exits cleanly.
 
-## 8. Running the legacy API
+## 8. Running the legacy API (optional, parity only)
 
-The Phase 1 monolith still works independently and is currently the only
-source of real Tiingo ingestion, basket refresh, and `/api/system/health`
-aggregation:
+The Phase 1 monolith still compiles and runs independently and continues
+to back the public live demo links in the root `README.md`. It is **not
+required** to run Phase 2 — `hqqq-ingress`, `hqqq-reference-data`, the
+gateway aggregator, and corp-action adjustment are all owned by Phase 2
+services. Run the monolith only for legacy parity testing:
 
 ```powershell
 dotnet run --project src/hqqq-api
@@ -291,9 +323,15 @@ dotnet test Hqqq.sln
   + `tests/Hqqq.Gateway.ReplicaSmoke/` (see Section 12).
 
 ### Still deferred
-- Real Tiingo ingestion in `hqqq-ingress` (still served by the legacy
-  monolith).
-- Real issuer-feed + corporate-action pipeline in `hqqq-reference-data`.
+- Provider-specific holdings scrape adapters (Schwab / StockAnalysis /
+  AlphaVantage) — `hqqq-reference-data` runs on `File` / `Http` drops
+  plus the deterministic fallback seed today; those scrapers stay in
+  the monolith as reference until they are ported behind
+  `IHoldingsSource`.
+- Wider corp-action coverage: Phase 2 implements forward / reverse
+  splits, ticker renames, constituent transition detection, and
+  scale-factor continuity. Dividends, spin-offs, mergers, and
+  cross-exchange moves are intentionally out of scope.
 - Replay / backfill / anomaly detection in `hqqq-analytics`.
 - HA topologies for Kafka / Redis / Timescale; multi-instance
   quote-engine / persistence / ingress / reference-data.

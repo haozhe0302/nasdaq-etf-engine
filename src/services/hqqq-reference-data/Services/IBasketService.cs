@@ -1,4 +1,5 @@
 using Hqqq.Domain.Entities;
+using Hqqq.ReferenceData.CorporateActions.Contracts;
 using Hqqq.ReferenceData.Sources;
 
 namespace Hqqq.ReferenceData.Services;
@@ -35,6 +36,20 @@ public sealed record BasketCurrentResult
     /// scraping <c>/healthz/ready</c>.
     /// </summary>
     public required BasketPublishStatus PublishStatus { get; init; }
+
+    /// <summary>
+    /// Most recent corporate-action + transition adjustment report. Null
+    /// before the first refresh completes; an empty report (with
+    /// <c>SplitsApplied=0</c> and empty add/remove lists) after a clean
+    /// no-op refresh.
+    /// </summary>
+    public AdjustmentReport? LatestAdjustmentReport { get; init; }
+
+    /// <summary>Fingerprint of the basket that was active before the current one, if any.</summary>
+    public string? PreviousFingerprint { get; init; }
+
+    /// <summary>BasketId of the basket that was active before the current one, if any.</summary>
+    public string? PreviousBasketId { get; init; }
 }
 
 /// <summary>

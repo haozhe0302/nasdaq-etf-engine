@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "Phase-2-native corporate-action seed for hqqq-reference-data.",
+    "Schema:",
+    "  splits[]:  { symbol, effectiveDate: yyyy-MM-dd, factor: decimal, description? }",
+    "    factor > 1.0 → forward split (e.g. 4:1 → factor = 4.0)",
+    "    factor < 1.0 → reverse split (e.g. 1:10 → factor = 0.1)",
+    "  renames[]: { oldSymbol, newSymbol, effectiveDate: yyyy-MM-dd, description? }",
+    "",
+    "Scope (honest):",
+    "  - Forward / reverse stock splits",
+    "  - Ticker renames / symbol remaps (chained hops supported)",
+    "  Out of scope: dividends, spin-offs, mergers, acquisitions at constituent level,",
+    "                 cross-exchange moves, ISIN/CUSIP-level remaps.",
+    "",
+    "Defaults: both arrays empty. The demo posture ships with no corp-actions so",
+    "the basket pipeline runs through the adjustment layer as a no-op.",
+    "Operators can override the path via ReferenceData:CorporateActions:File:Path",
+    "without rebuilding the image."
+  ],
+  "splits": [],
+  "renames": []
+}

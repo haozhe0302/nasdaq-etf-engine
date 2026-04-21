@@ -18,16 +18,19 @@ keeps the displayed iNAV stable across basket transitions.
 
 The repository is in a **transitional architecture**:
 
-- **Phase 1 (legacy)** — the original
-  `hqqq-api` modular monolith plus the `hqqq-ui` React app.
-- **Phase 2 (current service-based app tier, in-repo)** — a split into
-  `hqqq-gateway`, `hqqq-ingress`, `hqqq-quote-engine`,
-  `hqqq-persistence`, and `hqqq-analytics` over Kafka / Redis /
-  TimescaleDB. Runnable locally via Docker Compose and deployable to
-  Azure Container Apps via GitHub Actions rolling images (OIDC) into
-  manually-provisioned Container Apps (`rg-hqqq-p2`,
-  `ca-hqqq-p2-*`); a legacy Bicep-provisioning path is retained as
-  a secondary option. Multi-replica gateway fan-out is real.
+- **Phase 1 (legacy, reference-only)** — the original
+  `hqqq-api` modular monolith plus the `hqqq-ui` React app. Retained in
+  the repo as reference code; **not required** to run Phase 2.
+- **Phase 2 (current service-based app tier, self-sufficient)** — a split
+  into `hqqq-gateway`, `hqqq-ingress`, `hqqq-reference-data`,
+  `hqqq-quote-engine`, `hqqq-persistence`, and `hqqq-analytics` over
+  Kafka / Redis / TimescaleDB. `hqqq-ingress` opens a real Tiingo
+  websocket driven by the basket event; `hqqq-reference-data` owns
+  the active basket including Phase-2-native corporate-action
+  adjustments (splits, renames, transitions, scale-factor continuity).
+  Runnable locally via Docker Compose without `hqqq-api`. Deployable to
+  Azure Container Apps via GitHub Actions. Multi-replica gateway
+  fan-out is real.
 - **Phase 3 (under construction)** — Kubernetes app-tier operationalization,
   HA topologies for stateful infra, multi-instance workers.
 
@@ -36,22 +39,22 @@ The repository is in a **transitional architecture**:
 ## Architecture at a glance
 
 This diagram is the quick-read view of the current repository state:
-Phase 1 and Phase 2 coexist; Phase 2 serving/compute/persistence paths
-are real, while some ingestion/reference-data responsibilities remain in
-the legacy monolith.
+Phase 1 and Phase 2 coexist; Phase 2 is **self-sufficient** — the
+legacy monolith (`hqqq-api`) is in the repo for reference but does not
+participate in Phase 2 runtime.
 
 ```text
 External market data provider (Tiingo)
   |
-  \--> Service-based runtime
-         (ingestion path depends on HQQQ_OPERATING_MODE:
-            hybrid     = monolith bridges ticks; hqqq-ingress + hqqq-reference-data are stubs
-            standalone = hqqq-ingress consumes Tiingo IEX directly;
-                         hqqq-reference-data publishes a deterministic basket seed)
+  \--> hqqq-ingress (real Tiingo IEX websocket + REST warmup)
+         - subscribes to refdata.basket.active.v1 and drives its
+           Tiingo subscribe/unsubscribe dynamically off the basket
+         - fails fast on missing/placeholder Tiingo__ApiKey
 
          Kafka topics
-           - market.raw_ticks.v1 (key=symbol, ingress/bridge -> consumers)
-           - refdata.basket.active.v1 (active basket state)
+           - market.raw_ticks.v1 (key=symbol, ingress -> consumers)
+           - market.latest_by_symbol.v1 (compacted, key=symbol)
+           - refdata.basket.active.v1 (active basket + AdjustmentSummary)
            - pricing.snapshots.v1 (quote-engine -> persistence)
                 |
                 +--> hqqq-quote-engine (consumer group A)
@@ -135,8 +138,8 @@ nasdaq-etf-engine/
 │   │   ├── Hqqq.Infrastructure/          # Kafka/Redis/Timescale factories
 │   │   └── Hqqq.Observability/           # Metrics, tracing, health builders
 │   ├── services/
-│   │   ├── hqqq-reference-data/          # Basket service. Hybrid: in-memory seed (monolith owns issuer feeds + corp-actions). Standalone: deterministic repo-controlled basket-seed.json + Kafka publisher
-│   │   ├── hqqq-ingress/                 # Tiingo ingest worker. Hybrid: stub. Standalone: real Tiingo IEX websocket + raw-tick + latest-quote Kafka publisher
+│   │   ├── hqqq-reference-data/          # Active-basket owner. Composite holdings (live File/Http drop → ~100-name fallback seed) + Phase-2-native corp-action adjustment (splits, renames, transitions) → publishes BasketActiveStateV1 with AdjustmentSummary
+│   │   ├── hqqq-ingress/                 # Real Tiingo IEX websocket + REST snapshot warmup; publishes market.raw_ticks.v1 + market.latest_by_symbol.v1; subscriptions driven by refdata.basket.active.v1
 │   │   ├── hqqq-quote-engine/            # iNAV compute + Redis pub/sub publisher
 │   │   ├── hqqq-gateway/                 # REST + SignalR serving gateway
 │   │   ├── hqqq-persistence/             # TimescaleDB writer worker
@@ -162,12 +165,12 @@ Service tier (under `src/services/`):
 
 | Service | Role today |
 |---------|------------|
-| `hqqq-gateway` | REST + SignalR serving edge. Reads Redis for `/api/quote` and `/api/constituents`, Timescale for `/api/history`. Native `/api/system/health` aggregator (mode-aware: in `standalone`, ingress + reference-data are required dependencies for the rollup). Subscribes to `hqqq:channel:quote-update` and broadcasts `QuoteUpdate` locally per replica (no SignalR Redis backplane). |
-| `hqqq-ingress` | **Hybrid (default):** no-op stub; the legacy `hqqq-api` monolith bridges live ticks (an unused `Tiingo__ApiKey` is logged then ignored). **Standalone:** real Tiingo IEX websocket consumer with REST snapshot warmup; publishes `market.raw_ticks.v1` (time-series) and `market.latest_by_symbol.v1` (compacted, key=symbol); fails fast at startup if `Tiingo__ApiKey` is missing/placeholder. |
+| `hqqq-gateway` | REST + SignalR serving edge. Reads Redis for `/api/quote` and `/api/constituents`, Timescale for `/api/history`. Native `/api/system/health` aggregator: `hqqq-ingress` and `hqqq-reference-data` are architecturally required — any non-healthy status escalates the rollup to `degraded`. Subscribes to `hqqq:channel:quote-update` and broadcasts `QuoteUpdate` locally per replica (no SignalR Redis backplane). |
+| `hqqq-ingress` | Real Tiingo IEX websocket consumer with REST snapshot warmup; publishes `market.raw_ticks.v1` (time-series) and `market.latest_by_symbol.v1` (compacted, key=symbol). Subscribes to `refdata.basket.active.v1` and drives Tiingo subscribe/unsubscribe dynamically off the basket. Fails fast at startup if `Tiingo__ApiKey` is missing/placeholder. No stub / hybrid path. |
 | `hqqq-quote-engine` | Consumes `market.raw_ticks.v1` + `refdata.basket.active.v1`, runs iNAV compute, writes `hqqq:snapshot:{basketId}` / `hqqq:constituents:{basketId}`, publishes `pricing.snapshots.v1`, and publishes live `QuoteUpdate` envelopes to Redis pub/sub `hqqq:channel:quote-update`. |
 | `hqqq-persistence` | Consumes `pricing.snapshots.v1` + `market.raw_ticks.v1` into TimescaleDB hypertables; bootstraps `quote_snapshots_1m` / `quote_snapshots_5m` continuous aggregates and retention policies. |
 | `hqqq-analytics` | One-shot Timescale report job (`Analytics:Mode=report`) — not a long-running service. Replay / backfill / anomaly detection are deferred. |
-| `hqqq-reference-data` | Composite holdings pipeline: live file/HTTP drop first (`ReferenceData__LiveHoldings__SourceType=File|Http`), committed ~100-name deterministic fallback seed (`Resources/basket-seed.json`, override via `ReferenceData__SeedPath`) otherwise. Publishes the **full** `BasketActiveStateV1` payload (every constituent + pricing basis) to `refdata.basket.active.v1` on change and on a slow re-publish cadence. `GET /api/basket/current` and `POST /api/basket/refresh` are real. |
+| `hqqq-reference-data` | Composite holdings pipeline (live file/HTTP first, deterministic ~100-name fallback seed otherwise) + **Phase-2-native corporate-action adjustment** (composite file+Tiingo provider; splits, reverse splits, ticker renames, constituent transition detection, scale-factor continuity). Publishes the **full** `BasketActiveStateV1` payload (every constituent + pricing basis + `AdjustmentSummary`) to `refdata.basket.active.v1` on change and on a slow re-publish cadence. `GET /api/basket/current` (with `adjustmentSummary`) and `POST /api/basket/refresh` are real. |
 
 Infrastructure roles:
 
@@ -181,28 +184,44 @@ gateway source-selection matrix are in
 explicitly deferred items are in
 [`docs/phase2/restructure-notes.md`](docs/phase2/restructure-notes.md).
 
-### Operating modes
+### Operating mode
 
-Phase 2 runs in one of two operating modes selected by the
-`HQQQ_OPERATING_MODE` env var (canonical hierarchical key:
-`OperatingMode`). The same value flows into every Container App / compose
-service so the entire deployment swaps modes together — see the
-hybrid-vs-standalone decision matrix in
-[`docs/phase2/azure-deploy.md` §0.2](docs/phase2/azure-deploy.md).
+Phase 2 has a **single self-sufficient runtime path**. The
+`HQQQ_OPERATING_MODE` env (canonical hierarchical key: `OperatingMode`)
+is retained as a **logging-posture tag only** for cross-service
+consistency in structured logs; it no longer branches any runtime
+behaviour. The legacy `hqqq-api` monolith is repo-only reference code
+and is never part of the Phase 2 runtime.
 
-| | `hybrid` (default) | `standalone` |
-|---|---|---|
-| Live ticks | Bridged from the legacy `hqqq-api` monolith. | `hqqq-ingress` consumes Tiingo IEX directly. |
-| Active basket | Bridged from the legacy monolith. | `hqqq-reference-data` publishes a deterministic repo-controlled seed (~25 N100 names). |
-| External coupling | Requires the monolith to be running. | Self-contained — no monolith in the path. |
-| Required env | (none new) | `Tiingo__ApiKey` on `hqqq-ingress`. |
-| Smoke tightness | `phase2-smoke.{ps1,sh}` / `phase2-azure-smoke.sh` assert reachability + 200s. | Same scripts with `-Mode standalone` / `--mode standalone` additionally poll `/api/quote` until `nav > 0` and `/api/constituents` until `holdings` is non-empty. |
-| Pick when | Demoing alongside the legacy monolith for parity, or no Tiingo creds available. | Phase 2 must run on its own (interview demo, isolated environment). |
+Required environment for a Phase 2 bring-up:
 
-Switching modes is a config-only change — no image rebuild required.
-In `docker-compose.phase2.yml` the env var is wired into every Phase 2
-service; in Azure the Bicep `operatingMode` parameter (default
-`hybrid`) is injected into each Container App's environment.
+| Key | Why |
+|-----|-----|
+| `Tiingo__ApiKey` | `hqqq-ingress` fails fast without a real Tiingo API key. |
+| `Kafka__BootstrapServers` | All services. |
+| `Redis__Configuration` | Gateway, quote-engine. |
+| `Timescale__ConnectionString` | Persistence, analytics, gateway history. |
+
+`docker-compose.phase2.yml` wires all of the above; `scripts/phase2-up.{ps1,sh}`
+bring the stack up without ever starting `hqqq-api`.
+
+### Corporate-action adjustment (Phase-2-native)
+
+`hqqq-reference-data` applies corporate-action adjustments to the basket
+**before** publishing. Supported scope (honest):
+
+- forward splits and reverse splits,
+- ticker renames / symbol remaps (including chained hops within a window),
+- constituent add / remove detection,
+- scale-factor continuity across basket transitions.
+
+Out of scope: dividends, spin-offs, mergers, acquisitions, cross-exchange
+moves, retroactive re-pricing of stored ticks. The composite provider
+reads a deterministic JSON file first (offline-safe, default) and
+optionally overlays Tiingo EOD splits when
+`ReferenceData__CorporateActions__Tiingo__Enabled=true`. The adjustment
+summary is surfaced on `GET /api/basket/current` and on every published
+`BasketActiveStateV1` event.
 
 ---
 

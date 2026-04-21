@@ -1,16 +1,18 @@
 # hqqq-reference-data
 
 Phase 2 reference-data service. Owns the **active basket** lifecycle for
-HQQQ in both `hybrid` and `standalone` operating modes: fetches or loads a
-realistic ~100-name basket, validates and fingerprints it, activates it
-in-memory, and publishes the **full constituent payload** on
-`refdata.basket.active.v1` for quote-engine / gateway to consume.
+HQQQ: fetches or loads a realistic ~100-name basket, validates and
+fingerprints it, applies Phase-2-native **corporate-action adjustments**
+(splits, renames, constituent transitions), and publishes the **full
+constituent payload** on `refdata.basket.active.v1` for quote-engine /
+gateway / ingress to consume.
 
-## What runs where
+## Runtime posture
 
-Basket ownership **no longer varies by operating mode**. The only
-difference between hybrid and standalone is ingress — where ticks come
-from. The basket pipeline is identical in both postures.
+Basket ownership is unconditional in Phase 2 — there is no
+hybrid/standalone runtime split for reference-data anymore. The legacy
+`hqqq-api` monolith is not part of the Phase 2 runtime path; it remains
+in the repo as reference code only.
 
 ## HTTP surface
 
@@ -18,9 +20,9 @@ from. The basket pipeline is identical in both postures.
 |--------|------|-----------|
 | `GET`  | `/healthz/live` | liveness |
 | `GET`  | `/healthz/ready` | readiness — three-state machine (`Healthy` / `Degraded` / `Unhealthy`). `Degraded` and `Unhealthy` both return **HTTP 503** so K8s-style probes actually react. Surfaces basketId + version + asOfDate + fingerprint + constituent count + **source** (live vs fallback) **and** `lastPublishOkUtc` / `consecutivePublishFailures` / `lastPublishError` / `lastPublishedFingerprint` / `currentFingerprintPublished` / `publishOutageSeconds`. |
-| `GET`  | `/api/basket/current` | full active basket (metadata + every constituent) + `publishStatus` sub-object mirroring the readiness state; 503 before first refresh |
+| `GET`  | `/api/basket/current` | full active basket (metadata + every constituent) + `publishStatus` sub-object mirroring the readiness state + **`adjustmentSummary`** (splits applied, renames applied, added/removed symbols, source lineage) + `previousFingerprint` / `previousBasketId` for transition continuity; 503 before first refresh |
 | `POST` | `/api/basket/refresh` | real refresh: returns `changed`/`unchanged` + fingerprints + source + count |
-| `GET`  | `/metrics` | Prometheus metrics — including `hqqq_refdata_last_publish_ok_timestamp`, `hqqq_refdata_consecutive_publish_failures`, `hqqq_refdata_publish_failures_total`, `hqqq_refdata_publish_outage_seconds` |
+| `GET`  | `/metrics` | Prometheus metrics — including `hqqq_refdata_last_publish_ok_timestamp`, `hqqq_refdata_consecutive_publish_failures`, `hqqq_refdata_publish_failures_total`, `hqqq_refdata_publish_outage_seconds`, `hqqq_refdata_splits_applied_total`, `hqqq_refdata_renames_applied_total`, `hqqq_refdata_basket_transitions_total`, `hqqq_refdata_corp_action_fetch_errors_total` |
 
 ## Holdings source pipeline
 
@@ -80,10 +82,60 @@ convention (`ReferenceData__LiveHoldings__SourceType=File`).
 | `ReferenceData:PublishHealth:DegradedAfterConsecutiveFailures` | `1` | Consecutive publish failures before `/healthz/ready` flips to Degraded (503). |
 | `ReferenceData:PublishHealth:UnhealthyAfterConsecutiveFailures` | `5` | Consecutive publish failures before `/healthz/ready` flips to Unhealthy (503). |
 | `ReferenceData:PublishHealth:MaxSilenceSeconds` | `900` | Maximum tolerated silence between successful publishes before Unhealthy. |
+| `ReferenceData:CorporateActions:LookbackDays` | `365` | Upper bound on the corp-action window when `snapshot.AsOfDate` is unexpectedly ancient. |
+| `ReferenceData:CorporateActions:File:Path` | _(null)_ | Optional override for the corp-action JSON file. Unset → embedded `Resources/corporate-actions-seed.json`. |
+| `ReferenceData:CorporateActions:Tiingo:Enabled` | `false` | When `true`, overlay Tiingo EOD splits on top of the file feed. |
+| `ReferenceData:CorporateActions:Tiingo:ApiKey` | _(null)_ | Required when `Tiingo:Enabled=true`. |
+| `ReferenceData:CorporateActions:Tiingo:BaseUrl` | `https://api.tiingo.com/tiingo/daily` | Tiingo EOD base URL. |
+| `ReferenceData:CorporateActions:Tiingo:TimeoutSeconds` | `10` | Tiingo per-request timeout. |
+| `ReferenceData:CorporateActions:Tiingo:MaxConcurrency` | `5` | Parallel per-symbol Tiingo requests. |
+| `ReferenceData:CorporateActions:Tiingo:CacheTtlMinutes` | `60` | Per-symbol split-cache TTL. |
 
 Runtime logic never assumes **exactly 100 names** — the count is derived
 from data and the validator uses configurable soft bounds so 99/100/101
 drifts are accepted.
+
+## Corporate-action adjustment (Phase-2-native)
+
+Before fingerprinting + publishing, every refresh runs the snapshot
+through the corporate-action layer:
+
+```
+IHoldingsSource → HoldingsValidator
+               → CorporateActionAdjustmentService
+                    (splits + renames, via CompositeCorporateActionProvider:
+                     File first + optional Tiingo overlay)
+               → BasketTransitionPlanner
+                    (add/remove diff + ScaleFactorCalibrator continuity)
+               → HoldingsFingerprint → Publish
+```
+
+**Supported scope (honest and explicit):**
+
+- Forward splits (factor > 1) and reverse splits (factor < 1) — applied
+  to `SharesHeld` for events with `EffectiveDate ∈ (snapshot.AsOfDate, runtimeDate]`.
+- Ticker renames / symbol remaps — chained hops resolved to the
+  terminal symbol by `SymbolRemapResolver`.
+- Constituent add / remove detection across basket transitions.
+- Scale-factor continuity via `Hqqq.Domain.Services.ScaleFactorCalibrator`
+  when the raw-basket value changes.
+
+**Explicitly not supported:**
+
+- Dividends, special dividends, rights offerings.
+- Spin-offs, mergers, acquisitions at the constituent level (Phase 2
+  trusts the holdings source for the new constituent).
+- Cross-exchange moves, ISIN/CUSIP-level remaps.
+- Retroactive re-pricing of already-stored ticks in Timescale.
+
+The `CompositeCorporateActionProvider` reads a deterministic JSON file
+first (`Resources/corporate-actions-seed.json` embedded, override path
+via `ReferenceData:CorporateActions:File:Path`). When
+`ReferenceData:CorporateActions:Tiingo:Enabled=true`, Tiingo EOD splits
+are overlaid on top; if Tiingo errors, the composite falls back to
+file-only with lineage `file+tiingo-degraded` and surfaces the error on
+the `/api/basket/current` adjustment summary. No monolith runtime
+dependency.
 
 ## Published event
 
@@ -94,10 +146,16 @@ drifts are accepted.
 - every constituent: `Symbol`, `SecurityName`, `Sector`, `TargetWeight`,
   `SharesHeld`, `SharesOrigin`
 - pricing basis: entries (`Symbol`, `Shares`, `ReferencePrice`,
-  `SharesOrigin`, `TargetWeight`), fingerprint, inferred notional,
-  counts
+  `SharesOrigin`, `TargetWeight`), fingerprint, inferred notional, counts
 - calibration: `ScaleFactor`, `NavPreviousClose`, `QqqPreviousClose`
-- lineage: `Source` (live vs fallback), `ConstituentCount`
+- lineage: `Source` (live vs fallback, suffixed with `+corp-adjusted`
+  when the corp-action layer made a change), `ConstituentCount`
+- **additive** — transition continuity + adjustment metadata:
+  `PreviousBasketId`, `PreviousFingerprint`, `AdjustmentSummary`
+  (`SplitsApplied`, `RenamesApplied`, `AddedSymbols`, `RemovedSymbols`,
+  `AdjustmentAsOfDate`, `AdjustmentAppliedAtUtc`, `ProviderSource`,
+  `ScaleFactorRecalibrated`). Historical messages that pre-date this
+  pass deserialize with these fields unset.
 
 ## Folder structure
 
@@ -105,10 +163,27 @@ drifts are accepted.
 hqqq-reference-data/
 ├── Configuration/
 │   └── ReferenceDataOptions.cs
+├── CorporateActions/
+│   ├── Contracts/
+│   │   ├── SplitEvent.cs
+│   │   ├── SymbolRenameEvent.cs
+│   │   ├── CorporateActionFeed.cs
+│   │   ├── AdjustmentReport.cs       # SplitAdjustments, RenameAdjustments, Added/Removed, scale-factor metadata
+│   │   └── ICorporateActionProvider.cs
+│   ├── Providers/
+│   │   ├── CorporateActionFileSchema.cs
+│   │   ├── FileCorporateActionProvider.cs
+│   │   ├── TiingoCorporateActionProvider.cs   # opt-in via CorporateActions:Tiingo:Enabled
+│   │   └── CompositeCorporateActionProvider.cs
+│   └── Services/
+│       ├── SymbolRemapResolver.cs             # chained rename → terminal symbol
+│       ├── CorporateActionAdjustmentService.cs
+│       └── BasketTransitionPlanner.cs         # add/remove diff + ScaleFactorCalibrator
 ├── Endpoints/
 │   └── BasketEndpoints.cs
 ├── Health/
-│   └── ActiveBasketHealthCheck.cs
+│   ├── ActiveBasketHealthCheck.cs
+│   └── CorporateActionHealthCheck.cs
 ├── Jobs/
 │   └── BasketRefreshJob.cs        # startup + periodic refresh + slow republish
 ├── Models/
@@ -118,15 +193,16 @@ hqqq-reference-data/
 │   ├── KafkaBasketPublisher.cs
 │   └── ActiveBasketEventMapper.cs
 ├── Resources/
-│   └── basket-seed.json           # ~100-name deterministic fallback seed
+│   ├── basket-seed.json                       # ~100-name deterministic fallback seed
+│   └── corporate-actions-seed.json            # default corp-action feed (empty)
 ├── Services/
-│   ├── ActiveBasketStore.cs
+│   ├── ActiveBasketStore.cs                   # Current + Previous + LatestAdjustmentReport
 │   ├── BasketRefreshPipeline.cs
 │   ├── BasketService.cs
 │   ├── IBasketService.cs
-│   ├── PublishHealthTracker.cs          # publish attempt/success/failure state
-│   ├── PublishHealthStateEvaluator.cs   # shared Healthy/Degraded/Unhealthy logic
-│   └── PublishHealthMetrics.cs          # observable Prometheus gauges
+│   ├── PublishHealthTracker.cs
+│   ├── PublishHealthStateEvaluator.cs
+│   └── PublishHealthMetrics.cs
 ├── Sources/
 │   ├── IHoldingsSource.cs
 │   ├── HoldingsSnapshot.cs
@@ -144,8 +220,13 @@ hqqq-reference-data/
 ## Known limitations
 
 - `LiveHoldingsSource` supports `File` and `Http` drops only. Provider-
-  specific scrape adapters (Schwab / StockAnalysis / AlphaVantage) still
-  live in the legacy monolith and can be ported behind
-  `IHoldingsSource` later without touching the refresh pipeline.
+  specific scrape adapters (Schwab / StockAnalysis / AlphaVantage) are
+  out of scope for Phase 2 runtime; the legacy monolith retains them as
+  reference only.
 - The fallback seed `asOfDate` is pinned at build time; the file is a
   credible stand-in, not a live market snapshot.
+- Corp-action scope is narrow by design (see *Corporate-action adjustment*
+  above). Dividends, spin-offs, mergers, and cross-exchange moves are
+  intentionally not supported.
+- Splits adjust `SharesHeld` but leave `ReferencePrice` to the next
+  holdings refresh; this is a known approximation.

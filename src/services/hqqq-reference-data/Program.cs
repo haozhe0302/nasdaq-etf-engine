@@ -1,6 +1,9 @@
 using Hqqq.Infrastructure.Hosting;
 using Hqqq.Observability.Hosting;
 using Hqqq.ReferenceData.Configuration;
+using Hqqq.ReferenceData.CorporateActions.Contracts;
+using Hqqq.ReferenceData.CorporateActions.Providers;
+using Hqqq.ReferenceData.CorporateActions.Services;
 using Hqqq.ReferenceData.Endpoints;
 using Hqqq.ReferenceData.Health;
 using Hqqq.ReferenceData.Jobs;
@@ -16,10 +19,10 @@ builder.Configuration.AddLegacyFlatKeyFallback();
 builder.Services.AddHqqqKafka(builder.Configuration);
 builder.Services.AddHqqqRedis(builder.Configuration);
 builder.Services.AddHqqqTimescale(builder.Configuration);
-// Operating mode still participates in cross-cutting concerns (auth posture,
-// logging enrichment) but no longer branches basket ownership — reference-data
-// owns the active basket in BOTH Hybrid and Standalone modes; the only
-// remaining mode-specific concern is ingress (handled elsewhere).
+// OperatingMode is a logging-posture tag for cross-service consistency;
+// reference-data's basket ownership is unconditional in Phase 2 — the
+// hybrid/standalone runtime split has been removed from every Phase 2
+// service touched by this pass.
 builder.Services.AddHqqqOperatingMode(builder.Configuration);
 
 builder.Services.Configure<ReferenceDataOptions>(
@@ -38,21 +41,34 @@ builder.Services.AddSingleton<LiveHoldingsSource>();
 builder.Services.AddSingleton<HoldingsValidator>();
 builder.Services.AddSingleton<IHoldingsSource, CompositeHoldingsSource>();
 
+// Phase-2-native corporate-action pipeline. File provider is
+// deterministic and offline-safe; Tiingo overlay is opt-in via
+// ReferenceData:CorporateActions:Tiingo:Enabled.
+builder.Services.AddHttpClient(TiingoCorporateActionProvider.HttpClientName);
+builder.Services.AddSingleton<FileCorporateActionProvider>();
+builder.Services.AddSingleton<TiingoCorporateActionProvider>();
+builder.Services.AddSingleton<ICorporateActionProvider, CompositeCorporateActionProvider>();
+builder.Services.AddSingleton<CorporateActionAdjustmentService>();
+builder.Services.AddSingleton<BasketTransitionPlanner>();
+
 // Active-basket lifecycle.
 builder.Services.AddSingleton<ActiveBasketStore>();
 builder.Services.AddSingleton<PublishHealthTracker>();
-// Observable Prometheus gauges for publish health. Instantiated eagerly
-// so the gauge callbacks are registered before the first scrape.
 builder.Services.AddSingleton<PublishHealthMetrics>();
 builder.Services.AddSingleton<BasketRefreshPipeline>();
 builder.Services.AddSingleton<IBasketService, BasketService>();
 builder.Services.AddSingleton<IBasketPublisher, KafkaBasketPublisher>();
 builder.Services.AddHostedService<BasketRefreshJob>();
 
-// Active-basket readiness probe (reports live vs fallback lineage to operators).
 healthChecks.Add(new HealthCheckRegistration(
     name: "active-basket",
     factory: sp => ActivatorUtilities.CreateInstance<ActiveBasketHealthCheck>(sp),
+    failureStatus: null,
+    tags: new[] { ObservabilityRegistration.ReadyTag }));
+
+healthChecks.Add(new HealthCheckRegistration(
+    name: "corp-actions",
+    factory: sp => ActivatorUtilities.CreateInstance<CorporateActionHealthCheck>(sp),
     failureStatus: null,
     tags: new[] { ObservabilityRegistration.ReadyTag }));
 
@@ -61,7 +77,7 @@ var app = builder.Build();
 app.Services.LogConfigurationPosture(
     "hqqq-reference-data",
     app.Logger,
-    "Kafka", "Redis", "Timescale");
+    "Kafka", "Redis", "Timescale", "ReferenceData");
 
 // Eagerly instantiate PublishHealthMetrics so the observable gauges are
 // wired before the first /metrics scrape.

@@ -27,4 +27,18 @@ public interface ITiingoStreamClient
         IEnumerable<string> symbols,
         Func<RawTickV1, CancellationToken, Task> onTick,
         CancellationToken ct);
+
+    /// <summary>
+    /// Dynamically subscribes to additional tickers on the currently open
+    /// websocket. Safe to call while <see cref="ConnectAndStreamAsync"/>
+    /// is running. If the socket is not open the implementation records
+    /// the desired add-set and applies it on the next connect.
+    /// </summary>
+    Task SubscribeAsync(IEnumerable<string> symbols, CancellationToken ct);
+
+    /// <summary>
+    /// Dynamically unsubscribes tickers on the currently open websocket.
+    /// Same safety contract as <see cref="SubscribeAsync"/>.
+    /// </summary>
+    Task UnsubscribeAsync(IEnumerable<string> symbols, CancellationToken ct);
 }

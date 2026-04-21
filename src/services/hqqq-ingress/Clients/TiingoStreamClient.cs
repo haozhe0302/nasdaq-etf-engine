@@ -11,8 +11,8 @@ using Microsoft.Extensions.Options;
 namespace Hqqq.Ingress.Clients;
 
 /// <summary>
-/// Real Tiingo IEX websocket client used in
-/// <see cref="Hqqq.Infrastructure.Hosting.OperatingMode.Standalone"/>.
+/// Real Tiingo IEX websocket client. Single runtime path — there is no
+/// hybrid/stub implementation anymore.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -23,6 +23,12 @@ namespace Hqqq.Ingress.Clients;
 /// error. The caller (the worker) owns the reconnect/backoff loop — this
 /// client never retries internally.
 /// </para>
+/// <para>
+/// Supports mid-session subscribe/unsubscribe so the ingress service can
+/// follow basket activation events without dropping the socket. When the
+/// socket is not open, pending mutations are queued in
+/// <see cref="_desiredSymbols"/> and re-applied on the next connect.
+/// </para>
 /// </remarks>
 public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
 {
@@ -30,6 +36,8 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
     private readonly IngestionState _state;
     private readonly ILogger<TiingoStreamClient> _logger;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly object _symbolLock = new();
+    private readonly HashSet<string> _desiredSymbols = new(StringComparer.Ordinal);
 
     private ClientWebSocket? _ws;
     private long _sequence;
@@ -55,6 +63,16 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
         _ws?.Dispose();
         _ws = new ClientWebSocket();
 
+        lock (_symbolLock)
+        {
+            _desiredSymbols.Clear();
+            foreach (var s in symbols ?? Enumerable.Empty<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(s))
+                    _desiredSymbols.Add(s.ToLowerInvariant());
+            }
+        }
+
         var uri = new Uri(_options.WsUrl);
         _logger.LogInformation("[WS:connect-start] Connecting to Tiingo IEX at {Url}", uri);
 
@@ -64,7 +82,10 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
             _state.SetWebSocketConnected(true);
             _logger.LogInformation("[WS:connect-ok] Tiingo websocket connected");
 
-            await SubscribeAsync(symbols, ct).ConfigureAwait(false);
+            string[] initial;
+            lock (_symbolLock) initial = _desiredSymbols.ToArray();
+
+            await SendSubscribeAsync(initial, ct).ConfigureAwait(false);
             await ReceiveLoopAsync(onTick, ct).ConfigureAwait(false);
         }
         finally
@@ -74,14 +95,65 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
         }
     }
 
-    private async Task SubscribeAsync(IEnumerable<string> symbols, CancellationToken ct)
+    public async Task SubscribeAsync(IEnumerable<string> symbols, CancellationToken ct)
     {
-        if (_ws?.State != WebSocketState.Open) return;
+        var toAdd = NormalizeAndTrack(symbols, add: true);
+        if (toAdd.Length == 0) return;
 
-        var tickers = symbols
-            .Select(s => s.ToLowerInvariant())
-            .Distinct()
-            .ToArray();
+        if (_ws?.State != WebSocketState.Open)
+        {
+            _logger.LogDebug(
+                "[WS:subscribe-deferred] {Count} symbols will be added on next connect",
+                toAdd.Length);
+            return;
+        }
+
+        await SendSubscribeAsync(toAdd, ct).ConfigureAwait(false);
+    }
+
+    public async Task UnsubscribeAsync(IEnumerable<string> symbols, CancellationToken ct)
+    {
+        var toRemove = NormalizeAndTrack(symbols, add: false);
+        if (toRemove.Length == 0) return;
+
+        if (_ws?.State != WebSocketState.Open)
+        {
+            _logger.LogDebug(
+                "[WS:unsubscribe-deferred] {Count} symbols will be dropped on next connect",
+                toRemove.Length);
+            return;
+        }
+
+        await SendUnsubscribeAsync(toRemove, ct).ConfigureAwait(false);
+    }
+
+    private string[] NormalizeAndTrack(IEnumerable<string> symbols, bool add)
+    {
+        if (symbols is null) return Array.Empty<string>();
+
+        var changes = new List<string>();
+        lock (_symbolLock)
+        {
+            foreach (var raw in symbols)
+            {
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                var lower = raw.Trim().ToLowerInvariant();
+                if (add)
+                {
+                    if (_desiredSymbols.Add(lower)) changes.Add(lower);
+                }
+                else
+                {
+                    if (_desiredSymbols.Remove(lower)) changes.Add(lower);
+                }
+            }
+        }
+        return changes.ToArray();
+    }
+
+    private async Task SendSubscribeAsync(IReadOnlyCollection<string> tickers, CancellationToken ct)
+    {
+        if (_ws?.State != WebSocketState.Open || tickers.Count == 0) return;
 
         var msg = JsonSerializer.Serialize(new
         {
@@ -96,7 +168,27 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
 
         _logger.LogInformation(
             "[WS:subscribe-send] Subscribing to {Count} tickers (thresholdLevel={Level})",
-            tickers.Length, _options.WebSocketThresholdLevel);
+            tickers.Count, _options.WebSocketThresholdLevel);
+
+        await SendAsync(msg, ct).ConfigureAwait(false);
+    }
+
+    private async Task SendUnsubscribeAsync(IReadOnlyCollection<string> tickers, CancellationToken ct)
+    {
+        if (_ws?.State != WebSocketState.Open || tickers.Count == 0) return;
+
+        var msg = JsonSerializer.Serialize(new
+        {
+            eventName = "unsubscribe",
+            authorization = _options.ApiKey,
+            eventData = new
+            {
+                thresholdLevel = _options.WebSocketThresholdLevel,
+                tickers,
+            },
+        });
+
+        _logger.LogInformation("[WS:unsubscribe-send] Unsubscribing {Count} tickers", tickers.Count);
 
         await SendAsync(msg, ct).ConfigureAwait(false);
     }
@@ -171,7 +263,6 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
             switch (messageType)
             {
                 case "H":
-                    // Heartbeat — no payload; just keep the socket warm.
                     return;
 
                 case "I":
@@ -241,7 +332,6 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
 
         var len = data.GetArrayLength();
 
-        // Compact format: [timestamp, ticker, price]
         if (len >= 3 && len < 10)
         {
             var ts = ReadString(data, 0);
@@ -255,9 +345,6 @@ public sealed class TiingoStreamClient : ITiingoStreamClient, IDisposable
             return BuildTick(ticker!, price.Value, bid: null, ask: null, providerTime);
         }
 
-        // Verbose format:
-        // [updateType, date, timestamp, ticker, bidSize, bidPrice,
-        //  midPrice, askPrice, askSize, lastSalePrice, lastSize, lastSaleTimestamp]
         if (len >= 10)
         {
             var ticker = ReadString(data, 3);

@@ -1,4 +1,3 @@
-using Hqqq.Infrastructure.Hosting;
 using Hqqq.Ingress.Configuration;
 using Hqqq.Ingress.State;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -8,25 +7,21 @@ namespace Hqqq.Ingress.Health;
 
 /// <summary>
 /// Reports the live state of the Tiingo upstream connection on
-/// <c>/healthz/ready</c>. Reports posture without crashing the process:
-/// in <see cref="OperatingMode.Hybrid"/> always healthy (the legacy
-/// monolith bridges ticks); in <see cref="OperatingMode.Standalone"/>
-/// healthy only when connected and we've observed a tick within
-/// <see cref="TiingoOptions.StaleAfterSeconds"/>.
+/// <c>/healthz/ready</c>. Phase 2 ingress has a single self-sufficient
+/// runtime path, so the probe reflects real upstream behaviour: not
+/// connected → degraded; connected but stale → degraded; connected +
+/// fresh → healthy.
 /// </summary>
 public sealed class IngressUpstreamHealthCheck : IHealthCheck
 {
     private readonly IngestionState _state;
-    private readonly OperatingModeOptions _mode;
     private readonly TiingoOptions _options;
 
     public IngressUpstreamHealthCheck(
         IngestionState state,
-        OperatingModeOptions mode,
         IOptions<TiingoOptions> options)
     {
         _state = state;
-        _mode = mode;
         _options = options.Value;
     }
 
@@ -35,21 +30,16 @@ public sealed class IngressUpstreamHealthCheck : IHealthCheck
     {
         var data = new Dictionary<string, object>
         {
-            ["operatingMode"] = _mode.Mode.ToString().ToLowerInvariant(),
             ["isUpstreamConnected"] = _state.IsUpstreamConnected,
             ["ticksIngested"] = _state.TicksIngested,
+            ["publishedTickCount"] = _state.PublishedTickCount,
+            ["staleAfterSeconds"] = _options.StaleAfterSeconds,
         };
 
         if (_state.LastActivityUtc is { } last) data["lastDataUtc"] = last;
+        if (_state.LastPublishedTickUtc is { } pub) data["lastPublishedTickUtc"] = pub;
         if (_state.LastError is { } err) data["lastError"] = err;
         if (_state.LastErrorAtUtc is { } errAt) data["lastErrorAtUtc"] = errAt;
-
-        if (_mode.IsHybrid)
-        {
-            return Task.FromResult(HealthCheckResult.Healthy(
-                "ingress-stub: hybrid mode (legacy monolith bridges ticks)",
-                data));
-        }
 
         if (!_state.IsUpstreamConnected)
         {

@@ -7,8 +7,8 @@ All topic names are defined as constants in
 
 | Topic | Key | Value type | Cleanup | Partitions | Producer | Consumer(s) |
 |-------|-----|-----------|---------|------------|----------|-------------|
-| `market.raw_ticks.v1` | symbol | `RawTickV1` | delete (time-based) | 3 | hqqq-ingress _(stub today; legacy `hqqq-api` publishes in the interim)_ | hqqq-quote-engine, hqqq-persistence |
-| `market.latest_by_symbol.v1` | symbol | `LatestSymbolQuoteV1` | compact | 3 | hqqq-ingress _(stub today)_ | hqqq-quote-engine (bootstrap) |
+| `market.raw_ticks.v1` | symbol | `RawTickV1` | delete (time-based) | 3 | hqqq-ingress (real Tiingo IEX websocket producer) | hqqq-quote-engine, hqqq-persistence |
+| `market.latest_by_symbol.v1` | symbol | `LatestSymbolQuoteV1` | compact | 3 | hqqq-ingress (fan-out from each published `RawTickV1`) | hqqq-quote-engine (bootstrap) |
 | `refdata.basket.active.v1` | basketId | `BasketActiveStateV1` | compact | 1 | hqqq-reference-data | hqqq-quote-engine, hqqq-ingress |
 | `refdata.basket.events.v1` | basketId | `BasketEventV1` | delete (time-based) | 1 | hqqq-reference-data | (reserved — no active consumer today) |
 | `pricing.snapshots.v1` | basketId | `QuoteSnapshotV1` | delete (time-based) | 1 | hqqq-quote-engine | hqqq-persistence |

@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# Phase 2 — bring up the full local stack (infra + app tier).
+# Phase 2 — bring up the full self-sufficient local stack (infra + app tier).
 #
-# Thin wrapper around `docker compose` with the two-file overlay. Runs from
-# the repo root regardless of where the user invokes it from. Excludes the
-# `analytics` profile (one-shot job; see docs/phase2/local-dev.md).
+# Thin wrapper around `docker compose` with the two-file overlay. The legacy
+# `hqqq-api` monolith is NOT started and NOT required — Phase 2 runtime is
+# self-sufficient. Runs from the repo root regardless of where the user
+# invokes it from. Excludes the `analytics` profile (one-shot job; see
+# docs/phase2/local-dev.md).
 #
 # Usage:
 #   ./scripts/phase2-up.sh             # build + up -d
 #   ./scripts/phase2-up.sh --no-build  # up -d only (use existing images)
+#
+# Prerequisites:
+#   - Tiingo__ApiKey must be set (via .env or environment). hqqq-ingress
+#     fails fast on a missing/placeholder API key.
 
 set -euo pipefail
 

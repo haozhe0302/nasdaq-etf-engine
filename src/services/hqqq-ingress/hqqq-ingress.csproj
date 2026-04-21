@@ -15,4 +15,15 @@
     <ProjectReference Include="..\..\building-blocks\Hqqq.Observability\Hqqq.Observability.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lets Hqqq.Ingress.Tests drive internal projection methods on the
+         basket consumer + integration test path without making them
+         public on the production API surface. Hqqq.ReferenceData.Tests
+         is also granted access for the Phase 2 self-sufficient
+         integration test that bridges reference-data → ingress
+         in-process. -->
+    <InternalsVisibleTo Include="Hqqq.Ingress.Tests" />
+    <InternalsVisibleTo Include="Hqqq.ReferenceData.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -27,24 +27,22 @@ Cross-references:
 
 | Section | Key | Where |
 |---------|-----|-------|
-| Operating mode | `OperatingMode` (canonical) or `HQQQ_OPERATING_MODE` (legacy flat alias) | env / `C` / `B` |
+| Operating mode | `OperatingMode` (canonical) or `HQQQ_OPERATING_MODE` (legacy flat alias) — **logging-posture tag only** | env / `C` / `B` |
 | Kafka | `Kafka__BootstrapServers`, `Kafka__ClientId`, `Kafka__ConsumerGroupPrefix` | env / `C` / `B` |
 | Kafka (auth, optional) | `Kafka__SecurityProtocol`, `Kafka__SaslMechanism`, `Kafka__SaslUsername`, `Kafka__SaslPassword`, `Kafka__EnableTopicBootstrap` | env (operator-set) |
 | Redis | `Redis__Configuration` | env / `C` / `B` |
 | Timescale | `Timescale__ConnectionString` | env / `C` / `B` |
 
-> **Operating mode (Phase 2).** `OperatingMode=hybrid` (default) keeps
-> `hqqq-ingress` and `hqqq-reference-data` as stubs so the legacy
-> `hqqq-api` monolith remains the source of truth for live ticks and
-> the active basket. `OperatingMode=standalone` activates the Phase 2
-> native paths: `hqqq-ingress` consumes the Tiingo IEX websocket and
-> publishes `market.raw_ticks.v1` + `market.latest_by_symbol.v1`, and
-> `hqqq-reference-data` loads a deterministic basket seed and publishes
-> `refdata.basket.active.v1`. In standalone mode services fail fast
-> when their required native dependencies are missing (e.g. a Tiingo
-> API key for ingress, a parseable seed for reference-data). See
-> [`docs/phase2/azure-deploy.md` §0.2](azure-deploy.md) for the
-> hybrid-vs-standalone decision matrix.
+> **Operating mode (Phase 2).** `OperatingMode` is retained as a
+> logging-posture tag for cross-service consistency; it no longer
+> branches any runtime behaviour. Phase 2 has a single self-sufficient
+> runtime path: `hqqq-ingress` opens the Tiingo IEX websocket itself,
+> `hqqq-reference-data` owns the basket (live-holdings composite + the
+> deterministic fallback seed) and runs corporate-action adjustment
+> before publishing `refdata.basket.active.v1`. `hqqq-ingress` fails
+> fast when `Tiingo__ApiKey` is missing/placeholder; `hqqq-reference-data`
+> fails fast when the seed is missing/invalid. The legacy `hqqq-api`
+> monolith is NOT required to run Phase 2.
 
 > **Kafka auth posture.** When `Kafka__SecurityProtocol` is unset (local
 > docker-compose), every producer/consumer/admin client connects
@@ -165,19 +163,22 @@ Dependencies:
 
 ## `hqqq-reference-data` (web)
 
-Basket registry. **Owns the active basket in both operating modes** —
-behaviour is identical in `hybrid` and `standalone`; basket ownership no
-longer varies by mode. The service runs a composite holdings pipeline:
-live source first (config-driven file or HTTP drop), with a committed
-~100-name deterministic fallback seed as the safety net. It publishes
-the fully-materialized `BasketActiveStateV1` payload (including every
-constituent) to `refdata.basket.active.v1` on change and on a slow
-re-publish cadence so late consumers hydrate without operator action.
+Basket registry. **Owns the active basket unconditionally** in Phase 2.
+Composite holdings pipeline: live source first (config-driven file or
+HTTP drop), with a committed ~100-name deterministic fallback seed as
+the safety net. Before fingerprinting + publishing, every refresh runs
+through the Phase-2-native corporate-action adjustment layer
+(splits, reverse splits, renames, constituent transition detection,
+scale-factor continuity). Publishes the fully-materialized
+`BasketActiveStateV1` payload (including every constituent **and** the
+adjustment summary) to `refdata.basket.active.v1` on change and on a
+slow re-publish cadence so late consumers hydrate without operator
+action.
 
 | Env var | Required? | Default | Purpose |
 |---------|-----------|---------|---------|
 | `ASPNETCORE_URLS` | yes (containers) | `http://+:8080` (B) | Bind address. |
-| `OperatingMode` | optional | `hybrid` | `hybrid` or `standalone`. Inherited from the shared `HQQQ_OPERATING_MODE` (env / C / B). Affects cross-cutting posture only — does not change basket ownership. |
+| `OperatingMode` | optional | `Standalone` | Logging-posture tag only — no runtime branch. |
 | `Kafka__BootstrapServers` | required | — | Producer for `refdata.basket.active.v1`. |
 | `ReferenceData__SeedPath` | optional | empty (use embedded seed) | Filesystem override for the deterministic fallback seed. Unset → embedded resource. |
 | `ReferenceData__LiveHoldings__SourceType` | optional | `None` | `None` / `File` / `Http`. `None` is the demo posture — composite goes straight to the fallback seed. |
@@ -196,6 +197,14 @@ re-publish cadence so late consumers hydrate without operator action.
 | `ReferenceData__PublishHealth__DegradedAfterConsecutiveFailures` | optional | `1` | Consecutive publish failures before `/healthz/ready` flips to Degraded (503). |
 | `ReferenceData__PublishHealth__UnhealthyAfterConsecutiveFailures` | optional | `5` | Consecutive publish failures before `/healthz/ready` flips to Unhealthy (503). |
 | `ReferenceData__PublishHealth__MaxSilenceSeconds` | optional | `900` | Maximum tolerated silence between successful publishes before Unhealthy. |
+| `ReferenceData__CorporateActions__LookbackDays` | optional | `365` | Upper bound on the corp-action window when `AsOfDate` is unexpectedly ancient. |
+| `ReferenceData__CorporateActions__File__Path` | optional | empty (embedded seed) | Override the deterministic corp-action JSON drop. |
+| `ReferenceData__CorporateActions__Tiingo__Enabled` | optional | `false` | Overlay Tiingo EOD splits on top of the file feed. |
+| `ReferenceData__CorporateActions__Tiingo__ApiKey` | conditional | — | Required when `Tiingo:Enabled=true`. |
+| `ReferenceData__CorporateActions__Tiingo__BaseUrl` | optional | `https://api.tiingo.com/tiingo/daily` | Tiingo EOD base URL. |
+| `ReferenceData__CorporateActions__Tiingo__TimeoutSeconds` | optional | `10` | Per-request timeout. |
+| `ReferenceData__CorporateActions__Tiingo__MaxConcurrency` | optional | `5` | Parallel per-symbol Tiingo requests. |
+| `ReferenceData__CorporateActions__Tiingo__CacheTtlMinutes` | optional | `60` | Per-symbol split-cache TTL. |
 | `Redis__Configuration` | optional today | — | Reserved for future basket-state mirror. |
 | `Timescale__ConnectionString` | optional today | — | Reserved for future basket persistence. |
 
@@ -218,32 +227,36 @@ Dependencies:
 
 ## `hqqq-ingress` (worker)
 
-Tiingo ingest worker. Behaviour depends on `OperatingMode`:
-- **Hybrid** (default): no-op stub. The legacy `hqqq-api` monolith
-  bridges live ticks. If `Tiingo__ApiKey` is set in hybrid mode the
-  worker logs a single warning and ignores the key (avoids
-  double-publish / split-brain with the monolith).
-- **Standalone**: connects to the Tiingo IEX websocket, runs an
-  optional REST snapshot warmup so consumers see a baseline price
-  before the first live tick, and publishes both `market.raw_ticks.v1`
-  (time-series) and `market.latest_by_symbol.v1` (compacted, key =
-  symbol) for every observed tick. Reconnects with bounded
-  exponential backoff. Fails fast at startup if `Tiingo__ApiKey` is
-  missing or a placeholder.
+Real Tiingo IEX ingest worker. Single runtime path — no stub / hybrid /
+log-only publisher.
+
+- Opens the Tiingo IEX websocket, runs an optional REST snapshot warmup
+  so consumers see a baseline price before the first live tick, and
+  publishes both `market.raw_ticks.v1` (time-series) and
+  `market.latest_by_symbol.v1` (compacted, key = symbol) for every
+  observed tick.
+- Consumes `refdata.basket.active.v1` and drives Tiingo subscribe /
+  unsubscribe dynamically off the basket event — the active symbol
+  universe is derived from the basket, not from a static list.
+- Reconnects with bounded exponential backoff.
+- Fails fast at startup if `Tiingo__ApiKey` is missing or a placeholder.
 
 | Env var | Required? | Default | Purpose |
 |---------|-----------|---------|---------|
-| `OperatingMode` | optional | `hybrid` | Inherited from `HQQQ_OPERATING_MODE`. Selects stub-vs-live behaviour. |
-| `Tiingo__ApiKey` | **required in standalone**, ignored in hybrid | empty | Personal Tiingo IEX API key. Standalone fail-fast also rejects placeholder values like `your_api_key`, `<set tiingo api key>`, `changeme`. |
+| `OperatingMode` | optional | `Standalone` | Logging-posture tag only. |
+| `Tiingo__ApiKey` | **required** | empty | Personal Tiingo IEX API key. Fail-fast also rejects placeholder values like `your_api_key`, `<set tiingo api key>`, `changeme`, `replace_me_to_run`. |
 | `Tiingo__WsUrl` | optional | `wss://api.tiingo.com/iex` | Tiingo IEX WebSocket. |
 | `Tiingo__RestBaseUrl` | optional | `https://api.tiingo.com/iex` | Tiingo IEX REST (snapshot warmup). |
-| `Tiingo__Symbols` | optional | empty → falls back to a top-25 default that mirrors the standalone basket seed | Comma/semicolon-separated subscription override. |
+| `Tiingo__Symbols` | optional | empty | **Bootstrap override only.** Used as a fallback when the first basket event doesn't arrive inside `Ingress__Basket__StartupWaitSeconds`. In normal Phase 2 operation this is empty and symbols come from the basket topic. |
 | `Tiingo__SnapshotOnStartup` | optional | `true` | Disable the REST warmup (e.g. in tests). |
 | `Tiingo__ReconnectBaseDelaySeconds` | optional | `5` | Initial websocket reconnect delay. |
 | `Tiingo__MaxReconnectDelaySeconds` | optional | `60` | Reconnect backoff cap. |
 | `Tiingo__StaleAfterSeconds` | optional | `60` | If no tick is observed for this long, `/healthz/ready` reports `Degraded`. |
-| `Tiingo__WebSocketThresholdLevel` | optional | `6` | Tiingo IEX threshold (matches the legacy monolith / free tier). |
-| `Kafka__BootstrapServers` | required in standalone | — | Producer for `market.raw_ticks.v1` and `market.latest_by_symbol.v1`. |
+| `Tiingo__WebSocketThresholdLevel` | optional | `6` | Tiingo IEX threshold. |
+| `Ingress__Basket__Topic` | optional | `refdata.basket.active.v1` | Basket consumer topic. |
+| `Ingress__Basket__ConsumerGroup` | optional | `ingress-baskets` | Consumer group suffix. |
+| `Ingress__Basket__StartupWaitSeconds` | optional | `60` | Deadline for the first basket before falling back to the override. |
+| `Kafka__BootstrapServers` | required | — | Producer for tick topics; consumer for the basket topic. |
 | `Management__*` | yes (containers) | as for quote-engine | Management host. |
 
 | Surface | Container DNS:port | External port |
@@ -253,12 +266,13 @@ Tiingo ingest worker. Behaviour depends on `OperatingMode`:
 | Azure Container Apps (D4) | `<ingressInternalFqdn>` (internal-only) | none |
 
 Dependencies:
-- **Hybrid**: none on the data plane (stub).
-- **Standalone**: outbound HTTPS to Tiingo (REST + WSS) and produces
-  to Kafka topics `market.raw_ticks.v1` (key = symbol) and
-  `market.latest_by_symbol.v1` (compacted, key = symbol). Health
-  surface (`ingress-upstream`) reports `isUpstreamConnected`,
-  `ticksIngested`, `lastDataUtc`, and `lastError`/`lastErrorAtUtc`.
+- Outbound HTTPS/WSS to Tiingo (REST + WebSocket).
+- **Consumes** Kafka topic `refdata.basket.active.v1`.
+- **Produces** Kafka topics `market.raw_ticks.v1` (key = symbol) and
+  `market.latest_by_symbol.v1` (compacted, key = symbol).
+- Health surface: `tiingo-upstream` reports `isUpstreamConnected`,
+  `ticksIngested`, `lastDataUtc`, `lastError`. `ingress-basket` reports
+  current basket fingerprint, applied symbol count, and basket age.
 
 ---
 

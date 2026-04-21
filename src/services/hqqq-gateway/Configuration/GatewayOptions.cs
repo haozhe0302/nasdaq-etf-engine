@@ -59,6 +59,26 @@ public sealed class GatewaySourcesOptions
     public string? SystemHealth { get; set; }
 }
 
+/// <summary>
+/// Strongly-typed gateway configuration.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The default Phase 2 posture is the per-endpoint mix wired in
+/// <c>docker-compose.phase2.yml</c>: <c>Gateway:Sources:Quote=redis</c>,
+/// <c>…Constituents=redis</c>, <c>…History=timescale</c>,
+/// <c>…SystemHealth=aggregated</c>. None of those require the legacy
+/// <c>hqqq-api</c> monolith.
+/// </para>
+/// <para>
+/// <see cref="LegacyBaseUrl"/> and the <c>"legacy"</c> per-endpoint
+/// values are kept solely for side-by-side parity testing against a
+/// separately-running monolith. They are <b>not</b> the supported
+/// Phase 2 path; <c>Program.cs</c> emits a loud
+/// <c>[gateway:legacy-mode]</c> warning at startup whenever any
+/// endpoint resolves to <see cref="GatewayDataSourceMode.Legacy"/>.
+/// </para>
+/// </remarks>
 public sealed class GatewayOptions
 {
     public const string SectionName = "Gateway";
@@ -66,6 +86,14 @@ public sealed class GatewayOptions
     public const string DefaultBasketId = "HQQQ";
 
     public string? DataSource { get; set; }
+
+    /// <summary>
+    /// Optional base URL for the legacy <c>hqqq-api</c> monolith.
+    /// Required when any endpoint resolves to
+    /// <see cref="GatewayDataSourceMode.Legacy"/>; ignored otherwise.
+    /// Leaving this empty keeps the legacy HttpClient out of DI entirely
+    /// and is the recommended Phase 2 default.
+    /// </summary>
     public string? LegacyBaseUrl { get; set; }
 
     /// <summary>

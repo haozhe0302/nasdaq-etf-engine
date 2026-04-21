@@ -4,15 +4,15 @@ using Microsoft.Extensions.Configuration;
 namespace Hqqq.ReferenceData.Tests;
 
 /// <summary>
-/// Mirrors the ingress mode-binding contract for reference-data: the
-/// service must respect <c>HQQQ_OPERATING_MODE=standalone</c> the same
-/// way ingress does so the two services swap between hybrid and
-/// standalone in lockstep.
+/// <c>OperatingMode</c> is now a logging-posture tag (runtime behaviour no
+/// longer branches on it across Phase 2 services). This test simply pins
+/// the value-binding contract so a regression that breaks the
+/// <c>OperatingMode</c> env / config resolution is caught early.
 /// </summary>
 public class OperatingModeBindingTests
 {
     [Fact]
-    public void DefaultsToHybrid()
+    public void DefaultsToHybridForBackwardCompatibility()
     {
         var config = new ConfigurationBuilder().Build();
         Assert.Equal(OperatingMode.Hybrid, OperatingModeRegistration.ResolveMode(config));

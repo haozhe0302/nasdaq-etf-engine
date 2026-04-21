@@ -61,6 +61,13 @@ public class StartupEndToEndTests : IClassFixture<StartupEndToEndTests.Factory>
         var ev = _factory.Publisher.Published[0];
         Assert.Equal("fallback-seed", ev.Source);
         Assert.True(ev.ConstituentCount >= 90);
+
+        // Phase-2-native corp-action layer: the wire event must always
+        // carry an AdjustmentSummary (even when empty on a fresh seed) so
+        // downstream consumers can rely on the field's presence.
+        Assert.NotNull(ev.AdjustmentSummary);
+        Assert.Equal(0, ev.AdjustmentSummary!.SplitsApplied);
+        Assert.Equal(0, ev.AdjustmentSummary.RenamesApplied);
     }
 
     public sealed class Factory : WebApplicationFactory<Program>

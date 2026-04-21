@@ -21,6 +21,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Resources\basket-seed.json" />
     <None Include="Resources\basket-seed.json" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Resources\corporate-actions-seed.json" />
+    <None Include="Resources\corporate-actions-seed.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

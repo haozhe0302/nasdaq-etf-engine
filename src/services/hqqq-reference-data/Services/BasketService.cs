@@ -89,6 +89,8 @@ public sealed class BasketService : IBasketService
             State = PublishHealthStateEvaluator.ToLowerString(state),
         };
 
+        var previous = _store.Previous;
+
         return Task.FromResult<BasketCurrentResult?>(new BasketCurrentResult
         {
             Active = version,
@@ -97,6 +99,9 @@ public sealed class BasketService : IBasketService
             AsOfDate = snapshot.AsOfDate,
             ActivatedAtUtc = current.ActivatedAtUtc,
             PublishStatus = publishStatus,
+            LatestAdjustmentReport = _store.LatestAdjustmentReport,
+            PreviousBasketId = previous?.Snapshot.BasketId,
+            PreviousFingerprint = previous?.Fingerprint,
         });
     }
 

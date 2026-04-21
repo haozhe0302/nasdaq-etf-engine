@@ -22,8 +22,6 @@ public class BasketRefreshJobTests
 
         var (job, store, publisher) = BuildJob(source, refreshSeconds: 0, republishSeconds: 0, startupSeconds: 5);
 
-        // Execute once — timers are disabled so the job returns after the
-        // startup refresh completes.
         using var cts = new CancellationTokenSource();
         await job.StartAsync(cts.Token);
         await job.StopAsync(cts.Token);
@@ -44,8 +42,6 @@ public class BasketRefreshJobTests
         await job.StartAsync(CancellationToken.None);
         await job.StopAsync(CancellationToken.None);
 
-        // Source failed — store stays empty, publisher never called, but
-        // host stays up waiting for the next (future) refresh.
         Assert.Null(store.Current);
         Assert.Empty(publisher.Published);
     }
@@ -56,7 +52,7 @@ public class BasketRefreshJobTests
         int republishSeconds,
         int startupSeconds)
     {
-        var options = Options.Create(new ReferenceDataOptions
+        var optionsValue = new ReferenceDataOptions
         {
             Validation = new ValidationOptions { Strict = true, MinConstituents = 1, MaxConstituents = 500 },
             Refresh = new RefreshOptions
@@ -65,17 +61,11 @@ public class BasketRefreshJobTests
                 RepublishIntervalSeconds = republishSeconds,
                 StartupMaxWaitSeconds = startupSeconds,
             },
-        });
+        };
 
-        var validator = new HoldingsValidator(options);
-        var store = new ActiveBasketStore();
-        var publisher = new CapturingPublisher();
-        var publishHealth = new PublishHealthTracker();
-        var pipeline = new BasketRefreshPipeline(
-            source, validator, store, publisher, publishHealth,
-            NullLogger<BasketRefreshPipeline>.Instance);
+        var bench = PipelineBuilder.Build(source: source, options: optionsValue);
 
-        var job = new BasketRefreshJob(pipeline, options, NullLogger<BasketRefreshJob>.Instance);
-        return (job, store, publisher);
+        var job = new BasketRefreshJob(bench.Pipeline, Options.Create(optionsValue), NullLogger<BasketRefreshJob>.Instance);
+        return (job, bench.Store, bench.Publisher);
     }
 }

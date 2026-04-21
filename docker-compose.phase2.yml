@@ -36,16 +36,20 @@ services:
     image: hqqq-reference-data:dev
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      OperatingMode: ${HQQQ_OPERATING_MODE:-hybrid}
+      # OperatingMode is retained as a logging-posture tag only; Phase 2
+      # runtime behaviour no longer branches on it. Leave unset to keep
+      # logs quiet or set to `standalone` for operators who want the
+      # self-sufficient-mode tag in structured logs.
+      OperatingMode: ${HQQQ_OPERATING_MODE:-standalone}
       Kafka__BootstrapServers: kafka:29092
       Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
       Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
       Redis__Configuration: cache:6379
       Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
-      # Reference-data owns the active basket in BOTH hybrid and standalone
-      # modes. Default posture: live holdings disabled (None), so the service
-      # boots from the committed ~100-name fallback seed. Flip to File/Http to
-      # plug in a real holdings drop without rebuilding the image.
+      # Reference-data owns the active basket. Default posture: live
+      # holdings disabled (None), so the service boots from the committed
+      # ~100-name fallback seed. Flip to File/Http to plug in a real
+      # holdings drop without rebuilding the image.
       ReferenceData__LiveHoldings__SourceType: ${ReferenceData__LiveHoldings__SourceType:-None}
       ReferenceData__LiveHoldings__FilePath: ${ReferenceData__LiveHoldings__FilePath:-}
       ReferenceData__LiveHoldings__HttpUrl: ${ReferenceData__LiveHoldings__HttpUrl:-}
@@ -59,6 +63,15 @@ services:
       ReferenceData__PublishHealth__DegradedAfterConsecutiveFailures: ${ReferenceData__PublishHealth__DegradedAfterConsecutiveFailures:-1}
       ReferenceData__PublishHealth__UnhealthyAfterConsecutiveFailures: ${ReferenceData__PublishHealth__UnhealthyAfterConsecutiveFailures:-5}
       ReferenceData__PublishHealth__MaxSilenceSeconds: ${ReferenceData__PublishHealth__MaxSilenceSeconds:-900}
+      # Phase-2-native corporate-action adjustment. Default posture: file
+      # provider only (deterministic, offline-safe) so local smoke is
+      # reproducible without Tiingo credentials. Flip to `true` + set an
+      # API key to overlay live Tiingo EOD splits.
+      ReferenceData__CorporateActions__LookbackDays: ${ReferenceData__CorporateActions__LookbackDays:-365}
+      ReferenceData__CorporateActions__File__Path: ${ReferenceData__CorporateActions__File__Path:-}
+      ReferenceData__CorporateActions__Tiingo__Enabled: ${ReferenceData__CorporateActions__Tiingo__Enabled:-false}
+      ReferenceData__CorporateActions__Tiingo__ApiKey: ${ReferenceData__CorporateActions__Tiingo__ApiKey:-}
+      ReferenceData__CorporateActions__Tiingo__BaseUrl: ${ReferenceData__CorporateActions__Tiingo__BaseUrl:-https://api.tiingo.com/tiingo/daily}
     ports:
       - "5020:8080"
     depends_on:
@@ -86,11 +99,20 @@ services:
     image: hqqq-ingress:dev
     environment:
       DOTNET_ENVIRONMENT: Development
-      OperatingMode: ${HQQQ_OPERATING_MODE:-hybrid}
-      Tiingo__ApiKey: ${Tiingo__ApiKey:-}
+      # Logging posture tag; no longer gates runtime behaviour.
+      OperatingMode: ${HQQQ_OPERATING_MODE:-standalone}
+      # Required for Phase 2. Ingress fails fast on a missing/placeholder
+      # key — there is no stub path.
+      Tiingo__ApiKey: ${Tiingo__ApiKey:-REPLACE_ME_TO_RUN}
       Tiingo__WsUrl: ${Tiingo__WsUrl:-wss://api.tiingo.com/iex}
       Tiingo__RestBaseUrl: ${Tiingo__RestBaseUrl:-https://api.tiingo.com/iex}
+      # Optional override. Leave empty in normal runs — ingress derives its
+      # active symbol universe from refdata.basket.active.v1.
       Tiingo__Symbols: ${Tiingo__Symbols:-}
+      # Basket consumer that drives dynamic Tiingo subscribe/unsubscribe.
+      Ingress__Basket__Topic: ${Ingress__Basket__Topic:-refdata.basket.active.v1}
+      Ingress__Basket__ConsumerGroup: ${Ingress__Basket__ConsumerGroup:-ingress-baskets}
+      Ingress__Basket__StartupWaitSeconds: ${Ingress__Basket__StartupWaitSeconds:-60}
       Kafka__BootstrapServers: kafka:29092
       Kafka__ClientId: ${Kafka__ClientId:-hqqq-local}
       Kafka__ConsumerGroupPrefix: ${Kafka__ConsumerGroupPrefix:-hqqq}
@@ -102,6 +124,8 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      hqqq-reference-data:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8081/healthz/ready || exit 1"]
       interval: 10s
@@ -196,7 +220,9 @@ services:
     image: hqqq-gateway:dev
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      OperatingMode: ${HQQQ_OPERATING_MODE:-hybrid}
+      # Logging posture tag only; gateway required-set for system-health
+      # rollup (ingress + reference-data) is applied unconditionally.
+      OperatingMode: ${HQQQ_OPERATING_MODE:-standalone}
       Redis__Configuration: cache:6379
       Timescale__ConnectionString: Host=db;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
       Gateway__BasketId: ${Gateway__BasketId:-HQQQ}

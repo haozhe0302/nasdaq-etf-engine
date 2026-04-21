@@ -31,4 +31,17 @@ public static class MetricNames
     public const string RefdataConsecutivePublishFailures = "hqqq.refdata.consecutive_publish_failures";
     public const string RefdataPublishFailuresTotal = "hqqq.refdata.publish_failures_total";
     public const string RefdataPublishOutageSeconds = "hqqq.refdata.publish_outage_seconds";
+
+    // hqqq-reference-data — corporate-action + transition counters.
+    public const string RefdataSplitsAppliedTotal = "hqqq.refdata.splits_applied_total";
+    public const string RefdataRenamesAppliedTotal = "hqqq.refdata.renames_applied_total";
+    public const string RefdataBasketTransitionsTotal = "hqqq.refdata.basket_transitions_total";
+    public const string RefdataCorpActionFetchErrorsTotal = "hqqq.refdata.corp_action_fetch_errors_total";
+
+    // hqqq-ingress — observability for basket-driven subscription and
+    // the runtime tick-flow signal that smoke proofs sample.
+    public const string IngressActiveSymbols = "hqqq.ingress.active_symbols";
+    public const string IngressBasketFingerprintAgeSeconds = "hqqq.ingress.basket_fingerprint_age_seconds";
+    public const string IngressPublishedTicksTotal = "hqqq.ingress.published_ticks_total";
+    public const string IngressLastPublishedTickTimestamp = "hqqq.ingress.last_published_tick_timestamp";
 }

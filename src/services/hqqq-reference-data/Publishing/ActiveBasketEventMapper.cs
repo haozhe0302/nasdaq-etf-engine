@@ -1,4 +1,5 @@
 using Hqqq.Contracts.Events;
+using Hqqq.ReferenceData.CorporateActions.Contracts;
 using Hqqq.ReferenceData.Services;
 
 namespace Hqqq.ReferenceData.Publishing;
@@ -13,16 +14,22 @@ namespace Hqqq.ReferenceData.Publishing;
 /// The output is intentionally complete: both <c>Constituents</c> and
 /// <c>PricingBasis.Entries</c> are populated, and <c>ScaleFactor</c> is
 /// positive — those are the invariants <c>BasketEventConsumer</c> in
-/// quote-engine checks before accepting the message.
+/// quote-engine checks before accepting the message. When the refresh
+/// pipeline passed a <see cref="AdjustmentReport"/> / previous basket,
+/// the additive <c>AdjustmentSummary</c>, <c>PreviousBasketId</c>, and
+/// <c>PreviousFingerprint</c> fields are populated too.
 /// </remarks>
 public static class ActiveBasketEventMapper
 {
-    public static BasketActiveStateV1 ToEvent(ActiveBasket active)
+    public static BasketActiveStateV1 ToEvent(
+        ActiveBasket active,
+        ActiveBasket? previous = null,
+        AdjustmentReport? report = null)
     {
         ArgumentNullException.ThrowIfNull(active);
 
         var snapshot = active.Snapshot;
-        var sharesOrigin = snapshot.Source; // e.g. "live:file", "fallback-seed"
+        var sharesOrigin = snapshot.Source;
 
         var constituents = snapshot.Constituents
             .Select(c => new BasketConstituentV1
@@ -62,6 +69,23 @@ public static class ActiveBasketEventMapper
             DerivedSharesCount = 0,
         };
 
+        AdjustmentSummaryV1? summary = null;
+        if (report is not null)
+        {
+            summary = new AdjustmentSummaryV1
+            {
+                SplitsApplied = report.SplitsApplied,
+                RenamesApplied = report.RenamesApplied,
+                AddedSymbols = report.AddedSymbols,
+                RemovedSymbols = report.RemovedSymbols,
+                AdjustmentAsOfDate = report.RuntimeDate,
+                AdjustmentAppliedAtUtc = report.AppliedAtUtc,
+                ProviderSource = report.Source,
+                ScaleFactorRecalibrated = report.ScaleFactorRecalibrated,
+                Note = report.ProviderError,
+            };
+        }
+
         return new BasketActiveStateV1
         {
             BasketId = snapshot.BasketId,
@@ -76,6 +100,9 @@ public static class ActiveBasketEventMapper
             QqqPreviousClose = snapshot.QqqPreviousClose,
             Source = snapshot.Source,
             ConstituentCount = constituents.Length,
+            PreviousBasketId = previous?.Snapshot.BasketId,
+            PreviousFingerprint = previous?.Fingerprint,
+            AdjustmentSummary = summary,
         };
     }
 }

@@ -21,6 +21,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\services\hqqq-reference-data\hqqq-reference-data.csproj" />
+    <!-- Pulled in for the Phase 2 self-sufficient integration test that
+         drives reference-data → ingress in-process without a broker. -->
+    <ProjectReference Include="..\..\src\services\hqqq-ingress\hqqq-ingress.csproj" />
   </ItemGroup>
 
 </Project>

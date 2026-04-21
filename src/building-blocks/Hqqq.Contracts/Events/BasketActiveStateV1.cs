@@ -48,6 +48,68 @@ public sealed record BasketActiveStateV1
     /// downstream consumers; equal to <c>Constituents.Count</c>.
     /// </summary>
     public int ConstituentCount { get; init; }
+
+    /// <summary>
+    /// Basket id of the previous active basket (if any). Used by consumers
+    /// that want transition continuity — e.g. to pin iNAV scale continuity
+    /// across an activation. <c>null</c> for the first activation.
+    /// Additive; historical messages deserialize with this unset.
+    /// </summary>
+    public string? PreviousBasketId { get; init; }
+
+    /// <summary>
+    /// Fingerprint of the previous active basket (if any). Paired with
+    /// <see cref="PreviousBasketId"/>. Additive.
+    /// </summary>
+    public string? PreviousFingerprint { get; init; }
+
+    /// <summary>
+    /// Summary of the corporate-action and basket-transition work applied
+    /// by reference-data before this event was published. <c>null</c> on
+    /// legacy messages that pre-date the corp-action adjustment layer.
+    /// </summary>
+    public AdjustmentSummaryV1? AdjustmentSummary { get; init; }
+}
+
+/// <summary>
+/// Summary of the Phase-2-native corporate-action and transition work
+/// applied to the published basket. Carries counts and provenance so
+/// downstream consumers can surface "what changed" to operators without
+/// replaying the full diff. Supported scope (honest): forward / reverse
+/// stock splits, ticker renames, constituent add/remove detection, and
+/// scale-factor continuity across transitions.
+/// </summary>
+public sealed record AdjustmentSummaryV1
+{
+    /// <summary>Number of constituents whose <c>SharesHeld</c> was multiplied by a split factor.</summary>
+    public required int SplitsApplied { get; init; }
+
+    /// <summary>Number of constituents whose <c>Symbol</c> was remapped because of a rename event.</summary>
+    public required int RenamesApplied { get; init; }
+
+    /// <summary>Symbols added since the previous basket (transition).</summary>
+    public required IReadOnlyList<string> AddedSymbols { get; init; }
+
+    /// <summary>Symbols removed since the previous basket (transition).</summary>
+    public required IReadOnlyList<string> RemovedSymbols { get; init; }
+
+    /// <summary>Runtime date on which the adjustment window was computed.</summary>
+    public required DateOnly AdjustmentAsOfDate { get; init; }
+
+    /// <summary>UTC timestamp the adjustment layer completed for this basket.</summary>
+    public required DateTimeOffset AdjustmentAppliedAtUtc { get; init; }
+
+    /// <summary>
+    /// Provider lineage string describing where the corp-action data came
+    /// from (e.g. <c>"file"</c>, <c>"file+tiingo"</c>, <c>"file+tiingo-degraded"</c>).
+    /// </summary>
+    public required string ProviderSource { get; init; }
+
+    /// <summary>True when a transition (added or removed symbols) triggered a scale-factor re-calibration.</summary>
+    public bool ScaleFactorRecalibrated { get; init; }
+
+    /// <summary>Optional human-readable note (e.g. provider error summary).</summary>
+    public string? Note { get; init; }
 }
 
 /// <summary>Constituent metadata carried inline on the active-basket event.</summary>

@@ -83,8 +83,11 @@ public class AggregatedSystemHealthTests
         using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
         var root = doc.RootElement;
 
-        // unknown alone (no degraded/unhealthy) keeps top-level healthy.
-        Assert.Equal("healthy", root.GetProperty("status").GetString());
+        // hqqq-ingress is architecturally required — a non-healthy status
+        // (even `unknown` from an unreachable probe) escalates the top-level
+        // rollup to `degraded`. The gateway intentionally refuses to pretend
+        // Phase 2 is healthy when a required worker is missing.
+        Assert.Equal("degraded", root.GetProperty("status").GetString());
 
         var byName = root.GetProperty("dependencies")
             .EnumerateArray()
@@ -184,8 +187,9 @@ public class AggregatedSystemHealthTests
         Assert.Equal("idle", byName["hqqq-reference-data"].GetProperty("status").GetString());
         Assert.Equal("not configured",
             byName["hqqq-reference-data"].GetProperty("details").GetString());
-        // idle never rolls up.
-        Assert.Equal("healthy", doc.RootElement.GetProperty("status").GetString());
+        // hqqq-reference-data is architecturally required; even `idle` escalates
+        // the rollup to `degraded` so operators see the misconfiguration.
+        Assert.Equal("degraded", doc.RootElement.GetProperty("status").GetString());
     }
 
     [Fact]

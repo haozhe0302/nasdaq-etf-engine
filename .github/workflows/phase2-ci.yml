@@ -36,6 +36,20 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verify pinned SDK
+        # global.json pins the exact feature band (10.0.2xx,
+        # allowPrerelease=false). Fail loudly if the resolver landed on
+        # anything else so a misconfigured runner never silently builds
+        # against an RC/preview SDK.
+        run: |
+          dotnet --info
+          resolved=$(dotnet --version)
+          echo "Resolved SDK: $resolved"
+          case "$resolved" in
+            10.0.2*) echo "OK: SDK matches the 10.0.2xx feature band pinned in global.json" ;;
+            *) echo "::error::Resolved SDK $resolved does not match the 10.0.2xx feature band pinned in global.json"; exit 1 ;;
+          esac
+
       - name: Restore
         run: dotnet restore Hqqq.sln
 

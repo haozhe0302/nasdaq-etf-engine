@@ -2,11 +2,11 @@ namespace Hqqq.ReferenceData.Configuration;
 
 /// <summary>
 /// Strongly-typed configuration surface for <c>hqqq-reference-data</c>. Bound
-/// from the <c>ReferenceData</c> config section. Owns the four knobs the
-/// service needs to run the basket pipeline in either operating mode:
-/// live-holdings source selection, refresh cadence, validation policy, and
-/// publish topic override. All magic numbers live here so nothing is
-/// scattered across the code base.
+/// from the <c>ReferenceData</c> config section. Owns the knobs the service
+/// needs to run the basket pipeline: live-holdings source selection, refresh
+/// cadence, validation policy, publish topic override, publish-health
+/// thresholds, and Phase-2-native corporate-action adjustment. All magic
+/// numbers live here so nothing is scattered across the code base.
 /// </summary>
 public sealed class ReferenceDataOptions
 {
@@ -17,6 +17,7 @@ public sealed class ReferenceDataOptions
     public ValidationOptions Validation { get; set; } = new();
     public PublishOptions Publish { get; set; } = new();
     public PublishHealthOptions PublishHealth { get; set; } = new();
+    public CorporateActionOptions CorporateActions { get; set; } = new();
 
     /// <summary>
     /// Optional override for the deterministic fallback seed path. When set
@@ -153,4 +154,57 @@ public sealed class PublishHealthOptions
     /// the effective cadence is unacceptable for downstream consumers.
     /// </summary>
     public int MaxSilenceSeconds { get; set; } = 900;
+}
+
+/// <summary>
+/// Phase-2-native corporate-action adjustment configuration. The composite
+/// provider tries the <see cref="File"/> source first (deterministic,
+/// offline-safe), then optionally overlays <see cref="Tiingo"/>-derived
+/// splits when enabled. Supported scope is narrow and explicit: forward /
+/// reverse stock splits, ticker renames, constituent add/remove detection,
+/// and scale-factor continuity across basket transitions. Dividends,
+/// spin-offs, mergers, and cross-exchange moves are out of scope.
+/// </summary>
+public sealed class CorporateActionOptions
+{
+    public FileCorporateActionOptions File { get; set; } = new();
+    public TiingoCorporateActionOptions Tiingo { get; set; } = new();
+
+    /// <summary>
+    /// How far back the adjustment window looks when computing cumulative
+    /// split factors. The window runs from <c>snapshot.AsOfDate + 1</c>
+    /// through the runtime date; <see cref="LookbackDays"/> is an upper
+    /// bound applied when the as-of is unexpectedly ancient.
+    /// </summary>
+    public int LookbackDays { get; set; } = 365;
+}
+
+public sealed class FileCorporateActionOptions
+{
+    /// <summary>
+    /// Optional filesystem path to a JSON corp-action drop. When set and
+    /// readable, overrides the embedded <c>Resources/corporate-actions-seed.json</c>.
+    /// </summary>
+    public string? Path { get; set; }
+}
+
+public sealed class TiingoCorporateActionOptions
+{
+    /// <summary>When <c>true</c>, the composite provider overlays Tiingo EOD splits on top of the file source.</summary>
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>Tiingo API key. Reference-data has its own knob so ingress + refdata can use different keys if needed.</summary>
+    public string? ApiKey { get; set; }
+
+    /// <summary>Tiingo EOD base URL.</summary>
+    public string BaseUrl { get; set; } = "https://api.tiingo.com/tiingo/daily";
+
+    /// <summary>Per-request timeout for Tiingo EOD calls.</summary>
+    public int TimeoutSeconds { get; set; } = 10;
+
+    /// <summary>Maximum concurrent per-symbol Tiingo requests.</summary>
+    public int MaxConcurrency { get; set; } = 5;
+
+    /// <summary>Per-symbol cache TTL before re-fetching from Tiingo.</summary>
+    public int CacheTtlMinutes { get; set; } = 60;
 }

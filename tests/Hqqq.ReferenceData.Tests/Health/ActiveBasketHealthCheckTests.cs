@@ -42,7 +42,7 @@ public class ActiveBasketHealthCheckTests
             Snapshot = SnapshotBuilder.Build(count: 99, source: "live:file"),
             Fingerprint = "fp-deadbeef",
             ActivatedAtUtc = now,
-        });
+        }, report: null);
         tracker.RecordAttempt(now);
         tracker.RecordSuccess(now, "fp-deadbeef");
 
@@ -72,7 +72,7 @@ public class ActiveBasketHealthCheckTests
             Snapshot = SnapshotBuilder.Build(count: 60),
             Fingerprint = "fp-graceful",
             ActivatedAtUtc = start,
-        });
+        }, report: null);
 
         var check = BuildCheck(store, tracker, out var clock, start);
         clock.Advance(TimeSpan.FromSeconds(10));

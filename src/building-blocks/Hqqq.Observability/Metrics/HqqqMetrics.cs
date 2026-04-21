@@ -61,4 +61,18 @@ public sealed class HqqqMetrics
     // every failed publish attempt.
     public Counter<long> RefdataPublishFailuresTotal { get; } =
         Meter.CreateCounter<long>(MetricNames.RefdataPublishFailuresTotal, "failures");
+
+    // hqqq-reference-data — corporate-action + transition counters
+    // incremented inline by the refresh pipeline.
+    public Counter<long> RefdataSplitsAppliedTotal { get; } =
+        Meter.CreateCounter<long>(MetricNames.RefdataSplitsAppliedTotal, "splits");
+
+    public Counter<long> RefdataRenamesAppliedTotal { get; } =
+        Meter.CreateCounter<long>(MetricNames.RefdataRenamesAppliedTotal, "renames");
+
+    public Counter<long> RefdataBasketTransitionsTotal { get; } =
+        Meter.CreateCounter<long>(MetricNames.RefdataBasketTransitionsTotal, "transitions");
+
+    public Counter<long> RefdataCorpActionFetchErrorsTotal { get; } =
+        Meter.CreateCounter<long>(MetricNames.RefdataCorpActionFetchErrorsTotal, "errors");
 }

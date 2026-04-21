@@ -1,4 +1,3 @@
-using Hqqq.Infrastructure.Hosting;
 using Hqqq.Ingress.Clients;
 using Hqqq.Ingress.Configuration;
 using Hqqq.Ingress.Publishing;
@@ -8,33 +7,25 @@ using Microsoft.Extensions.Options;
 namespace Hqqq.Ingress.Workers;
 
 /// <summary>
-/// Hosted worker that orchestrates Tiingo ingestion. Behaviour is
-/// gated by <see cref="OperatingMode"/>:
-/// <list type="bullet">
-///   <item>
-///     <see cref="OperatingMode.Hybrid"/> — idle. The legacy monolith
-///     bridges ticks. If a Tiingo API key is present we log a single
-///     warning so operators don't think their key is "active" when it
-///     is intentionally ignored.
-///   </item>
-///   <item>
-///     <see cref="OperatingMode.Standalone"/> — validate config (fail
-///     fast if the API key is missing/placeholder), run a one-shot REST
-///     snapshot warmup so consumers see a baseline price, then loop the
-///     websocket with bounded exponential backoff.
-///   </item>
-/// </list>
+/// Hosted worker that orchestrates Tiingo ingestion. Phase 2 ingress has a
+/// single self-sufficient runtime path: validate Tiingo:ApiKey → wait for
+/// the first basket (or fall back to <c>Tiingo:Symbols</c> override) →
+/// snapshot warmup → websocket loop with bounded exponential backoff.
+/// Mid-session basket updates are applied through
+/// <see cref="BasketSubscriptionCoordinator"/>.
 /// </summary>
 public sealed class TiingoIngressWorker : BackgroundService
 {
-    private static readonly string[] PlaceholderMarkers = new[] { "<set", "your_", "changeme" };
+    private static readonly string[] PlaceholderMarkers = new[] { "<set", "your_", "changeme", "replace_me" };
 
     private readonly ITiingoStreamClient _streamClient;
     private readonly ITiingoSnapshotClient _snapshotClient;
     private readonly ITickPublisher _publisher;
     private readonly IngestionState _state;
-    private readonly TiingoOptions _options;
-    private readonly OperatingModeOptions _mode;
+    private readonly ActiveSymbolUniverse _universe;
+    private readonly BasketSubscriptionCoordinator _coordinator;
+    private readonly TiingoOptions _tiingoOptions;
+    private readonly IngressBasketOptions _basketOptions;
     private readonly ILogger<TiingoIngressWorker> _logger;
 
     public TiingoIngressWorker(
@@ -42,52 +33,42 @@ public sealed class TiingoIngressWorker : BackgroundService
         ITiingoSnapshotClient snapshotClient,
         ITickPublisher publisher,
         IngestionState state,
-        IOptions<TiingoOptions> options,
-        OperatingModeOptions mode,
+        ActiveSymbolUniverse universe,
+        BasketSubscriptionCoordinator coordinator,
+        IOptions<TiingoOptions> tiingoOptions,
+        IOptions<IngressBasketOptions> basketOptions,
         ILogger<TiingoIngressWorker> logger)
     {
         _streamClient = streamClient;
         _snapshotClient = snapshotClient;
         _publisher = publisher;
         _state = state;
-        _options = options.Value;
-        _mode = mode;
+        _universe = universe;
+        _coordinator = coordinator;
+        _tiingoOptions = tiingoOptions.Value;
+        _basketOptions = basketOptions.Value;
         _logger = logger;
     }
 
     /// <summary>
-    /// Validates standalone preconditions before the host advertises as
-    /// started. Throws so the process exits and the orchestrator (Container
-    /// App / docker-compose) restarts with the operator-visible error.
+    /// Validates preconditions before the host advertises as started.
+    /// Throws so the process exits and the orchestrator restarts with
+    /// the operator-visible error — Phase 2 does not have a silent
+    /// degraded mode here.
     /// </summary>
     public override Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_mode.IsStandalone)
+        if (!HasUsableApiKey(_tiingoOptions.ApiKey))
         {
-            if (!HasUsableApiKey(_options.ApiKey))
-            {
-                throw new InvalidOperationException(
-                    "hqqq-ingress: HQQQ_OPERATING_MODE=standalone requires Tiingo:ApiKey " +
-                    "to be set to a real API key. Set Tiingo__ApiKey or TIINGO_API_KEY and restart.");
-            }
+            throw new InvalidOperationException(
+                "hqqq-ingress: Tiingo:ApiKey is required. " +
+                "Set Tiingo__ApiKey (or TIINGO_API_KEY legacy alias) to a real API key and restart.");
+        }
 
-            _logger.LogInformation(
-                "TiingoIngressWorker: standalone mode — Tiingo ingestion will start");
-        }
-        else
-        {
-            if (HasUsableApiKey(_options.ApiKey))
-            {
-                _logger.LogWarning(
-                    "TiingoIngressWorker: hybrid mode — Tiingo:ApiKey is present but ignored. " +
-                    "Set HQQQ_OPERATING_MODE=standalone to activate Phase 2 native ingestion.");
-            }
-            else
-            {
-                _logger.LogInformation(
-                    "TiingoIngressWorker: hybrid mode — ingestion is delegated to the legacy monolith");
-            }
-        }
+        _logger.LogInformation(
+            "TiingoIngressWorker: starting; basket topic={Topic} startupWait={Wait}s override={Override}",
+            _basketOptions.Topic, _basketOptions.StartupWaitSeconds,
+            _tiingoOptions.ResolveOverrideSymbols().Count);
 
         return base.StartAsync(cancellationToken);
     }
@@ -97,28 +78,23 @@ public sealed class TiingoIngressWorker : BackgroundService
         _state.SetRunning(true);
         try
         {
-            if (_mode.IsHybrid)
+            var symbols = await ResolveInitialSymbolsAsync(stoppingToken).ConfigureAwait(false);
+            if (symbols.Count == 0)
             {
-                // Stream client in hybrid is the no-op stub; awaiting it
-                // simply blocks until cancellation, which keeps the
-                // /healthz/* probes serving.
-                await _streamClient.ConnectAndStreamAsync(
-                    Array.Empty<string>(),
-                    (_, _) => Task.CompletedTask,
-                    stoppingToken).ConfigureAwait(false);
+                _logger.LogWarning(
+                    "TiingoIngressWorker: exiting without subscribing — no basket arrived and no Tiingo:Symbols override configured");
                 return;
             }
 
-            var symbols = _options.ResolveSymbols();
             _logger.LogInformation(
-                "Standalone ingest will subscribe to {Count} symbols", symbols.Count);
+                "TiingoIngressWorker: subscribing to {Count} symbols (fingerprint={Fingerprint})",
+                symbols.Count, _coordinator.AppliedFingerprint ?? "<bootstrap>");
 
             await RunSnapshotWarmupAsync(symbols, stoppingToken).ConfigureAwait(false);
-            await RunWebsocketLoopAsync(symbols, stoppingToken).ConfigureAwait(false);
+            await RunWebsocketLoopAsync(stoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
-            // Normal shutdown.
         }
         finally
         {
@@ -127,10 +103,75 @@ public sealed class TiingoIngressWorker : BackgroundService
         }
     }
 
-    private async Task RunSnapshotWarmupAsync(
-        IReadOnlyList<string> symbols, CancellationToken ct)
+    private async Task<IReadOnlyCollection<string>> ResolveInitialSymbolsAsync(CancellationToken ct)
     {
-        if (!_options.SnapshotOnStartup) return;
+        // Fast path — a basket has already been consumed by the time the
+        // worker starts iterating (depends on DI start order in the host).
+        if (_universe.Current is { Symbols.Count: > 0 } seed)
+        {
+            await _coordinator.ApplyAsync(seed, ct).ConfigureAwait(false);
+            return _coordinator.CurrentAppliedSymbols;
+        }
+
+        var waitSeconds = Math.Max(0, _basketOptions.StartupWaitSeconds);
+        if (waitSeconds == 0)
+        {
+            _logger.LogWarning(
+                "TiingoIngressWorker: StartupWaitSeconds=0; skipping basket wait and using override (if any)");
+        }
+        else
+        {
+            _logger.LogInformation(
+                "TiingoIngressWorker: waiting up to {Wait}s for first basket on {Topic}",
+                waitSeconds, _basketOptions.Topic);
+
+            using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var arrived = new TaskCompletionSource<UniverseSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            void Handler(UniverseSnapshot s)
+            {
+                if (s.Symbols.Count > 0) arrived.TrySetResult(s);
+            }
+
+            _universe.BasketUpdated += Handler;
+            try
+            {
+                if (_universe.Current is { Symbols.Count: > 0 } immediate)
+                    arrived.TrySetResult(immediate);
+
+                var delay = Task.Delay(TimeSpan.FromSeconds(waitSeconds), waitCts.Token);
+                var first = await Task.WhenAny(arrived.Task, delay).ConfigureAwait(false);
+
+                if (first == arrived.Task)
+                {
+                    var snap = await arrived.Task.ConfigureAwait(false);
+                    await _coordinator.ApplyAsync(snap, ct).ConfigureAwait(false);
+                    return _coordinator.CurrentAppliedSymbols;
+                }
+            }
+            finally
+            {
+                _universe.BasketUpdated -= Handler;
+            }
+        }
+
+        var overrideSymbols = _tiingoOptions.ResolveOverrideSymbols();
+        if (overrideSymbols.Count > 0)
+        {
+            _coordinator.SeedBootstrapSymbols(overrideSymbols);
+            _logger.LogWarning(
+                "TiingoIngressWorker: no basket within {Wait}s; falling back to Tiingo:Symbols override ({Count} symbols)",
+                waitSeconds, overrideSymbols.Count);
+            return _coordinator.CurrentAppliedSymbols;
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private async Task RunSnapshotWarmupAsync(
+        IReadOnlyCollection<string> symbols, CancellationToken ct)
+    {
+        if (!_tiingoOptions.SnapshotOnStartup) return;
 
         try
         {
@@ -145,6 +186,7 @@ public sealed class TiingoIngressWorker : BackgroundService
             }
 
             await _publisher.PublishBatchAsync(snapshot, ct).ConfigureAwait(false);
+            _state.RecordPublishedTicks(snapshot.Count);
             _logger.LogInformation(
                 "Snapshot warmup published {Count} baseline ticks", snapshot.Count);
         }
@@ -156,26 +198,40 @@ public sealed class TiingoIngressWorker : BackgroundService
         }
     }
 
-    private async Task RunWebsocketLoopAsync(
-        IReadOnlyList<string> symbols, CancellationToken ct)
+    private async Task RunWebsocketLoopAsync(CancellationToken ct)
     {
         var attempt = 0;
 
         while (!ct.IsCancellationRequested)
         {
+            var initial = _coordinator.CurrentAppliedSymbols;
+            if (initial.Count == 0)
+            {
+                _logger.LogInformation(
+                    "[ws-loop] no active symbols to subscribe; sleeping {Delay}s",
+                    _tiingoOptions.ReconnectBaseDelaySeconds);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(
+                        Math.Max(1, _tiingoOptions.ReconnectBaseDelaySeconds)), ct)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { break; }
+                continue;
+            }
+
             try
             {
                 attempt++;
                 _logger.LogInformation(
-                    "[ws-loop] attempt={Attempt} connecting to Tiingo", attempt);
+                    "[ws-loop] attempt={Attempt} connecting to Tiingo ({Count} symbols)",
+                    attempt, initial.Count);
 
                 await _streamClient.ConnectAndStreamAsync(
-                    symbols,
-                    (tick, innerCt) => _publisher.PublishAsync(tick, innerCt),
+                    initial,
+                    PublishAndRecordAsync,
                     ct).ConfigureAwait(false);
 
-                // Clean exit (server-initiated close). Reset attempt
-                // counter so the next reconnect uses the base delay.
                 attempt = 0;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -205,12 +261,24 @@ public sealed class TiingoIngressWorker : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Publish-and-record callback handed to <see cref="ITiingoStreamClient"/>.
+    /// <see cref="IngestionState.RecordPublishedTick"/> is intentionally
+    /// invoked only after the publisher's task completes successfully —
+    /// failed publishes must not advance the runtime tick-flow signal that
+    /// smoke proofs rely on.
+    /// </summary>
+    private async Task PublishAndRecordAsync(Hqqq.Contracts.Events.RawTickV1 tick, CancellationToken ct)
+    {
+        await _publisher.PublishAsync(tick, ct).ConfigureAwait(false);
+        _state.RecordPublishedTick();
+    }
+
     private TimeSpan ComputeBackoff(int attempt)
     {
-        var baseSeconds = Math.Max(1, _options.ReconnectBaseDelaySeconds);
-        var maxSeconds = Math.Max(baseSeconds, _options.MaxReconnectDelaySeconds);
+        var baseSeconds = Math.Max(1, _tiingoOptions.ReconnectBaseDelaySeconds);
+        var maxSeconds = Math.Max(baseSeconds, _tiingoOptions.MaxReconnectDelaySeconds);
 
-        // Exponential: base * 2^(attempt-1), capped.
         var seconds = baseSeconds * Math.Pow(2, Math.Max(0, attempt - 1));
         if (seconds > maxSeconds || double.IsInfinity(seconds)) seconds = maxSeconds;
 

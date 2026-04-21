@@ -8,8 +8,8 @@ namespace Hqqq.Ingress.Publishing;
 /// <summary>
 /// Production <see cref="ITickPublisher"/> backed by two long-lived
 /// Confluent Kafka producers (one per topic, both keyed by symbol).
-/// Used in <see cref="Hqqq.Infrastructure.Hosting.OperatingMode.Standalone"/>
-/// where ingress owns market-tick publishing end-to-end.
+/// Ingress owns market-tick publishing end-to-end in Phase 2 — there is
+/// no stub / log-only path.
 /// </summary>
 /// <remarks>
 /// <para>

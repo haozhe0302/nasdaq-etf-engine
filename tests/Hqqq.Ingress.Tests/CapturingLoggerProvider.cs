@@ -5,8 +5,7 @@ namespace Hqqq.Ingress.Tests;
 
 /// <summary>
 /// Minimal in-memory <see cref="ILoggerProvider"/> used by tests that
-/// need to assert on emitted log lines (e.g. the hybrid-mode warning
-/// when a Tiingo API key is configured but ignored).
+/// need to assert on emitted log lines.
 /// </summary>
 internal sealed class CapturingLoggerProvider : ILoggerProvider
 {

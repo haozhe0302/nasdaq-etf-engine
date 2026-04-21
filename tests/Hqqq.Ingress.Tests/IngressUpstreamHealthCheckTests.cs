@@ -1,4 +1,3 @@
-using Hqqq.Infrastructure.Hosting;
 using Hqqq.Ingress.Configuration;
 using Hqqq.Ingress.Health;
 using Hqqq.Ingress.State;
@@ -9,30 +8,16 @@ namespace Hqqq.Ingress.Tests;
 
 /// <summary>
 /// Asserts the operator-visible <c>/healthz/ready</c> payload shape for
-/// ingress: hybrid is permissive, standalone reflects upstream state.
+/// the Tiingo upstream check. Phase 2 has a single runtime path, so the
+/// probe reflects real upstream state only — there is no "hybrid always
+/// healthy" branch.
 /// </summary>
 public class IngressUpstreamHealthCheckTests
 {
     [Fact]
-    public async Task Hybrid_IsAlwaysHealthy_AndExposesMode()
+    public async Task NotConnected_IsDegradedAndExposesLastError()
     {
-        var check = BuildCheck(OperatingMode.Hybrid, state =>
-        {
-            // Hybrid never connects; the check should still report healthy.
-        });
-
-        var result = await check.CheckHealthAsync(new HealthCheckContext());
-
-        Assert.Equal(HealthStatus.Healthy, result.Status);
-        Assert.Equal("hybrid", result.Data["operatingMode"]);
-        Assert.Equal(false, result.Data["isUpstreamConnected"]);
-        Assert.Contains("hybrid", result.Description, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Standalone_NotConnected_IsDegradedAndExposesLastError()
-    {
-        var check = BuildCheck(OperatingMode.Standalone, state =>
+        var check = BuildCheck(state =>
         {
             state.RecordError("ws handshake failed");
         });
@@ -40,16 +25,15 @@ public class IngressUpstreamHealthCheckTests
         var result = await check.CheckHealthAsync(new HealthCheckContext());
 
         Assert.Equal(HealthStatus.Degraded, result.Status);
-        Assert.Equal("standalone", result.Data["operatingMode"]);
         Assert.Equal(false, result.Data["isUpstreamConnected"]);
         Assert.Equal("ws handshake failed", result.Data["lastError"]);
         Assert.Contains("ws handshake failed", result.Description);
     }
 
     [Fact]
-    public async Task Standalone_ConnectedAndFresh_IsHealthy()
+    public async Task ConnectedAndFresh_IsHealthy()
     {
-        var check = BuildCheck(OperatingMode.Standalone, state =>
+        var check = BuildCheck(state =>
         {
             state.SetWebSocketConnected(true);
             state.RecordTick();
@@ -63,15 +47,37 @@ public class IngressUpstreamHealthCheckTests
         Assert.True(result.Data.ContainsKey("lastDataUtc"));
     }
 
-    private static IngressUpstreamHealthCheck BuildCheck(
-        OperatingMode mode,
-        Action<IngestionState> arrange)
+    [Fact]
+    public async Task ConnectedButStale_IsDegraded()
+    {
+        // Use a very small StaleAfterSeconds so the synthetic
+        // "last tick was too long ago" arithmetic fires deterministically
+        // without Thread.Sleep.
+        var state = new IngestionState();
+        state.SetWebSocketConnected(true);
+        state.RecordTick();
+
+        // Force the lastActivity tick well into the past by making the
+        // check's threshold zero seconds.
+        var check = new IngressUpstreamHealthCheck(
+            state,
+            Options.Create(new TiingoOptions { StaleAfterSeconds = 0 }));
+
+        // Wait a moment so "now - lastActivity" > 0.
+        await Task.Delay(20);
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext());
+
+        Assert.Equal(HealthStatus.Degraded, result.Status);
+        Assert.Contains("No tick observed", result.Description);
+    }
+
+    private static IngressUpstreamHealthCheck BuildCheck(Action<IngestionState> arrange)
     {
         var state = new IngestionState();
         arrange(state);
         return new IngressUpstreamHealthCheck(
             state,
-            new OperatingModeOptions { Mode = mode },
             Options.Create(new TiingoOptions { StaleAfterSeconds = 60 }));
     }
 }

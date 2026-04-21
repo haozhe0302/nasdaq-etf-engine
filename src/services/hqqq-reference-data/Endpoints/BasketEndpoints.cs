@@ -33,6 +33,11 @@ public static class BasketEndpoints
                 AsOfDate = result.AsOfDate,
                 ActivatedAtUtc = result.ActivatedAtUtc,
                 PublishStatus = BasketPublishStatusDto.FromDomain(result.PublishStatus),
+                AdjustmentSummary = result.LatestAdjustmentReport is null
+                    ? null
+                    : AdjustmentSummaryDto.FromDomain(result.LatestAdjustmentReport),
+                PreviousBasketId = result.PreviousBasketId,
+                PreviousFingerprint = result.PreviousFingerprint,
             };
             return Results.Ok(response);
         })

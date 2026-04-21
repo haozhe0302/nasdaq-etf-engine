@@ -2,9 +2,12 @@ namespace Hqqq.Infrastructure.Hosting;
 
 /// <summary>
 /// Bound from the top-level <c>OperatingMode</c> config key, with a flat
-/// <c>HQQQ_OPERATING_MODE</c> environment variable as legacy fallback (mapped
-/// by <see cref="LegacyConfigShim"/>). Default is <see cref="OperatingMode.Hybrid"/>
-/// so an unset env preserves the historic Phase 2 demo behaviour exactly.
+/// <c>HQQQ_OPERATING_MODE</c> environment variable as legacy fallback
+/// (mapped by <see cref="LegacyConfigShim"/>). Kept as a logging-posture
+/// tag for cross-service consistency; no runtime behaviour branches on
+/// the value anymore. Default is <see cref="OperatingMode.Hybrid"/>
+/// purely for backward compatibility with existing env files — the
+/// runtime is the same either way.
 /// </summary>
 public sealed class OperatingModeOptions
 {

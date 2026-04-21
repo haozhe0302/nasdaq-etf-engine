@@ -1,4 +1,5 @@
 using Hqqq.Domain.Entities;
+using Hqqq.ReferenceData.CorporateActions.Contracts;
 using Hqqq.ReferenceData.Services;
 
 namespace Hqqq.ReferenceData.Models;
@@ -12,7 +13,7 @@ public sealed record BasketCurrentResponse
     public required BasketVersionDto Active { get; init; }
     public required IReadOnlyList<ConstituentWeight> Constituents { get; init; }
 
-    /// <summary>Lineage tag (e.g. <c>"live:file"</c>, <c>"fallback-seed"</c>).</summary>
+    /// <summary>Lineage tag (e.g. <c>"live:file"</c>, <c>"fallback-seed"</c>, <c>"fallback-seed+corp-adjusted"</c>).</summary>
     public required string Source { get; init; }
 
     public required DateOnly AsOfDate { get; init; }
@@ -20,6 +21,15 @@ public sealed record BasketCurrentResponse
 
     /// <summary>Kafka publish-health projection — mirrors <c>/healthz/ready</c>.</summary>
     public required BasketPublishStatusDto PublishStatus { get; init; }
+
+    /// <summary>Most recent corporate-action + transition audit trail (nullable before first refresh).</summary>
+    public AdjustmentSummaryDto? AdjustmentSummary { get; init; }
+
+    /// <summary>Fingerprint of the basket that was active before the current one, if any.</summary>
+    public string? PreviousFingerprint { get; init; }
+
+    /// <summary>BasketId of the basket that was active before the current one, if any.</summary>
+    public string? PreviousBasketId { get; init; }
 }
 
 /// <summary>
@@ -74,5 +84,43 @@ public sealed record BasketVersionDto
         ActivatedAtUtc = v.ActivatedAtUtc,
         ConstituentCount = v.ConstituentCount,
         CreatedAtUtc = v.CreatedAtUtc,
+    };
+}
+
+/// <summary>
+/// HTTP projection of the corporate-action + transition
+/// <see cref="AdjustmentReport"/>. Carries counts and provenance for the
+/// REST surface so operators can see what changed on the most recent
+/// refresh without scraping metrics.
+/// </summary>
+public sealed record AdjustmentSummaryDto
+{
+    public required int SplitsApplied { get; init; }
+    public required int RenamesApplied { get; init; }
+    public required IReadOnlyList<string> AddedSymbols { get; init; }
+    public required IReadOnlyList<string> RemovedSymbols { get; init; }
+    public required DateOnly BasketAsOfDate { get; init; }
+    public required DateOnly RuntimeDate { get; init; }
+    public required DateTimeOffset AppliedAtUtc { get; init; }
+    public required string Source { get; init; }
+    public bool ScaleFactorRecalibrated { get; init; }
+    public decimal? PreviousScaleFactor { get; init; }
+    public decimal? NewScaleFactor { get; init; }
+    public string? ProviderError { get; init; }
+
+    public static AdjustmentSummaryDto FromDomain(AdjustmentReport r) => new()
+    {
+        SplitsApplied = r.SplitsApplied,
+        RenamesApplied = r.RenamesApplied,
+        AddedSymbols = r.AddedSymbols,
+        RemovedSymbols = r.RemovedSymbols,
+        BasketAsOfDate = r.BasketAsOfDate,
+        RuntimeDate = r.RuntimeDate,
+        AppliedAtUtc = r.AppliedAtUtc,
+        Source = r.Source,
+        ScaleFactorRecalibrated = r.ScaleFactorRecalibrated,
+        PreviousScaleFactor = r.PreviousScaleFactor,
+        NewScaleFactor = r.NewScaleFactor,
+        ProviderError = r.ProviderError,
     };
 }

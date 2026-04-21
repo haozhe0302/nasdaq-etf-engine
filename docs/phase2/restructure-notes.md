@@ -1,6 +1,40 @@
 # Phase 2 — Repository Restructure Notes
 
-## Current status (D6.5)
+## Current status (self-sufficient runtime)
+
+- Phase 2 has a **single self-sufficient runtime path**. The legacy
+  `hqqq-api` monolith is retained in the repo as reference code only;
+  it is NOT required to run Phase 2, NOT a producer on any Phase 2
+  Kafka topic, and NOT called into by any Phase 2 service at runtime.
+- `hqqq-ingress` is real: Tiingo IEX websocket + REST warmup + Kafka
+  publisher. It consumes `refdata.basket.active.v1` and drives
+  subscribe/unsubscribe against the Tiingo socket dynamically. Fails
+  fast on missing/placeholder `Tiingo:ApiKey`. All previous stub /
+  hybrid / log-only publisher paths have been deleted.
+- `hqqq-reference-data` owns the basket in all postures. The refresh
+  pipeline now runs through a Phase-2-native **corporate-action
+  adjustment** layer (`CompositeCorporateActionProvider` over a file
+  source + optional Tiingo overlay, `CorporateActionAdjustmentService`,
+  `SymbolRemapResolver`, `BasketTransitionPlanner` with scale-factor
+  continuity) before fingerprinting and publishing. Supported scope:
+  forward/reverse splits, ticker renames, constituent transitions,
+  scale-factor continuity. Out of scope: dividends, spin-offs, mergers,
+  cross-exchange moves.
+- `BasketActiveStateV1` is extended additively with
+  `AdjustmentSummary`, `PreviousBasketId`, `PreviousFingerprint`.
+  Historical messages deserialize with these null — the compacted
+  topic is backward-compatible.
+- Gateway `/api/system/health` aggregator escalates the rollup to
+  `degraded` whenever `hqqq-ingress` or `hqqq-reference-data` is not
+  healthy, unconditionally. The previous mode-dependent relaxation has
+  been removed.
+- `HQQQ_OPERATING_MODE` is now a logging-posture tag only; it no
+  longer branches any runtime behaviour.
+- Compose / scripts / `.env.example` updated: no hybrid defaults,
+  `Tiingo__ApiKey` is required, legacy gateway base URL stays empty,
+  corp-action config defaults in place.
+
+## Historical status (D6.5)
 
 - **D1–D5 are real in-repo runtime/operator slices**, not plans.
   Gateway-native `/api/system/health` aggregator (D1), live

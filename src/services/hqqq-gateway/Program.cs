@@ -40,6 +40,30 @@ app.Services.LogConfigurationPosture(
     app.Logger,
     "Redis", "Timescale", "Gateway");
 
+// Phase 2 default per-endpoint posture is `redis` / `redis` /
+// `timescale` / `aggregated` and never requires the legacy hqqq-api
+// monolith. The `legacy` source mode remains in the codebase only for
+// side-by-side parity testing against a separately-running monolith;
+// log a loud warning on startup so this opt-in fallback can never
+// silently become production behaviour.
+{
+    var resolvedModes = app.Services.GetRequiredService<ResolvedSourceModes>();
+    var legacyEndpoints = new List<string>();
+    if (resolvedModes.Quote == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("Quote");
+    if (resolvedModes.Constituents == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("Constituents");
+    if (resolvedModes.History == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("History");
+    if (resolvedModes.SystemHealth == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("SystemHealth");
+
+    if (legacyEndpoints.Count > 0)
+    {
+        app.Logger.LogWarning(
+            "[gateway:legacy-mode] Gateway is forwarding {Endpoints} to legacy hqqq-api via Gateway:LegacyBaseUrl. " +
+            "This is a non-default Phase 2 fallback intended for parity testing only — switch to the Phase-2-native " +
+            "sources (Redis / Timescale / aggregated) for normal operation.",
+            string.Join(", ", legacyEndpoints));
+    }
+}
+
 app.MapHqqqHealthEndpoints();
 
 app.MapGatewayEndpoints();

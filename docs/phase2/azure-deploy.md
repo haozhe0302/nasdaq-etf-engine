@@ -59,31 +59,25 @@ both workflows against the same resource group.
 > `hqqq-quote-engine`, `hqqq-persistence`, `hqqq-analytics`). The
 > full bring-up checklist is §3a-bis.
 
-### 0.2) Hybrid vs Standalone operating mode
+### 0.2) Operating mode (logging posture only)
 
-Phase 2 runs in one of two operating modes, selected by the
-`HQQQ_OPERATING_MODE` env var (canonical hierarchical key:
-`OperatingMode`). The mode flows into every Container App as an env
-var (Bicep param `operatingMode`, also set in
-`docker-compose.phase2.yml`) so the entire deployment swaps modes
-together.
+Phase 2 has a **single self-sufficient runtime path** on Azure. The
+`HQQQ_OPERATING_MODE` env (canonical hierarchical key: `OperatingMode`)
+is retained as a logging-posture tag for cross-service consistency in
+structured logs; it no longer branches any runtime behaviour. The
+legacy `hqqq-api` monolith is NOT part of the Phase 2 Azure deploy.
 
-| Aspect | `hybrid` (default) | `standalone` |
-|---|---|---|
-| `hqqq-ingress` | Stub. `Tiingo__ApiKey` is logged-then-ignored if set. The legacy `hqqq-api` monolith bridges live ticks. | Real Tiingo IEX websocket consumer. Publishes `market.raw_ticks.v1` and `market.latest_by_symbol.v1`. Fails fast at startup if `Tiingo__ApiKey` is missing/placeholder. |
-| `hqqq-reference-data` | In-memory stub repository. Monolith owns issuer feeds + corp-actions. | Loads a deterministic basket seed (embedded JSON, ~25 N100 names) and publishes a fully-materialized `BasketActiveStateV1` to `refdata.basket.active.v1` on startup with a slow re-publish. Fails fast at startup if the seed is missing/invalid. |
-| Quote engine input | Reads ticks + active basket bridged from the monolith via Kafka. | Reads ticks + active basket produced natively by `hqqq-ingress` and `hqqq-reference-data`. |
-| External coupling | Requires the legacy `hqqq-api` monolith to be running and pumping Kafka. | Self-contained on Azure — the monolith is not in the path. |
-| `/api/system/health` rollup | `ingress` and `refdata` are treated as advisory; their Idle/Unknown state does not drag the gateway to Degraded. | `ingress` and `refdata` are required dependencies; an Idle/Unknown/Degraded child degrades the rollup so smoke catches a broken native component. |
-| Smoke tightness | Local: `phase2-smoke.{ps1,sh}`. Azure: `phase2-azure-smoke.sh`. Both assert reachability + 200s. | Same scripts with `-Mode standalone` / `--mode standalone`. They additionally poll `/api/quote` until `nav > 0` and `/api/constituents` until `holdings` is non-empty (warmup window, default 60s, override via `HQQQ_SMOKE_WARMUP_SECONDS`). |
-| Pick when | You're demoing the Phase 2 surface alongside the legacy monolith for parity, or you don't yet have Tiingo creds + Kafka egress allowed in the target subscription. | The Phase 2 deployment must run on its own (interview demo, isolated environment, hybrid retired). |
+Required env on the deploy:
 
-Switching modes is a config-only change — no image rebuild required.
-Set `HQQQ_OPERATING_MODE=standalone` (or pass `operatingMode=standalone`
-to the Bicep deploy / set the env var on each Container App) and roll
-the revision. In `standalone` you must also set `Tiingo__ApiKey` on
-the `hqqq-ingress` Container App; everything else has a sensible
-default.
+| App | Env | Why |
+|-----|-----|-----|
+| `ca-hqqq-p2-ingress` | `Tiingo__ApiKey` | `hqqq-ingress` fails fast on missing/placeholder. No stub path. |
+| All Phase 2 apps | `Kafka__*`, `Redis__*`, `Timescale__*` | Shared infra (Event Hubs / Redis / Timescale). |
+
+The gateway system-health aggregator treats `hqqq-ingress` and
+`hqqq-reference-data` as required — any non-healthy status escalates
+the rollup to `degraded` so Azure smoke catches a broken native
+component.
 
 ### 0.1) Target Azure resource names (manual-resource model)
 

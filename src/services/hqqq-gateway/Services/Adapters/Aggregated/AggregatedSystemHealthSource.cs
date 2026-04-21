@@ -1,7 +1,6 @@
 using System.Globalization;
 using System.Text;
 using Hqqq.Gateway.Services.Sources;
-using Hqqq.Infrastructure.Hosting;
 using Hqqq.Observability.Health;
 using Hqqq.Observability.Identity;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -30,16 +29,16 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
     private readonly HealthCheckService _localHealth;
     private readonly ServiceIdentity _identity;
     private readonly GatewayHealthOptions _options;
-    private readonly OperatingMode _mode;
     private readonly ILogger<AggregatedSystemHealthSource> _logger;
 
     /// <summary>
-    /// Service names that are considered <em>required</em> for the
-    /// system-health rollup when the gateway runs in standalone mode.
-    /// In hybrid the legacy monolith bridges these flows, so missing
-    /// Phase 2 services don't drag the status down.
+    /// Phase 2 services that are architecturally required for the
+    /// system-health rollup. When either is non-healthy (including
+    /// <c>idle</c>/<c>unknown</c>) the top-level status escalates to
+    /// <c>degraded</c>, so the gateway surfaces operator-visible
+    /// misconfiguration instead of pretending the stack is fine.
     /// </summary>
-    private static readonly HashSet<string> StandaloneRequiredServices = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> RequiredServices = new(StringComparer.OrdinalIgnoreCase)
     {
         "hqqq-ingress",
         "hqqq-reference-data",
@@ -50,14 +49,12 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         HealthCheckService localHealth,
         ServiceIdentity identity,
         IOptions<GatewayHealthOptions> options,
-        OperatingMode mode,
         ILogger<AggregatedSystemHealthSource> logger)
     {
         _client = client;
         _localHealth = localHealth;
         _identity = identity;
         _options = options.Value;
-        _mode = mode;
         _logger = logger;
     }
 
@@ -87,9 +84,6 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         {
             foreach (var entry in localReport.Entries)
             {
-                // "self" is a process-only check that should not surface as a
-                // dependency in the aggregated view (the runtime block carries
-                // local liveness already).
                 if (string.Equals(entry.Key, "self", StringComparison.OrdinalIgnoreCase))
                     continue;
 
@@ -110,24 +104,19 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
     }
 
     /// <summary>
-    /// In hybrid mode we delegate to the permissive
-    /// <see cref="SystemHealthPayloadBuilder.RollupStatus"/> (only
-    /// <c>unhealthy</c>/<c>degraded</c> escalate; missing workers stay
-    /// silent). In standalone mode the Phase 2 native services
-    /// (<c>hqqq-ingress</c> + <c>hqqq-reference-data</c>) are
-    /// architecturally required, so any non-healthy state for them
-    /// — including <c>idle</c>/<c>unknown</c> — escalates to
-    /// <c>degraded</c>. This makes the gateway fail the standalone
-    /// smoke-test rollup if either upstream is missing or stale.
+    /// The Phase 2 services hqqq-ingress and hqqq-reference-data are
+    /// architecturally required — the rollup escalates to <c>degraded</c>
+    /// when either is not <c>healthy</c>. For every other dependency we
+    /// defer to the permissive <see cref="SystemHealthPayloadBuilder.RollupStatus"/>
+    /// (unhealthy/degraded escalate; idle/unknown stay silent).
     /// </summary>
-    private string ComputeTopLevelStatus(IReadOnlyList<SystemHealthPayloadBuilder.DependencyEntry> dependencies)
+    private static string ComputeTopLevelStatus(IReadOnlyList<SystemHealthPayloadBuilder.DependencyEntry> dependencies)
     {
         var rollup = SystemHealthPayloadBuilder.RollupStatus(dependencies.Select(d => d.Status));
-        if (_mode != OperatingMode.Standalone) return rollup;
 
         foreach (var d in dependencies)
         {
-            if (!StandaloneRequiredServices.Contains(d.Name)) continue;
+            if (!RequiredServices.Contains(d.Name)) continue;
             if (d.Status != SystemHealthPayloadBuilder.Status.Healthy)
             {
                 return SystemHealthPayloadBuilder.Status.Degraded;

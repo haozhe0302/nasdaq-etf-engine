@@ -20,9 +20,10 @@ namespace Hqqq.ReferenceData.Sources;
 /// </summary>
 /// <remarks>
 /// Provider-specific scrape adapters (Schwab / StockAnalysis / Nasdaq /
-/// AlphaVantage) intentionally remain in the legacy monolith for now and
-/// can be ported behind <see cref="IHoldingsSource"/> later without
-/// touching the refresh pipeline.
+/// AlphaVantage) are out of scope for Phase 2 runtime. They exist in the
+/// legacy monolith as reference only; if/when they are ported they plug
+/// in behind <see cref="IHoldingsSource"/> without touching the refresh
+/// pipeline.
 /// </remarks>
 public sealed class LiveHoldingsSource : IHoldingsSource
 {

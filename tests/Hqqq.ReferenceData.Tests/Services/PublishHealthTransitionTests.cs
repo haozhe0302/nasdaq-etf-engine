@@ -4,7 +4,6 @@ using Hqqq.ReferenceData.Services;
 using Hqqq.ReferenceData.Sources;
 using Hqqq.ReferenceData.Tests.TestDoubles;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
-using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
@@ -15,11 +14,10 @@ namespace Hqqq.ReferenceData.Tests.Services;
 /// real refresh pipeline + <see cref="ActiveBasketHealthCheck"/> using a
 /// <see cref="CapturingPublisher"/> wired to throw on demand and a
 /// <see cref="FakeTimeProvider"/> so we can step the clock across the
-/// configured thresholds. Pins the exact transitions the audit flagged:
-/// Healthy -> Degraded -> Unhealthy on sustained broker outage,
-/// first-activation-publish-fail degrades to Degraded inside the grace
-/// window and to Unhealthy after it, and a successful recovery resets
-/// everything back to Healthy.
+/// configured thresholds. Pins Healthy → Degraded → Unhealthy on
+/// sustained broker outage, first-activation-publish-fail degrades to
+/// Degraded inside the grace window and Unhealthy after it, and recovery
+/// resets everything to Healthy.
 /// </summary>
 public class PublishHealthTransitionTests
 {
@@ -42,7 +40,6 @@ public class PublishHealthTransitionTests
         bench.Clock.Advance(TimeSpan.FromSeconds(5));
         Assert.Equal(HealthStatus.Healthy, (await bench.CheckAsync()).Status);
 
-        // Broker now fails. Every republish tick increments the streak.
         bench.Publisher.ThrowOnPublish = new InvalidOperationException("broker down");
         bench.Clock.Advance(TimeSpan.FromSeconds(5));
         var r1 = await bench.Pipeline.RepublishCurrentAsync(CancellationToken.None);
@@ -51,7 +48,6 @@ public class PublishHealthTransitionTests
         Assert.Equal(HealthStatus.Degraded, afterOneFailure.Status);
         Assert.Equal(1, bench.PublishHealth.Snapshot.ConsecutivePublishFailures);
 
-        // Two more consecutive failures push us past the Unhealthy threshold.
         bench.Clock.Advance(TimeSpan.FromSeconds(5));
         await bench.Pipeline.RepublishCurrentAsync(CancellationToken.None);
         bench.Clock.Advance(TimeSpan.FromSeconds(5));
@@ -61,7 +57,6 @@ public class PublishHealthTransitionTests
         Assert.Equal(HealthStatus.Unhealthy, terminal.Status);
         Assert.Equal(3, bench.PublishHealth.Snapshot.ConsecutivePublishFailures);
 
-        // LastPublishOkUtc retains the first (successful) publish timestamp.
         Assert.Equal(Start, bench.PublishHealth.Snapshot.LastPublishOkUtc);
     }
 
@@ -70,7 +65,7 @@ public class PublishHealthTransitionTests
     {
         var bench = new Bench(
             degradedAfter: 1,
-            unhealthyAfter: 99,         // high so the failure streak alone never triggers
+            unhealthyAfter: 99,
             firstActivationGrace: 60,
             maxSilence: 3600);
 
@@ -101,7 +96,6 @@ public class PublishHealthTransitionTests
         bench.Source.Enqueue(HoldingsFetchResult.Ok(SnapshotBuilder.Build(count: 60)));
         await bench.Pipeline.RefreshAsync(CancellationToken.None);
 
-        // Three failures — Degraded but not Unhealthy.
         bench.Publisher.ThrowOnPublish = new InvalidOperationException("broker down");
         for (var i = 0; i < 3; i++)
         {
@@ -112,7 +106,6 @@ public class PublishHealthTransitionTests
         Assert.Equal(HealthStatus.Degraded, (await bench.CheckAsync()).Status);
         var oldOk = bench.PublishHealth.Snapshot.LastPublishOkUtc;
 
-        // Broker recovers — the next republish lands successfully.
         bench.Publisher.ThrowOnPublish = null;
         bench.Clock.Advance(TimeSpan.FromSeconds(10));
         var republish = await bench.Pipeline.RepublishCurrentAsync(CancellationToken.None);
@@ -139,7 +132,7 @@ public class PublishHealthTransitionTests
         public Bench(int degradedAfter, int unhealthyAfter, int firstActivationGrace, int maxSilence)
         {
             Clock = new FakeTimeProvider(Start);
-            var options = Options.Create(new ReferenceDataOptions
+            var options = new ReferenceDataOptions
             {
                 Validation = new ValidationOptions { Strict = true, MinConstituents = 1, MaxConstituents = 500 },
                 PublishHealth = new PublishHealthOptions
@@ -149,12 +142,17 @@ public class PublishHealthTransitionTests
                     FirstActivationGraceSeconds = firstActivationGrace,
                     MaxSilenceSeconds = maxSilence,
                 },
-            });
-            var validator = new HoldingsValidator(options);
-            Pipeline = new BasketRefreshPipeline(
-                Source, validator, Store, Publisher, PublishHealth,
-                NullLogger<BasketRefreshPipeline>.Instance, Clock);
-            Check = new ActiveBasketHealthCheck(Store, PublishHealth, options, Clock);
+            };
+
+            var built = PipelineBuilder.Build(
+                source: Source,
+                publisher: Publisher,
+                store: Store,
+                publishHealth: PublishHealth,
+                options: options,
+                clock: Clock);
+            Pipeline = built.Pipeline;
+            Check = new ActiveBasketHealthCheck(Store, PublishHealth, Options.Create(options), Clock);
         }
 
         public Task<HealthCheckResult> CheckAsync()

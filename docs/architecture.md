@@ -83,10 +83,19 @@ slices rather than in a single big-bang rewrite.
 ## 2) Phase 1 monolith backend (legacy / reference, still present)
 
 `src/hqqq-api` is preserved unchanged and still runnable. It is **not**
-the current Phase 2 app tier; it is the legacy reference path that
-still owns real Tiingo ingestion, basket refresh, corporate-action
-adjustment, and the legacy `/api/system/health` probe path. The public
-live demo linked from the root README is served by this code.
+the current Phase 2 app tier. In the Phase 2 runtime, Tiingo
+ingestion, basket refresh, corporate-action adjustment, and
+`/api/system/health` aggregation are all owned by Phase 2 services
+(`hqqq-ingress`, `hqqq-reference-data`, and `hqqq-gateway` D1
+aggregator respectively); the monolith does **not** participate.
+
+The monolith retains its own pre-Phase-2 implementations of those
+responsibilities as reference code, and it still backs the public
+live demo linked from the root README (the demo Web App is the
+monolith on Azure App Service, not the Phase 2 Container Apps
+deployment). The module map below describes that legacy
+implementation as preserved — it is not a description of the
+Phase 2 hot path.
 
 ### 2.1 Module map
 

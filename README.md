@@ -248,10 +248,10 @@ summary is surfaced on `GET /api/basket/current` and on every published
 |---|---|---|
 | GET | `/api/quote` | Current iNAV quote snapshot |
 | GET | `/api/constituents` | Holdings with prices, weights, and quality metrics |
-| GET | `/api/basket/current` | Active/pending basket state and fingerprints (Phase 1 today) |
-| POST | `/api/basket/refresh` | Force basket re-fetch and merge (Phase 1 today) |
-| GET | `/api/marketdata/status` | Ingestion health, coverage, WebSocket/fallback state (Phase 1 today) |
-| GET | `/api/marketdata/latest` | Latest prices (Phase 1 today) |
+| GET | `/api/basket/current` | Active basket state, fingerprints, and `adjustmentSummary`. **Phase 2: served by `hqqq-reference-data` internally (port 5020); not exposed by `hqqq-gateway` today.** |
+| POST | `/api/basket/refresh` | Force basket re-fetch and corp-action re-adjustment. **Phase 2: served by `hqqq-reference-data` internally (port 5020); not exposed by `hqqq-gateway` today.** |
+| GET | `/api/marketdata/status` | Ingestion health, coverage, WebSocket/fallback state. |
+| GET | `/api/marketdata/latest` | Latest prices (Phase 1 monolith only — Phase 2 reads latest prices via Kafka `market.latest_by_symbol.v1` and Redis snapshots; not exposed as a gateway REST endpoint). |
 | GET | `/api/system/health` | Service / runtime / dependency snapshot (Phase 2 gateway: native aggregator; Phase 1: monolith probe) |
 | GET | `/api/history?range=` | Historical quote analytics (`1D/5D/1M/3M/YTD/1Y`) |
 | GET | `/metrics` | Prometheus-compatible metrics |

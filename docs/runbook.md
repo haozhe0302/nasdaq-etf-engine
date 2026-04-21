@@ -26,7 +26,15 @@ self-contained; you do not need to run both.
 
 ---
 
-## 1) Prerequisites
+## 1) Prerequisites — Phase 1 (legacy / public-demo) local run path
+
+> **Sections §§1–10 describe the Phase 1 modular monolith (`src/hqqq-api`).**
+> This is the legacy reference path that still backs the public live demo
+> linked at the top of the root [`README.md`](../README.md). It is **not**
+> the default Phase 2 self-sufficient runtime path. If you want to run the
+> current Phase 2 services locally, **skip to §11**; for the containerized
+> Phase 2 app tier, skip to §12. Phase 1 sections (§§1–10) and Phase 2
+> sections (§§11–17) are self-contained — you do not need to run both.
 
 | Tool | Version |
 |---|---|
@@ -34,7 +42,7 @@ self-contained; you do not need to run both.
 | Node.js | 22 LTS |
 | npm | 10.x |
 
-Required API keys in `.env`:
+Required API keys in `.env` for the legacy monolith path:
 - `TIINGO_API_KEY`
 - `ALPHA_VANTAGE_API_KEY`
 
@@ -269,9 +277,14 @@ docker compose down -v     # stop containers and remove volumes
 
 ## 11) Phase 2 local runbook (services split)
 
-This section covers the Phase 2 services. The legacy monolith is still the
-source of Tiingo ingestion, basket refresh, corp-action adjustment, and
-`/api/system/health` aggregation today.
+This section covers the Phase 2 services. Phase 2 is **self-sufficient**:
+`hqqq-ingress` opens the real Tiingo IEX websocket, `hqqq-reference-data`
+owns the active basket and Phase-2-native corporate-action adjustment,
+`hqqq-quote-engine` runs the iNAV compute and live `QuoteUpdate`
+publish, and `hqqq-gateway` serves REST + SignalR with a native
+`/api/system/health` aggregator. The legacy `hqqq-api` monolith is **not**
+in this runtime path — it stays in the repo as reference code and still
+backs the public live demo Web App on Azure App Service.
 
 ### 11.1 Infra startup
 
@@ -316,7 +329,7 @@ dotnet build Hqqq.sln
 
 dotnet run --project src/services/hqqq-reference-data
 dotnet run --project src/services/hqqq-quote-engine
-dotnet run --project src/services/hqqq-ingress         # still stub
+dotnet run --project src/services/hqqq-ingress         # requires Tiingo__ApiKey (real Tiingo IEX websocket; fail-fast on missing/placeholder key)
 dotnet run --project src/services/hqqq-persistence
 dotnet run --project src/services/hqqq-gateway
 ```
@@ -408,9 +421,15 @@ and exits with `0`.
 
 ### 11.6 Intentionally deferred
 
-- Real Tiingo ingestion in `hqqq-ingress`; issuer-feed + corporate-action
-  pipeline in `hqqq-reference-data` (still live inside the legacy
-  monolith).
+- Provider-specific holdings scrape adapters (Schwab / StockAnalysis /
+  AlphaVantage / Nasdaq) ported behind `IHoldingsSource` —
+  `hqqq-reference-data` runs on `File`/`Http` drops + the deterministic
+  fallback seed today; the legacy monolith retains the scrapers as
+  reference only.
+- Wider corp-action coverage: dividends, spin-offs, mergers, cross-exchange
+  moves, ISIN/CUSIP-level remaps. Phase 2 implements forward / reverse
+  splits, ticker renames, constituent transition detection, and
+  scale-factor continuity — explicit and narrow.
 - Replay / anomaly / backfill in `hqqq-analytics`.
 - HA topologies for Kafka / Redis / Timescale themselves; multi-instance
   quote-engine / persistence / ingress / reference-data (D5 only
@@ -640,7 +659,7 @@ should be treated as a regression on their own.
 | Unsupported `range` | `GET /api/history?range=XYZ` | `400 {"error":"history_range_unsupported", ...}` | Supported ranges: `1D`, `5D`, `1M`, `3M`, `YTD`, `1Y`. |
 | Downstream worker not configured / unreachable | `GET /api/system/health` (aggregated) | `200` overall, that dependency reports `status: "unknown"` (or `"idle"` if no `BaseUrl` configured); top-level status rolls up to `degraded` | The aggregator never returns a non-200 unless the gateway itself catastrophically fails. |
 | Quote-engine restart | live SignalR `/hubs/market` | momentary gap in `QuoteUpdate` events; no error to clients | Checkpoint at `QuoteEngine__CheckpointPath` rehydrates basket + scale-state on the next start. |
-| Corp-action provider failure (legacy) | `/api/system/health` (legacy or aggregated overlay) | `corporate-actions` dependency flagged; pricing falls back to unadjusted shares with `ProviderFailed=true` | Live serving continues. |
+| Corp-action provider failure (Phase 2 `hqqq-reference-data`) | `/api/system/health` (aggregated rollup); `/api/basket/current` `adjustmentSummary` | `corporate-actions` dependency flagged via `corporate-actions-fetch` health probe and `hqqq_refdata_corp_action_fetch_errors_total`. With `ReferenceData:CorporateActions:Tiingo:Enabled=true`, the composite provider falls back to file-only with lineage `file+tiingo-degraded`; basket activation continues. | Live serving continues. |
 | `hqqq-analytics` empty window | exit code | `0`, log line `WARN ... hasData=false` | Empty window is not a failure. |
 
 ---

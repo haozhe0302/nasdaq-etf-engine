@@ -253,7 +253,7 @@ recovers.
 | Redis unhealthy | `/api/history`, `/api/system/health` (with `redis` flagged degraded) | `/api/quote`, `/api/constituents`, and the SignalR fan-out all stop. |
 | Timescale unhealthy | `/api/quote`, `/api/constituents`, live SignalR fan-out | `/api/history` returns `503`; `hqqq-persistence` write loop logs failures (replay-safe via `ON CONFLICT DO NOTHING` once it recovers). |
 | One downstream worker unreachable from the gateway | `/api/system/health` returns `200` overall; that dependency reports `status: "unknown"` (or `"idle"` if no `BaseUrl` configured); top-level `status` rolls up to `degraded`. | No frontend alarm should trip on this in isolation. |
-| Corp-action provider failure (legacy monolith) | Live serving | Pricing falls back to unadjusted shares (`SharesOrigin="official"` instead of `"official:split-adjusted"`); `corporate-actions` flagged in legacy `/api/system/health`. |
+| Corp-action provider failure (Phase 2 `hqqq-reference-data`) | Live serving, basket activation, latest published `BasketActiveStateV1` | When `ReferenceData:CorporateActions:Tiingo:Enabled=true`, the `CompositeCorporateActionProvider` falls back to file-only with lineage `file+tiingo-degraded` and surfaces the error on `/api/basket/current` `adjustmentSummary.providerSource`. The aggregated `/api/system/health` flags the `corporate-actions-fetch` dependency; metric `hqqq_refdata_corp_action_fetch_errors_total` increments. Basket activation continues with whatever adjustments the file feed produced. |
 
 ---
 

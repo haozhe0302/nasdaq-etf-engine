@@ -104,10 +104,10 @@ the persistence service consumes `pricing.snapshots.v1` and
 
 | Service | SDK | Port | Purpose | Status |
 |---------|-----|------|---------|--------|
-| `hqqq-reference-data` | Web | 5020 | Basket refresh, activation, corp-action adjustment | Partial — config binding + in-memory basket repository; issuer feeds / corp-action pipeline not yet implemented |
-| `hqqq-ingress` | Worker | — | Tiingo WS/REST normalization, Kafka publishing | Stub with Tiingo + Kafka options |
-| `hqqq-quote-engine` | Worker | — | Kafka tick consumption, iNAV compute, Redis write | **B4 live** — real Kafka consumers (`market.raw_ticks.v1`, `refdata.basket.active.v1`), iNAV compute, file checkpoint, Redis snapshot + constituents writers, `pricing.snapshots.v1` publish |
-| `hqqq-gateway` | Web | 5030 | REST + SignalR serving from Redis/Timescale | **B1 + B5 + C2 live** — compatibility shell routes all four REST endpoints + `/hubs/market`; layered source selection (global `Gateway:DataSource` + per-endpoint `Gateway:Sources:*`); `/api/quote` and `/api/constituents` serve from Redis when configured; `/api/history` serves from Timescale when `Gateway:Sources:History=timescale`; `/api/system/health` still follows the global stub/legacy switch |
+| `hqqq-reference-data` | Web | 5020 | Basket refresh, activation, corp-action adjustment | **live** — composite holdings pipeline (`File`/`Http` live drop + committed ~100-name fallback seed) + Phase-2-native corporate-action adjustment (`CompositeCorporateActionProvider` over file + optional Tiingo overlay; `CorporateActionAdjustmentService`, `BasketTransitionPlanner`, `SymbolRemapResolver`). Publishes the **full** `BasketActiveStateV1` payload (constituents + pricing basis + `AdjustmentSummary`) to `refdata.basket.active.v1`. Real `GET /api/basket/current` (with `adjustmentSummary`) and `POST /api/basket/refresh`. |
+| `hqqq-ingress` | Worker | — | Tiingo WS/REST normalization, Kafka publishing | **live** — real Tiingo IEX websocket + REST snapshot warmup; subscribes to `refdata.basket.active.v1` and drives Tiingo subscribe/unsubscribe dynamically off the basket; publishes `market.raw_ticks.v1` and `market.latest_by_symbol.v1`; fails fast on missing/placeholder `Tiingo:ApiKey`. No stub / hybrid / log-only path. |
+| `hqqq-quote-engine` | Worker | — | Kafka tick consumption, iNAV compute, Redis write | **B4 live** — real Kafka consumers (`market.raw_ticks.v1`, `refdata.basket.active.v1`), iNAV compute, file checkpoint, Redis snapshot + constituents writers, `pricing.snapshots.v1` publish, live `QuoteUpdate` envelope publish to Redis pub/sub `hqqq:channel:quote-update` (D2). |
+| `hqqq-gateway` | Web | 5030 | REST + SignalR serving from Redis/Timescale | **B1 + B5 + C2 + D1 + D2 live** — REST `/api/quote`, `/api/constituents`, `/api/history`, `/api/system/health` + `/hubs/market`; layered source selection (global `Gateway:DataSource` + per-endpoint `Gateway:Sources:*`); `/api/quote` + `/api/constituents` from Redis (`Sources:*=redis`), `/api/history` from Timescale (`Sources:History=timescale`); `/api/system/health` from the **native aggregator** by default (`Sources:SystemHealth=aggregated`, D1) — `legacy` / `stub` are opt-in fallbacks; `/hubs/market` subscribes per-replica to `hqqq:channel:quote-update` and broadcasts locally (no SignalR Redis backplane). |
 | `hqqq-persistence` | Worker | — | Kafka-to-TimescaleDB writer | **C3 live** — consumes `pricing.snapshots.v1` + `market.raw_ticks.v1`; idempotent schema / rollup / retention bootstrap at startup; batched transactional writes with `ON CONFLICT DO NOTHING` |
 | `hqqq-analytics` | Worker | — | Replay, backfill, anomaly detection | **C4 one-shot report mode** — reads `quote_snapshots` (optionally `raw_ticks` aggregate) from Timescale for a requested basket + UTC window, computes a deterministic quality / tracking summary, optionally emits JSON, exits cleanly. Replay / backfill / anomaly remain deferred. |
 
@@ -118,8 +118,8 @@ All services now:
 - Include legacy config fallback via `LegacyConfigShim`
 - Web services expose `/healthz/live` and `/healthz/ready` with JSON payloads
 - Worker services log dependency configuration at startup and run real
-  Kafka consumers / writers / report jobs where implemented (quote-engine,
-  persistence, analytics) or idle loops where still stubbed (ingress)
+  Kafka consumers / writers / report jobs (ingress, quote-engine,
+  persistence, analytics)
 
 ### Test project skeletons (`tests/`)
 
@@ -165,15 +165,68 @@ metadata, and service startup where applicable.
 - `src/hqqq-api.tests/` — Phase 1 test project, fully preserved and compilable.
   Marked with legacy comment in `hqqq-api.tests.csproj`.
 
-The legacy monolith continues to serve as the running reference system
-while Phase 2 services take over responsibilities in narrow, verifiable
-slices. The legacy API is still the only source of real Tiingo ingestion,
-basket refresh, corporate-action adjustment, and `/api/system/health`
-aggregation today.
+The legacy monolith stays in the repo as reference code and continues
+to back the public live demo Web App on Azure App Service. It is **not**
+required for the Phase 2 runtime: Tiingo ingestion, basket refresh,
+corporate-action adjustment, and `/api/system/health` aggregation are
+all owned by Phase 2 services (`hqqq-ingress`, `hqqq-reference-data`,
+`hqqq-gateway` D1 aggregator) today, and the monolith is not a
+producer or consumer on any Phase 2 Kafka topic.
 
-## Current Phase 2 state (through C4)
+## Current Phase 2 state (through D6.6)
 
 Live in the new services:
+
+- `hqqq-reference-data`
+  - Owns the **active basket** unconditionally in Phase 2.
+  - Composite holdings pipeline: `LiveHoldingsSource` (`File`/`Http` drop)
+    first, with `FallbackSeedHoldingsSource` (committed deterministic
+    ~100-name `Resources/basket-seed.json`) as the safety net. Lineage
+    tag (`live:file` / `live:http` / `fallback-seed`) surfaces in health,
+    REST, and the published Kafka payload.
+  - Phase-2-native corporate-action adjustment runs **before** fingerprint
+    + publish: `CompositeCorporateActionProvider` (file feed first +
+    optional Tiingo overlay behind `ReferenceData:CorporateActions:Tiingo:Enabled`),
+    `CorporateActionAdjustmentService`, `SymbolRemapResolver` (chained
+    rename hops), `BasketTransitionPlanner` (add/remove diff +
+    `ScaleFactorCalibrator` continuity). Supported scope: forward and
+    reverse splits, ticker renames, constituent transitions, scale-factor
+    continuity. Out of scope: dividends, spin-offs, mergers,
+    cross-exchange moves.
+  - Publishes the **full** `BasketActiveStateV1` payload (every
+    constituent + pricing basis + `AdjustmentSummary` +
+    `PreviousBasketId`/`PreviousFingerprint` for transition continuity)
+    to `refdata.basket.active.v1` on change and on a slow re-publish
+    cadence so late consumers hydrate.
+  - Real `GET /api/basket/current` (with `adjustmentSummary`),
+    `POST /api/basket/refresh`, three-state `/healthz/ready`
+    (Healthy/Degraded/Unhealthy → 503 on the latter two), and metrics
+    including `hqqq_refdata_splits_applied_total`,
+    `hqqq_refdata_renames_applied_total`,
+    `hqqq_refdata_basket_transitions_total`,
+    `hqqq_refdata_corp_action_fetch_errors_total`,
+    `hqqq_refdata_publish_outage_seconds`.
+
+- `hqqq-ingress`
+  - Real Tiingo IEX websocket consumer + REST snapshot warmup.
+  - Subscribes to `refdata.basket.active.v1` (`BasketActiveConsumer`
+    feeding `ActiveSymbolUniverse`). `BasketSubscriptionCoordinator`
+    diffs fingerprints across basket events and drives the Tiingo
+    socket subscribe / unsubscribe mid-session — the active symbol
+    universe is derived from the basket, not a static list.
+  - Publishes `RawTickV1` on `market.raw_ticks.v1` (time-series, key =
+    symbol) and `LatestSymbolQuoteV1` on `market.latest_by_symbol.v1`
+    (compacted, key = symbol) for every observed tick.
+  - Bounded exponential-backoff reconnect; bootstrap fallback to
+    `Tiingo:Symbols` only when the first basket event misses
+    `Ingress:Basket:StartupWaitSeconds`.
+  - Fails fast at startup on missing/placeholder `Tiingo:ApiKey` —
+    no stub / hybrid / log-only path remains.
+  - Health surface: `tiingo-upstream`, `ingress-basket`. Metrics:
+    `hqqq_ingress_active_symbols`,
+    `hqqq_ingress_basket_fingerprint_age_seconds`,
+    `hqqq_ingress_published_ticks_total`,
+    `hqqq_ingress_last_published_tick_timestamp`.
 
 - `hqqq-quote-engine` (B4)
   - Consumes `market.raw_ticks.v1` and the compacted `refdata.basket.active.v1`
@@ -189,14 +242,15 @@ Live in the new services:
   - Sink failures are isolated per-sink; one failure never blocks the others
     or crashes the worker.
 
-- `hqqq-gateway` (B5 + C2)
+- `hqqq-gateway` (B5 + C2 + D1 + D2)
   - REST routes `GET /api/quote`, `GET /api/constituents`,
     `GET /api/history?range=`, `GET /api/system/health`, plus
     `/hubs/market` (SignalR) are all mapped.
   - Layered source selection: a global `Gateway:DataSource` (`stub` or
     `legacy`, empty = auto-detect in Development) acts as the fallback,
     and individual endpoints can be overridden via `Gateway:Sources:Quote`,
-    `Gateway:Sources:Constituents`, and `Gateway:Sources:History`.
+    `Gateway:Sources:Constituents`, `Gateway:Sources:History`, and
+    `Gateway:Sources:SystemHealth`.
   - **B5 Redis-backed** serving for `/api/quote` and `/api/constituents`:
     reads the snapshots written by `hqqq-quote-engine`. Missing key →
     HTTP 503 with `{"error":"quote_unavailable"|"constituents_unavailable", ...}`;
@@ -210,10 +264,19 @@ Live in the new services:
     Unsupported `range` → HTTP 400; empty window → HTTP 200 with a
     render-safe empty payload; Timescale query failure → HTTP 503 with
     `{"error":"history_unavailable",...}`.
-  - `/api/system/health` still follows only the global `Gateway:DataSource`
-    (stub or legacy forwarding).
+  - **D1 native aggregator** for `/api/system/health` (default
+    `Gateway:Sources:SystemHealth=aggregated`): probes each configured
+    Phase 2 worker's `/healthz/ready` in parallel plus the local
+    Redis/Timescale probes; `hqqq-ingress` and `hqqq-reference-data` are
+    treated as required and any non-healthy status escalates the rollup
+    to `degraded`. `legacy` (forwards to monolith) and `stub` remain
+    available as opt-in fallbacks.
+  - **D2 live SignalR fan-out** on `/hubs/market`: subscribes to Redis
+    pub/sub `hqqq:channel:quote-update` and broadcasts the inner
+    `QuoteUpdate` to its own clients; multi-replica-safe by construction
+    (D5).
   - See [../../src/services/hqqq-gateway/README.md](../../src/services/hqqq-gateway/README.md)
-    for the full B/C operating-modes matrix.
+    for the full operating-modes matrix.
 
 - `hqqq-persistence` (C3)
   - Consumes `pricing.snapshots.v1` (group `persistence-snapshots`) into
@@ -242,16 +305,9 @@ Live in the new services:
     and exit successfully (exit code 0); replay / anomaly / backfill
     remain deferred seams only.
 
-Still stubbed / transitional in the new services:
-
-- `hqqq-ingress` — no real Tiingo websocket/REST ingestion yet; Tiingo
-  ingestion still happens inside the legacy monolith.
-- `hqqq-reference-data` — in-memory basket repository only; real issuer
-  feeds and corporate-action pipeline still live in the legacy monolith.
-
 Services start, bind configuration, report their posture, and consume
-or idle appropriately. Dependencies report as "degraded" rather than
-crashing when unavailable.
+real upstream data on the Phase 2 path. Dependencies report as
+"degraded" rather than crashing when transiently unavailable.
 
 D-phase delivered (no longer transitional):
 
@@ -276,14 +332,13 @@ D-phase delivered (no longer transitional):
 
 | Deferred item | Target |
 |---|---|
-| Real Tiingo ingestion in `hqqq-ingress` | Phase 2B (ingress cutover, remaining) |
-| Provider-specific holdings scrape adapters (Schwab / StockAnalysis / AlphaVantage) ported into `hqqq-reference-data` behind `IHoldingsSource` | Phase 2B/C reference-data cutover |
-| Corporate-action pipeline (splits / distributions / rebalances) in `hqqq-reference-data` | Phase 2B/C reference-data cutover |
+| Provider-specific holdings scrape adapters (Schwab / StockAnalysis / AlphaVantage / Nasdaq) ported into `hqqq-reference-data` behind `IHoldingsSource` (today: `File`/`Http` drop + deterministic fallback seed; the legacy scrapers stay in the monolith as reference) | Phase 2B follow-up |
+| Wider corp-action coverage in `hqqq-reference-data`: dividends, spin-offs, mergers, cross-exchange moves, ISIN/CUSIP-level remaps (today: forward / reverse splits, ticker renames, constituent transitions, scale-factor continuity) | Phase 2B/C follow-up |
 | Replay / backfill / anomaly detection in `hqqq-analytics` | Phase 2C5+ |
 | `constituent_snapshots` / `basket_versions` persistence tables | Phase 2C5+ |
 | Re-pointing the gateway `/api/history` read-side at the 1m/5m rollups | Phase 2C5+ |
 | HA topologies for Kafka / Redis / Timescale themselves | Phase 3+ |
-| Multi-instance quote-engine / persistence / ingress / reference-data | Phase 3+ |
+| Multi-instance quote-engine / persistence / ingress / reference-data (D5 only duplicates the gateway) | Phase 3+ |
 | Custom domain + TLS, scheduled analytics trigger, image signing / SBOMs / vulnerability scans | Phase 3+ |
 | Kubernetes app-tier deployments | Phase 3 |
 
@@ -315,12 +370,13 @@ D-phase items that were on this list and are now delivered:
 
 ## Next steps
 
-- **Phase 2B** (remaining): Wire real Tiingo ingestion in `hqqq-ingress`.
-  `hqqq-reference-data` already owns the active basket end-to-end (live
-  file/HTTP source with a committed ~100-name fallback seed, full Kafka
-  payload on `refdata.basket.active.v1`, real refresh + current APIs);
-  provider-specific holdings scrape adapters and corporate-action
-  adjustment are the remaining work behind `IHoldingsSource`.
+- **Phase 2B follow-up**: Port the legacy provider-specific holdings
+  scrape adapters (Schwab / StockAnalysis / AlphaVantage / Nasdaq) into
+  `hqqq-reference-data` behind `IHoldingsSource`. Real Tiingo ingestion
+  in `hqqq-ingress`, the full `BasketActiveStateV1` publish, and the
+  Phase-2-native corp-action adjustment layer are all already shipped
+  and live in the runtime; this item is only about widening the live
+  holdings source set.
 - **Phase 2C5+**: Add replay, backfill, and anomaly detection in
   `hqqq-analytics`; introduce `constituent_snapshots` / `basket_versions`;
   optionally re-point gateway `/api/history` at the 1m/5m continuous

@@ -105,4 +105,25 @@ public sealed record MergedBasketEnvelope
     public required bool IsDegraded { get; init; }
     public required string ContentFingerprint16 { get; init; }
     public int ConstituentCount { get; init; }
+
+    /// <summary>
+    /// Anchor adapter name that supplied authoritative shares
+    /// (<c>"stockanalysis"</c> or <c>"schwab"</c>), or <c>null</c> when
+    /// the merge fell through to the anchor-less proxy path (both
+    /// scrapers unavailable/disabled).
+    /// </summary>
+    public string? AnchorSource { get; init; }
+
+    /// <summary>
+    /// True when the active basket carries at least one row with a
+    /// positive <c>SharesHeld</c> from an authoritative anchor source.
+    /// </summary>
+    public bool HasOfficialShares { get; init; }
+
+    /// <summary>
+    /// Basket-level mode label: <c>"anchored"</c>, <c>"anchored-proxy-tail"</c>,
+    /// or <c>"anchor-less-proxy"</c>. Mirrors the Phase 1 merge-quality
+    /// semantics so operator log correlation is direct.
+    /// </summary>
+    public string BasketMode { get; init; } = "anchored";
 }

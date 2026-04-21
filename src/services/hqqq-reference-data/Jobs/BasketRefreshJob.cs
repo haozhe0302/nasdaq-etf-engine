@@ -1,3 +1,4 @@
+using Hqqq.ReferenceData.Basket;
 using Hqqq.ReferenceData.Configuration;
 using Hqqq.ReferenceData.Services;
 using Microsoft.Extensions.Options;
@@ -12,21 +13,31 @@ namespace Hqqq.ReferenceData.Jobs;
 ///   <item>fires a real refresh every <c>Refresh.IntervalSeconds</c>;</item>
 ///   <item>re-publishes the current active basket every <c>Refresh.RepublishIntervalSeconds</c> (even when unchanged) so late / restarted consumers hydrate from the compacted topic without operator action.</item>
 /// </list>
+/// When <see cref="BasketMode.RealSource"/> is selected, the startup
+/// path first runs the ported Phase 1 cold-start cycle
+/// (<see cref="RealSourceBasketPipeline.EnsurePendingAsync"/>) so the
+/// first refresh always sees a real-source pending basket, never a
+/// silent seed fallback.
 /// All timers are defensive: failures are logged and retried on the next
 /// tick; the service never crashes on a transient Kafka or source issue.
 /// </summary>
 public sealed class BasketRefreshJob : BackgroundService
 {
     private readonly BasketRefreshPipeline _pipeline;
+    private readonly RealSourceBasketPipeline? _realSourcePipeline;
+    private readonly BasketOptions _basketOptions;
     private readonly RefreshOptions _options;
     private readonly ILogger<BasketRefreshJob> _logger;
 
     public BasketRefreshJob(
         BasketRefreshPipeline pipeline,
         IOptions<ReferenceDataOptions> options,
-        ILogger<BasketRefreshJob> logger)
+        ILogger<BasketRefreshJob> logger,
+        RealSourceBasketPipeline? realSourcePipeline = null)
     {
         _pipeline = pipeline;
+        _realSourcePipeline = realSourcePipeline;
+        _basketOptions = options.Value.Basket;
         _options = options.Value.Refresh;
         _logger = logger;
     }
@@ -77,6 +88,50 @@ public sealed class BasketRefreshJob : BackgroundService
 
         try
         {
+            // RealSource mode runs the Phase-1-equivalent cold-start
+            // cycle (fetch + merge → pending) BEFORE the first refresh
+            // so BasketRefreshPipeline sees a real-source primary
+            // instead of falling through to the seed.
+            if (_basketOptions.Mode == BasketMode.RealSource && _realSourcePipeline is not null)
+            {
+                try
+                {
+                    var ensure = await _realSourcePipeline
+                        .EnsurePendingAsync(cts.Token)
+                        .ConfigureAwait(false);
+                    if (ensure.Success && ensure.Envelope is not null)
+                    {
+                        _logger.LogInformation(
+                            "BasketRefreshJob: startup EnsurePending complete — fp16={Fp} anchor={Anchor} tail={Tail} officialShares={Shares}",
+                            ensure.Envelope.ContentFingerprint16,
+                            ensure.Envelope.AnchorSource ?? "<none>",
+                            ensure.Envelope.TailSource,
+                            ensure.Envelope.HasOfficialShares);
+                    }
+                    else
+                    {
+                        _logger.LogWarning(
+                            "BasketRefreshJob: startup EnsurePending did not produce a pending basket — {Reason}. RefreshAsync will run and will either re-try on the next tick or (in Production RealSource) remain not-ready.",
+                            ensure.Reason ?? "unknown");
+                    }
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogWarning(
+                        "BasketRefreshJob: startup EnsurePending exceeded {Timeout}s; periodic refresh will retry",
+                        startupTimeout.TotalSeconds);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "BasketRefreshJob: startup EnsurePending threw; continuing with RefreshAsync");
+                }
+            }
+
             var result = await _pipeline.RefreshAsync(cts.Token).ConfigureAwait(false);
             if (result.Success)
             {

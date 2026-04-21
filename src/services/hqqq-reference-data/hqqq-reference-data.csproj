@@ -12,6 +12,18 @@
   </ItemGroup>
 
   <!--
+    HtmlAgilityPack is required by the ported Phase 1 scraper adapters
+    (StockAnalysisBasketAdapter, SchwabBasketAdapter). Both scrapers are
+    disabled in base appsettings and enabled explicitly in Azure
+    Production bicep so the standard Production path is the full
+    four-source anchored basket pipeline. Pinned to the same version
+    used by the legacy monolith so DOM parsing stays bit-identical.
+  -->
+  <ItemGroup>
+    <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
+  </ItemGroup>
+
+  <!--
     Deterministic basket seed. Embedded so the published binary is
     self-contained, AND copied to the output directory so an operator can
     point ReferenceData:SeedPath at a forked file when iterating without a

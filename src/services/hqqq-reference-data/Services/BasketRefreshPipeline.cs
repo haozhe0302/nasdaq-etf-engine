@@ -1,4 +1,5 @@
 using Hqqq.Observability.Metrics;
+using Hqqq.ReferenceData.Basket;
 using Hqqq.ReferenceData.CorporateActions.Contracts;
 using Hqqq.ReferenceData.CorporateActions.Services;
 using Hqqq.ReferenceData.Publishing;
@@ -36,6 +37,7 @@ public sealed class BasketRefreshPipeline
     private readonly ActiveBasketStore _store;
     private readonly IBasketPublisher _publisher;
     private readonly PublishHealthTracker _publishHealth;
+    private readonly PendingBasketStore? _pending;
     private readonly HqqqMetrics? _metrics;
     private readonly TimeProvider _clock;
     private readonly ILogger<BasketRefreshPipeline> _logger;
@@ -51,7 +53,8 @@ public sealed class BasketRefreshPipeline
         PublishHealthTracker publishHealth,
         ILogger<BasketRefreshPipeline> logger,
         TimeProvider? clock = null,
-        HqqqMetrics? metrics = null)
+        HqqqMetrics? metrics = null,
+        PendingBasketStore? pending = null)
     {
         _source = source;
         _validator = validator;
@@ -60,6 +63,7 @@ public sealed class BasketRefreshPipeline
         _store = store;
         _publisher = publisher;
         _publishHealth = publishHealth;
+        _pending = pending;
         _metrics = metrics;
         _logger = logger;
         _clock = clock ?? TimeProvider.System;
@@ -237,6 +241,11 @@ public sealed class BasketRefreshPipeline
         };
 
         _store.Set(active, report);
+
+        // Phase 1 parity: once a pending basket has been promoted into
+        // Active, clear the pending slot so the lifecycle scheduler's
+        // "pending available" check flips to false for the next cycle.
+        _pending?.Clear();
 
         _logger.LogInformation(
             "BasketRefreshPipeline: activated basketId={BasketId} version={Version} source={Source} count={Count} fingerprint={Fingerprint} previousFingerprint={PreviousFingerprint} splits={Splits} renames={Renames} added={Added} removed={Removed} recalibrated={Recalibrated}",

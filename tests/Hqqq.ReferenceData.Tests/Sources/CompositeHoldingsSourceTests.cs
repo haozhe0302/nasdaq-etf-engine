@@ -1,6 +1,8 @@
 using System.Net;
 using Hqqq.ReferenceData.Configuration;
 using Hqqq.ReferenceData.Sources;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -97,6 +99,72 @@ public class CompositeHoldingsSourceTests
         }
     }
 
+    [Fact]
+    public async Task FetchAsync_Production_RealSource_NoOverride_RefusesSeedFallback()
+    {
+        // Production + RealSource + AllowDeterministicSeedInProduction=false
+        // (the default): primaries exhausted → composite must return
+        // Unavailable instead of quietly serving the seed. Readiness
+        // stays Degraded; the orchestrator can take the pod out of
+        // rotation instead of shipping a seed basket as "active".
+        var composite = BuildCompositeWithPosture(
+            live: new LiveHoldingsOptions { SourceType = HoldingsSourceType.None },
+            environment: "Production",
+            basket: new BasketOptions
+            {
+                Mode = BasketMode.RealSource,
+                AllowDeterministicSeedInProduction = false,
+            });
+
+        var result = await composite.FetchAsync(CancellationToken.None);
+
+        Assert.Equal(HoldingsFetchStatus.Unavailable, result.Status);
+        Assert.Null(result.Snapshot);
+        Assert.Contains("production seed-fallback refused", result.Reason);
+    }
+
+    [Fact]
+    public async Task FetchAsync_Production_RealSource_WithSeedOverride_ServesSeed()
+    {
+        // Operator explicitly opted in to the seed posture in Production
+        // via AllowDeterministicSeedInProduction=true. Composite must
+        // fall through to the seed just like outside Production.
+        var composite = BuildCompositeWithPosture(
+            live: new LiveHoldingsOptions { SourceType = HoldingsSourceType.None },
+            environment: "Production",
+            basket: new BasketOptions
+            {
+                Mode = BasketMode.RealSource,
+                AllowDeterministicSeedInProduction = true,
+            });
+
+        var result = await composite.FetchAsync(CancellationToken.None);
+
+        Assert.Equal(HoldingsFetchStatus.Ok, result.Status);
+        Assert.Equal(BasketSeedLoader.SourceTag, result.Snapshot!.Source);
+    }
+
+    [Fact]
+    public async Task FetchAsync_Development_RealSource_StillFallsBackToSeed()
+    {
+        // The Production guard is environment-gated. Development always
+        // keeps the historic "live → seed" fallback so local bring-up
+        // stays friction-free.
+        var composite = BuildCompositeWithPosture(
+            live: new LiveHoldingsOptions { SourceType = HoldingsSourceType.None },
+            environment: "Development",
+            basket: new BasketOptions
+            {
+                Mode = BasketMode.RealSource,
+                AllowDeterministicSeedInProduction = false,
+            });
+
+        var result = await composite.FetchAsync(CancellationToken.None);
+
+        Assert.Equal(HoldingsFetchStatus.Ok, result.Status);
+        Assert.Equal(BasketSeedLoader.SourceTag, result.Snapshot!.Source);
+    }
+
     private static CompositeHoldingsSource BuildComposite(
         LiveHoldingsOptions live,
         int validationMin = 50,
@@ -124,6 +192,52 @@ public class CompositeHoldingsSourceTests
 
         return new CompositeHoldingsSource(liveSource, fallback, validator,
             NullLogger<CompositeHoldingsSource>.Instance);
+    }
+
+    private static CompositeHoldingsSource BuildCompositeWithPosture(
+        LiveHoldingsOptions live,
+        string environment,
+        BasketOptions basket)
+    {
+        var options = Options.Create(new ReferenceDataOptions
+        {
+            LiveHoldings = live,
+            Validation = new ValidationOptions
+            {
+                Strict = true,
+                MinConstituents = 1,
+                MaxConstituents = 500,
+            },
+            Basket = basket,
+        });
+
+        var factory = new SingleHandlerHttpClientFactory(
+            new ConstHandler(HttpStatusCode.NotFound, string.Empty));
+        var liveSource = new LiveHoldingsSource(factory, options, NullLogger<LiveHoldingsSource>.Instance);
+        var loader = new BasketSeedLoader(
+            Options.Create(new ReferenceDataOptions()),
+            NullLogger<BasketSeedLoader>.Instance);
+        var fallback = new FallbackSeedHoldingsSource(loader, NullLogger<FallbackSeedHoldingsSource>.Instance);
+        var validator = new HoldingsValidator(options);
+
+        return new CompositeHoldingsSource(
+            new IHoldingsSource[] { liveSource },
+            fallback,
+            validator,
+            options,
+            new StubEnvironment(environment),
+            NullLogger<CompositeHoldingsSource>.Instance);
+    }
+
+    private sealed class StubEnvironment : IWebHostEnvironment
+    {
+        public StubEnvironment(string name) { EnvironmentName = name; }
+        public string EnvironmentName { get; set; }
+        public string ApplicationName { get; set; } = "hqqq-reference-data-tests";
+        public string ContentRootPath { get; set; } = Directory.GetCurrentDirectory();
+        public string WebRootPath { get; set; } = Directory.GetCurrentDirectory();
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public IFileProvider WebRootFileProvider { get; set; } = new NullFileProvider();
     }
 
     private static string WriteTemp(string json)

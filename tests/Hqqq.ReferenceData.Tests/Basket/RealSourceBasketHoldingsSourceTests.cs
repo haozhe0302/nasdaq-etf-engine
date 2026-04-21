@@ -6,47 +6,47 @@ namespace Hqqq.ReferenceData.Tests.Basket;
 
 /// <summary>
 /// Covers the <see cref="RealSourceBasketHoldingsSource"/> adapter:
-/// when there is no pending basket it MUST return Unavailable so the
-/// composite chain can fall through to the next arm (live or seed).
-/// Once a pending envelope has been set by the lifecycle scheduler it
-/// MUST return Ok with that snapshot.
+/// <list type="bullet">
+///   <item>when the pending store holds an envelope, <c>FetchAsync</c> returns <c>Ok</c> with the pending snapshot;</item>
+///   <item>when the pending store is empty and cold-start recovery also produces nothing, <c>FetchAsync</c> returns <c>Unavailable</c> so the composite can fall through to the next arm.</item>
+/// </list>
 /// </summary>
 public class RealSourceBasketHoldingsSourceTests
 {
     [Fact]
-    public async Task FetchAsync_NoPending_ReportsUnavailable()
+    public async Task FetchAsync_PendingSet_ReturnsOkWithPendingSnapshot()
     {
         var pending = new PendingBasketStore();
-        var source = new RealSourceBasketHoldingsSource(
-            pending,
-            pipeline: null!,  // RecoverFromCacheAsync is short-circuited below
-            NullLogger<RealSourceBasketHoldingsSource>.Instance);
-
-        // When _pending.Pending is null the source tries to recover from
-        // disk cache via the pipeline; passing a null pipeline would NPE.
-        // Work around it by pre-setting an obviously-empty pending so
-        // the recover branch is skipped, then clearing it back to null
-        // via reflection is heavier than warranted — just assert the
-        // cache-hit branch below and cover the disk-recover path via a
-        // dedicated pipeline test.
         pending.SetPending(new MergedBasketEnvelope
         {
             Snapshot = new HoldingsSnapshot
             {
-                BasketId = "HQQQ", Version = "v-1", AsOfDate = new DateOnly(2026, 4, 17),
-                ScaleFactor = 1m, Constituents = Array.Empty<HoldingsConstituent>(),
-                Source = "live:alphavantage",
+                BasketId = "HQQQ",
+                Version = "v-1",
+                AsOfDate = new DateOnly(2026, 4, 17),
+                ScaleFactor = 1m,
+                Constituents = Array.Empty<HoldingsConstituent>(),
+                Source = "live:stockanalysis+alphavantage",
             },
             MergedAtUtc = DateTimeOffset.UtcNow,
             TailSource = "alphavantage",
             IsDegraded = false,
-            ContentFingerprint16 = "0000000000000000",
+            ContentFingerprint16 = "abcdef0123456789",
             ConstituentCount = 0,
+            AnchorSource = "stockanalysis",
+            HasOfficialShares = true,
+            BasketMode = "anchored",
         }, DateTimeOffset.UtcNow);
 
+        var source = new RealSourceBasketHoldingsSource(
+            pending,
+            pipeline: null!, // RecoverFromCacheAsync is not reached when pending is set
+            NullLogger<RealSourceBasketHoldingsSource>.Instance);
+
         var result = await source.FetchAsync(CancellationToken.None);
+
         Assert.Equal(HoldingsFetchStatus.Ok, result.Status);
         Assert.NotNull(result.Snapshot);
-        Assert.Equal("live:alphavantage", result.Snapshot!.Source);
+        Assert.Equal("live:stockanalysis+alphavantage", result.Snapshot!.Source);
     }
 }

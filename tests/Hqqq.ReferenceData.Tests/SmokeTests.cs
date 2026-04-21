@@ -1,13 +1,14 @@
 using System.Net;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace Hqqq.ReferenceData.Tests;
 
-public class SmokeTests : IClassFixture<WebApplicationFactory<Program>>
+public class SmokeTests : IClassFixture<SmokeTests.SeedModeFactory>
 {
     private readonly HttpClient _client;
 
-    public SmokeTests(WebApplicationFactory<Program> factory)
+    public SmokeTests(SeedModeFactory factory)
     {
         _client = factory.CreateClient();
     }
@@ -57,5 +58,18 @@ public class SmokeTests : IClassFixture<WebApplicationFactory<Program>>
 
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("HQQQ", body);
+    }
+
+    /// <summary>
+    /// Pins the in-process smoke to <c>BasketMode=Seed</c> so the
+    /// four-source RealSource pipeline does not fire live HTTP against
+    /// Nasdaq / AlphaVantage / the anchor scrapers during startup.
+    /// </summary>
+    public sealed class SeedModeFactory : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseSetting("ReferenceData:Basket:Mode", "Seed");
+        }
     }
 }

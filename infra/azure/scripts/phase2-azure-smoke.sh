@@ -29,6 +29,17 @@
 #   WARMUP_SECONDS    - upper-bound warmup window (default 180s) for the
 #                       standalone loop; the script exits as soon as both
 #                       endpoints satisfy the standalone shape.
+#   ALLOW_PROXY_IN_PRODUCTION
+#                     - "true" accepts the anchor-less proxy posture in
+#                       with-ingress deploys (source.isDegraded=true,
+#                       officialSharesCount=0). Default "false" — the
+#                       standard Production path is the four-source
+#                       anchored pipeline with authoritative shares.
+#   ALLOW_SEED_IN_PRODUCTION
+#                     - "true" accepts a deterministic-seed lineage in
+#                       with-ingress deploys. Default "false"; mirrors
+#                       the runtime ReferenceData:Basket:AllowDeterministicSeedInProduction
+#                       guard.
 #
 # Exit codes:
 #   0 - all probes passed
@@ -41,6 +52,8 @@ EXPECT_AGGREGATED="${EXPECT_AGGREGATED:-true}"
 MODE="${MODE:-standalone}"
 DEPLOY_POSTURE="${DEPLOY_POSTURE:-with-ingress}"
 WARMUP_SECONDS="${WARMUP_SECONDS:-180}"
+ALLOW_PROXY_IN_PRODUCTION="${ALLOW_PROXY_IN_PRODUCTION:-false}"
+ALLOW_SEED_IN_PRODUCTION="${ALLOW_SEED_IN_PRODUCTION:-false}"
 
 base="https://${GATEWAY_FQDN}"
 
@@ -363,54 +376,129 @@ fi
 rm -f "$body"
 
 # ──────────────────────────────────────────────────────────────────
-# 8. Reference-data active basket contract
+# 8. Reference-data active basket contract (strict in with-ingress)
 # ──────────────────────────────────────────────────────────────────
-# Direct probe of the reference-data service via the aggregated health
-# payload. The gateway surfaces ref-data's /api/basket/current-derived
-# fields under dependencies[].details. If we cannot resolve those, we
-# fall back to /api/constituents on the gateway which ultimately reads
-# the active basket.
-section "8. Reference-data active basket"
+# Asserts the Phase 2 reference-data lineage reaches the gateway in
+# the shape the standard Production path is supposed to emit:
+#   - non-empty holdings[]
+#   - real-source lineage (live:<anchor>+<tail>), NOT seed/fallback
+#   - source.isDegraded = false (unless operator opted in)
+#   - quality.officialSharesCount > 0
+#   - at least one holdings[].shares > 0 (authoritative SharesHeld)
+#
+# In `no-ingress-offline` deploys the lineage asserts soften: only
+# non-empty holdings is required; everything else is informational
+# since the offline posture is expected to be degraded.
+section "8. Reference-data active basket (posture=$DEPLOY_POSTURE)"
 
 body=$(mktemp)
 code=$(probe_http "/api/constituents" "$base/api/constituents" "$body")
-if [[ "$code" == "200" ]] && jq -e . "$body" >/dev/null 2>&1; then
-    source_tag=$(jq -r '.source // ""' "$body")
+if [[ "$code" != "200" ]] || ! jq -e . "$body" >/dev/null 2>&1; then
+    log_info "/api/constituents unreachable in step 8 (covered by step 4 failure above)."
+    rm -f "$body"
+else
+    source_tag=$(jq -r '.source // "" | if type=="object" then (.anchorSource // "") + "+" + (.tailSource // "") else . end' "$body")
+    anchor_source=$(jq -r '.source.anchorSource // ""' "$body")
+    tail_source=$(jq -r '.source.tailSource // ""' "$body")
+    basket_mode=$(jq -r '.source.basketMode // (.quality.basketMode // "")' "$body")
+    is_degraded=$(jq -r '.source.isDegraded // false' "$body")
+    official_shares_count=$(jq -r '.quality.officialSharesCount // 0' "$body")
     holdings_len=$(jq -r '.holdings | length // 0' "$body")
+    any_shares_gt_zero=$(jq -r '[ .holdings[]?.shares // 0 ] | map(. > 0) | any' "$body" 2>/dev/null || echo "false")
 
+    log_info "source tag=\"$source_tag\" anchor=\"$anchor_source\" tail=\"$tail_source\" basketMode=\"$basket_mode\" isDegraded=$is_degraded officialShares=$official_shares_count holdings=$holdings_len anySharesGtZero=$any_shares_gt_zero"
+
+    # Universal assert: non-empty holdings.
     if [[ "$holdings_len" -gt 0 ]]; then
-        log_pass "/api/constituents : holdings.length=$holdings_len, source=\"$source_tag\""
+        log_pass "/api/constituents : holdings.length=$holdings_len"
     else
         log_fail "/api/constituents : holdings is empty (reference-data has no active basket)"
         emit_body_excerpt "$body"
     fi
 
-    # In with-ingress production the active basket SHOULD carry a
-    # real-source lineage (e.g. live:alphavantage, live:nasdaq:proxy,
-    # live:file, live:http). A `fallback-seed`/`seed` lineage on a
-    # live deploy is still surfaced loudly but does not fail the
-    # probe — the reference-data startup guard blocks the seed-only
-    # production boot upstream, so if we get here with a seed lineage
-    # the operator explicitly opted in via
-    # ReferenceData:Basket:AllowDeterministicSeedInProduction=true.
-    case "$source_tag" in
-        live:*)
-            log_pass "reference-data source=$source_tag (real-source basket)"
-            ;;
-        "")
-            log_info "reference-data source tag was not surfaced by /api/constituents."
-            ;;
-        *seed*|*Seed*)
-            log_info "reference-data source=$source_tag (deterministic seed — operator opt-in)."
-            ;;
-        *)
-            log_info "reference-data source=$source_tag"
-            ;;
-    esac
-else
-    log_info "/api/constituents unreachable in step 8 (covered by step 4 failure above)."
+    if [[ "$DEPLOY_POSTURE" == "with-ingress" ]]; then
+        # ── Reject deterministic seed / fallback lineage. ─────────
+        seed_lineage=0
+        case "$source_tag" in
+            seed*|fallback-seed*|Seed*|FALLBACK*|*":seed"*|*":fallback-seed"*)
+                seed_lineage=1
+                ;;
+        esac
+        if [[ "$seed_lineage" -eq 1 ]]; then
+            if [[ "$ALLOW_SEED_IN_PRODUCTION" == "true" ]]; then
+                log_info "reference-data source=\"$source_tag\" is seed lineage (ALLOW_SEED_IN_PRODUCTION=true)."
+            else
+                log_fail "reference-data source=\"$source_tag\" is a seed/fallback lineage. with-ingress requires a real-source basket (anchor+tail). Set ALLOW_SEED_IN_PRODUCTION=true to accept the risk."
+                emit_body_excerpt "$body"
+            fi
+        fi
+
+        # ── Anchor must be one of the Phase 1 anchor scrapers. ────
+        case "$anchor_source" in
+            stockanalysis|schwab)
+                log_pass "reference-data anchorSource=\"$anchor_source\" (authoritative anchor)"
+                ;;
+            ""|none)
+                if [[ "$ALLOW_PROXY_IN_PRODUCTION" == "true" ]]; then
+                    log_info "reference-data anchorSource is empty (ALLOW_PROXY_IN_PRODUCTION=true — anchor-less proxy accepted)."
+                else
+                    log_fail "reference-data anchorSource is empty. with-ingress expects the four-source anchored pipeline (stockanalysis or schwab). Set ALLOW_PROXY_IN_PRODUCTION=true to accept the anchor-less proxy posture."
+                    emit_body_excerpt "$body"
+                fi
+                ;;
+            *)
+                log_fail "reference-data anchorSource=\"$anchor_source\" is not a known Phase 1 anchor (expected stockanalysis or schwab)."
+                emit_body_excerpt "$body"
+                ;;
+        esac
+
+        # ── Tail must be populated. ───────────────────────────────
+        if [[ -z "$tail_source" || "$tail_source" == "none" ]]; then
+            log_fail "reference-data tailSource is empty. The anchored pipeline always produces a tail (alphavantage preferred, nasdaq proxy as fallback)."
+            emit_body_excerpt "$body"
+        fi
+
+        # ── isDegraded must be false unless operator opted in. ────
+        if [[ "$is_degraded" == "true" ]]; then
+            if [[ "$ALLOW_PROXY_IN_PRODUCTION" == "true" ]]; then
+                log_info "reference-data source.isDegraded=true (ALLOW_PROXY_IN_PRODUCTION=true — degraded posture accepted)."
+            else
+                log_fail "reference-data source.isDegraded=true. with-ingress expects the anchored path (isDegraded=false). Set ALLOW_PROXY_IN_PRODUCTION=true to accept the degraded posture."
+                emit_body_excerpt "$body"
+            fi
+        fi
+
+        # ── Authoritative shares must be present. ─────────────────
+        if ! [[ "$official_shares_count" =~ ^[0-9]+$ ]] || [[ "$official_shares_count" -le 0 ]]; then
+            if [[ "$ALLOW_PROXY_IN_PRODUCTION" == "true" ]]; then
+                log_info "quality.officialSharesCount=$official_shares_count (ALLOW_PROXY_IN_PRODUCTION=true — zero-shares accepted)."
+            else
+                log_fail "quality.officialSharesCount=$official_shares_count. with-ingress expects the anchored basket to carry authoritative SharesHeld from stockanalysis/schwab."
+                emit_body_excerpt "$body"
+            fi
+        else
+            log_pass "quality.officialSharesCount=$official_shares_count"
+        fi
+
+        if [[ "$any_shares_gt_zero" == "true" ]]; then
+            log_pass "holdings[*].shares carries at least one positive value (authoritative SharesHeld present)"
+        else
+            if [[ "$ALLOW_PROXY_IN_PRODUCTION" == "true" ]]; then
+                log_info "no holdings[*].shares > 0 (ALLOW_PROXY_IN_PRODUCTION=true — zero-shares accepted)."
+            else
+                log_fail "holdings[*].shares are all zero. with-ingress expects the anchored basket to emit authoritative shares."
+                emit_body_excerpt "$body"
+            fi
+        fi
+    else
+        # no-ingress-offline: holdings must exist; lineage specifics
+        # are informational because the offline posture is expected
+        # to be degraded or seed-sourced.
+        log_info "no-ingress-offline posture — anchor/tail/shares assertions are informational."
+    fi
+
+    rm -f "$body"
 fi
-rm -f "$body"
 
 # ──────────────────────────────────────────────────────────────────
 # Summary

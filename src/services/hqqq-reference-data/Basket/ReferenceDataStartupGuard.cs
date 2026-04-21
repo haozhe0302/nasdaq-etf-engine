@@ -45,23 +45,53 @@ public static class ReferenceDataStartupGuard
             return;
         }
 
+        var stockAnalysisEnabled = basket.Sources.StockAnalysis.Enabled;
+        var schwabEnabled = basket.Sources.Schwab.Enabled;
         var alphaEnabled = basket.Sources.AlphaVantage.Enabled
             && !string.IsNullOrWhiteSpace(basket.Sources.AlphaVantage.ApiKey)
             && !basket.Sources.AlphaVantage.ApiKey.Contains("YOUR_", StringComparison.OrdinalIgnoreCase);
         var nasdaqEnabled = basket.Sources.Nasdaq.Enabled;
 
-        if (!alphaEnabled && !nasdaqEnabled)
+        if (!stockAnalysisEnabled && !schwabEnabled && !alphaEnabled && !nasdaqEnabled)
         {
             throw new InvalidOperationException(
                 "ReferenceData:Basket:Mode=RealSource but every upstream adapter is disabled. " +
-                "Enable at least one of ReferenceData:Basket:Sources:AlphaVantage or " +
-                "ReferenceData:Basket:Sources:Nasdaq, or switch to Mode=Seed with " +
+                "Enable at least one of ReferenceData:Basket:Sources:StockAnalysis, Schwab, " +
+                "AlphaVantage, or Nasdaq, or switch to Mode=Seed with " +
                 "AllowDeterministicSeedInProduction=true if you intend to run offline.");
         }
 
+        // The standard Production path is the full four-source anchored
+        // pipeline (StockAnalysis or Schwab as anchor → AlphaVantage or
+        // Nasdaq as tail). If no anchor source is enabled and the
+        // operator has not explicitly opted in to the anchor-less proxy
+        // posture, fail startup so we never publish an all-zero-shares
+        // basket into Production by default.
+        if (basket.RequireAnchorInProduction
+            && !stockAnalysisEnabled
+            && !schwabEnabled
+            && !basket.AllowAnchorlessProxyInProduction)
+        {
+            throw new InvalidOperationException(
+                "ReferenceData:Basket:RequireAnchorInProduction=true but neither " +
+                "ReferenceData:Basket:Sources:StockAnalysis nor " +
+                "ReferenceData:Basket:Sources:Schwab is enabled. " +
+                "Enable at least one anchor adapter, or explicitly opt in to the " +
+                "anchor-less proxy posture with " +
+                "ReferenceData:Basket:AllowAnchorlessProxyInProduction=true " +
+                "(the resulting basket will carry SharesHeld=0 on every row).");
+        }
+
+        if (!basket.RequireAnchorInProduction || basket.AllowAnchorlessProxyInProduction)
+        {
+            logger.LogWarning(
+                "ReferenceDataStartupGuard: Production basket posture is DEGRADED — requireAnchor={RequireAnchor} allowAnchorlessProxy={AllowProxy}. Active baskets may be anchor-less / zero-shares.",
+                basket.RequireAnchorInProduction, basket.AllowAnchorlessProxyInProduction);
+        }
+
         logger.LogInformation(
-            "ReferenceDataStartupGuard: Production posture OK — alphavantage={Alpha} nasdaq={Nasdaq}",
-            alphaEnabled, nasdaqEnabled);
+            "ReferenceDataStartupGuard: Production posture OK — stockanalysis={SA} schwab={SC} alphavantage={Alpha} nasdaq={Nasdaq} requireAnchor={RequireAnchor}",
+            stockAnalysisEnabled, schwabEnabled, alphaEnabled, nasdaqEnabled, basket.RequireAnchorInProduction);
     }
 
     /// <summary>

@@ -84,6 +84,12 @@ public class BasketEndpointsIntegrationTests : IClassFixture<BasketEndpointsInte
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            // This test asserts `source == "fallback-seed"` so the
+            // real-source four-source pipeline must stay dormant. Pin
+            // the service to Seed mode; the composite degrades to
+            // "live (file/http) → fallback-seed" exactly as before.
+            builder.UseSetting("ReferenceData:Basket:Mode", "Seed");
+
             builder.ConfigureServices(services =>
             {
                 // Only swap the Kafka publisher. Everything else — sources,

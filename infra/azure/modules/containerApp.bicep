@@ -80,6 +80,10 @@ param timescaleConnectionString string = ''
 @secure()
 param tiingoApiKey string = ''
 
+@description('Reference-data-specific Tiingo API key for corporate-actions. Distinct secret slot from `tiingoApiKey` so ingress and reference-data can rotate keys independently; empty string = not used by this app.')
+@secure()
+param refdataTiingoApiKey string = ''
+
 @description('CPU cores per replica (e.g. 0.25, 0.5, 1.0).')
 param cpu string = '0.5'
 
@@ -116,7 +120,8 @@ var platformSecrets = union(
   empty(kafkaSaslPassword) ? [] : [ { name: 'kafka-sasl-password', value: kafkaSaslPassword } ],
   empty(redisConfiguration) ? [] : [ { name: 'redis-configuration', value: redisConfiguration } ],
   empty(timescaleConnectionString) ? [] : [ { name: 'timescale-connection-string', value: timescaleConnectionString } ],
-  empty(tiingoApiKey) ? [] : [ { name: 'tiingo-api-key', value: tiingoApiKey } ]
+  empty(tiingoApiKey) ? [] : [ { name: 'tiingo-api-key', value: tiingoApiKey } ],
+  empty(refdataTiingoApiKey) ? [] : [ { name: 'refdata-tiingo-api-key', value: refdataTiingoApiKey } ]
 )
 
 // Map each populated secret to the .NET hierarchical config key the
@@ -129,7 +134,8 @@ var secretEnvVars = union(
   empty(kafkaSaslPassword) ? [] : [ { name: 'Kafka__SaslPassword', secretRef: 'kafka-sasl-password' } ],
   empty(redisConfiguration) ? [] : [ { name: 'Redis__Configuration', secretRef: 'redis-configuration' } ],
   empty(timescaleConnectionString) ? [] : [ { name: 'Timescale__ConnectionString', secretRef: 'timescale-connection-string' } ],
-  empty(tiingoApiKey) ? [] : [ { name: 'Tiingo__ApiKey', secretRef: 'tiingo-api-key' } ]
+  empty(tiingoApiKey) ? [] : [ { name: 'Tiingo__ApiKey', secretRef: 'tiingo-api-key' } ],
+  empty(refdataTiingoApiKey) ? [] : [ { name: 'ReferenceData__CorporateActions__Tiingo__ApiKey', secretRef: 'refdata-tiingo-api-key' } ]
 )
 
 var ingressBlock = ingressMode == 'none' ? null : {

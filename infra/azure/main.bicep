@@ -219,6 +219,24 @@ param timescaleConnectionString string
 @secure()
 param tiingoApiKey string = ''
 
+@description('Reference-data-specific Tiingo API key for corporate-actions. When empty and `refdataTiingoCorpActionsEnabled=false`, reference-data runs the offline file-only corp-actions provider (also requires `refdataAllowOfflineOnlyInProduction=true`). In the standard `with-ingress` deploy posture the workflow passes the same value as `tiingoApiKey`.')
+@secure()
+param refdataTiingoApiKey string = ''
+
+// ── Reference-data Production posture (deploy_posture-driven) ────
+
+@description('When true, reference-data overlays Tiingo EOD splits on top of the file corp-action provider. Driven by deploy_posture: true for with-ingress, false for no-ingress-offline.')
+param refdataTiingoCorpActionsEnabled bool = true
+
+@description('When true, reference-data accepts running Production with the file-only corp-action provider (no Tiingo overlay). Driven by deploy_posture: false for with-ingress, true for no-ingress-offline.')
+param refdataAllowOfflineOnlyInProduction bool = false
+
+@description('When true, reference-data enables the StockAnalysis HTML scraper as a primary anchor source. The standard Azure Production path turns this on so the merged basket carries authoritative SharesHeld.')
+param refdataStockAnalysisEnabled bool = true
+
+@description('When true, reference-data enables the Schwab HTML scraper as a secondary anchor source. The standard Azure Production path turns this on so anchor selection can pick the freshest of StockAnalysis vs Schwab.')
+param refdataSchwabEnabled bool = true
+
 // ── Generic non-secret app config ────────────────────────────────
 
 @description('Kafka client identifier prefix.')
@@ -362,6 +380,23 @@ var operatingModeEnv = [
 
 // ── Workers: deploy first so the gateway can reference their FQDNs ──
 
+// Reference-data Production posture, driven by deploy_posture in the
+// workflow. These env vars MUST match the runtime guards in
+// `ReferenceDataStartupGuard.Validate` + `ValidateCorporateActions` —
+// workflow, bicep, and runtime agree exactly so a Production deploy
+// never silently runs on the wrong posture.
+var refdataPostureEnv = [
+  { name: 'ReferenceData__Basket__Mode', value: 'RealSource' }
+  { name: 'ReferenceData__Basket__AllowDeterministicSeedInProduction', value: 'false' }
+  { name: 'ReferenceData__Basket__RequireAnchorInProduction', value: 'true' }
+  { name: 'ReferenceData__Basket__AllowAnchorlessProxyInProduction', value: 'false' }
+  { name: 'ReferenceData__Basket__Sources__StockAnalysis__Enabled', value: string(refdataStockAnalysisEnabled) }
+  { name: 'ReferenceData__Basket__Sources__Schwab__Enabled', value: string(refdataSchwabEnabled) }
+  { name: 'ReferenceData__Basket__Sources__Nasdaq__Enabled', value: 'true' }
+  { name: 'ReferenceData__CorporateActions__Tiingo__Enabled', value: string(refdataTiingoCorpActionsEnabled) }
+  { name: 'ReferenceData__CorporateActions__AllowOfflineOnlyInProduction', value: string(refdataAllowOfflineOnlyInProduction) }
+]
+
 module refDataApp 'modules/containerApp.bicep' = {
   name: 'phase2-app-refdata'
   params: {
@@ -373,7 +408,7 @@ module refDataApp 'modules/containerApp.bicep' = {
     image: imageRefData
     ingressMode: 'internal'
     targetPort: 8080
-    envVars: union(commonAspNetEnv, commonKafkaEnv, operatingModeEnv, [
+    envVars: union(commonAspNetEnv, commonKafkaEnv, operatingModeEnv, refdataPostureEnv, [
       { name: 'ASPNETCORE_ENVIRONMENT', value: 'Production' }
       { name: 'ASPNETCORE_URLS', value: 'http://+:8080' }
     ])
@@ -384,6 +419,7 @@ module refDataApp 'modules/containerApp.bicep' = {
     kafkaSaslPassword: kafkaSaslPassword
     redisConfiguration: redisConfiguration
     timescaleConnectionString: timescaleConnectionString
+    refdataTiingoApiKey: refdataTiingoApiKey
     cpu: refDataCpu
     memory: refDataMemory
     minReplicas: refDataMinReplicas

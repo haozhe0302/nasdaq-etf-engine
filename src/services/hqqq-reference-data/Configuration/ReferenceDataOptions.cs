@@ -43,16 +43,18 @@ public sealed class ReferenceDataOptions
 /// <summary>
 /// Production-grade basket pipeline configuration. Mirrors the Phase 1
 /// Basket module (<c>src/hqqq-api/Modules/Basket</c>) lifecycle and
-/// sources but lives natively in <c>hqqq-reference-data</c> with no
-/// runtime dependency on the monolith.
+/// sources natively in <c>hqqq-reference-data</c> with no runtime
+/// dependency on the monolith.
 /// </summary>
 /// <remarks>
 /// <para>
-/// JSON adapters only. The Phase 1 HTML scrapers (StockAnalysis, Schwab)
-/// are intentionally NOT ported as Phase 2 production sources — they
-/// would bring an HtmlAgilityPack dependency and live scraping risk to
-/// the deployment gate. <see cref="IBasketSourceAdapter"/> keeps the
-/// shape required to re-introduce them later if ever needed.
+/// All four Phase 1 adapters are ported: two HTML scrapers
+/// (<c>StockAnalysis</c>, <c>Schwab</c>) providing authoritative
+/// <c>SharesHeld</c> as anchor sources, and two JSON adapters
+/// (<c>AlphaVantage</c>, <c>Nasdaq</c>) providing tail weights and
+/// universe guardrail. The scrapers default OFF so local/dev/test
+/// remains hermetic; Azure Production config turns them ON so the
+/// standard Production path is the full four-source anchored pipeline.
 /// </para>
 /// </remarks>
 public sealed class BasketOptions
@@ -74,6 +76,26 @@ public sealed class BasketOptions
     /// there is no implicit production-seed path.
     /// </summary>
     public bool AllowDeterministicSeedInProduction { get; set; } = false;
+
+    /// <summary>
+    /// When <c>true</c> (default) and <see cref="Mode"/>=<see cref="BasketMode.RealSource"/>,
+    /// Production startup fails loudly unless at least one anchor adapter
+    /// (StockAnalysis or Schwab) is enabled. The standard Phase 2
+    /// Production path is the full four-source anchored pipeline — any
+    /// other posture must be an explicit operator opt-in.
+    /// </summary>
+    public bool RequireAnchorInProduction { get; set; } = true;
+
+    /// <summary>
+    /// Operator acknowledgement that running Production on the anchor-less
+    /// / proxy-tail degraded path is an accepted risk. When <c>false</c>
+    /// (default) and the runtime merge falls through to the proxy tail
+    /// with no anchor (e.g. both scrapers are down), the pipeline reports
+    /// the basket as <c>Unavailable</c> instead of publishing a
+    /// zero-shares basket. Only honored when
+    /// <c>ASPNETCORE_ENVIRONMENT=Production</c>.
+    /// </summary>
+    public bool AllowAnchorlessProxyInProduction { get; set; } = false;
 
     /// <summary>IANA or Windows zone id for market-hours calculations. Default <c>America/New_York</c>.</summary>
     public string MarketTimeZone { get; set; } = "America/New_York";
@@ -99,8 +121,40 @@ public enum BasketMode
 /// </summary>
 public sealed class BasketSourcesOptions
 {
+    /// <summary>
+    /// HTML scraper adapter for stockanalysis.com. Provides the preferred
+    /// anchor block (symbol + name + weight + authoritative shares +
+    /// explicit as-of date). Disabled by default; turned on in Azure
+    /// Production so the standard deployment path has real shares.
+    /// </summary>
+    public StockAnalysisSourceOptions StockAnalysis { get; set; } = new();
+
+    /// <summary>
+    /// HTML scraper adapter for Schwab's public QQQ research page.
+    /// Secondary anchor block when StockAnalysis is unavailable or
+    /// older. Disabled by default; turned on in Azure Production.
+    /// </summary>
+    public SchwabSourceOptions Schwab { get; set; } = new();
+
     public AlphaVantageSourceOptions AlphaVantage { get; set; } = new();
     public NasdaqSourceOptions Nasdaq { get; set; } = new();
+}
+
+public sealed class StockAnalysisSourceOptions
+{
+    /// <summary>Opt-in toggle. OFF by default; ON in Azure Production via bicep env injection.</summary>
+    public bool Enabled { get; set; } = false;
+    public string Url { get; set; } = "https://stockanalysis.com/etf/qqq/holdings/";
+    public int TimeoutSeconds { get; set; } = 20;
+}
+
+public sealed class SchwabSourceOptions
+{
+    /// <summary>Opt-in toggle. OFF by default; ON in Azure Production via bicep env injection.</summary>
+    public bool Enabled { get; set; } = false;
+    public string Url { get; set; } =
+        "https://www.schwab.wallst.com/schwab/Prospect/research/etfs/schwabETF/index.asp?type=holdings&symbol=QQQ";
+    public int TimeoutSeconds { get; set; } = 20;
 }
 
 public sealed class AlphaVantageSourceOptions

@@ -174,6 +174,12 @@ public class BasketEndpointsTests : IClassFixture<BasketEndpointsTests.Factory>
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            // Seed mode keeps the background refresh job from firing
+            // live HTTP against Nasdaq/AlphaVantage/scrapers at startup.
+            // IBasketService is stubbed below so the HTTP endpoints
+            // never touch the real pipeline anyway.
+            builder.UseSetting("ReferenceData:Basket:Mode", "Seed");
+
             builder.ConfigureServices(services =>
             {
                 // Override the real service (which depends on the background

@@ -29,8 +29,12 @@ public static class ActiveBasketEventMapper
         ArgumentNullException.ThrowIfNull(active);
 
         var snapshot = active.Snapshot;
-        var sharesOrigin = snapshot.Source;
+        var snapshotSource = snapshot.Source;
 
+        // Prefer the per-row SharesSource lineage set by the anchored
+        // merge (e.g. "stockanalysis", "schwab", "unavailable"). Fall
+        // back to the snapshot-level Source tag for legacy rows that
+        // pre-date the Phase 1 port.
         var constituents = snapshot.Constituents
             .Select(c => new BasketConstituentV1
             {
@@ -39,7 +43,9 @@ public static class ActiveBasketEventMapper
                 Sector = c.Sector,
                 TargetWeight = c.TargetWeight,
                 SharesHeld = c.SharesHeld,
-                SharesOrigin = sharesOrigin,
+                SharesOrigin = string.IsNullOrWhiteSpace(c.SharesSource)
+                    ? snapshotSource
+                    : c.SharesSource!,
             })
             .ToArray();
 
@@ -52,12 +58,25 @@ public static class ActiveBasketEventMapper
                 // never overstates the seed.
                 Shares = (int)Math.Floor(c.SharesHeld),
                 ReferencePrice = c.ReferencePrice,
-                SharesOrigin = sharesOrigin,
+                SharesOrigin = string.IsNullOrWhiteSpace(c.SharesSource)
+                    ? snapshotSource
+                    : c.SharesSource!,
                 TargetWeight = c.TargetWeight,
             })
             .ToArray();
 
         var inferredNotional = entries.Sum(e => e.ReferencePrice * e.Shares);
+
+        // Official vs derived split: a row is "official" only when its
+        // SharesSource is a named anchor (stockanalysis / schwab /
+        // split-adjusted suffix). "unavailable" tail rows are not
+        // counted as official so the quote-engine can reason about
+        // pricing-basis confidence against meaningful basket state.
+        var officialCount = snapshot.Constituents.Count(c =>
+            c.SharesHeld > 0m
+            && !string.IsNullOrWhiteSpace(c.SharesSource)
+            && !string.Equals(c.SharesSource, "unavailable", StringComparison.OrdinalIgnoreCase)
+            && !c.SharesSource.Contains("derived", StringComparison.OrdinalIgnoreCase));
 
         var pricingBasis = new PricingBasisV1
         {
@@ -65,8 +84,8 @@ public static class ActiveBasketEventMapper
             CreatedAtUtc = active.ActivatedAtUtc,
             Entries = entries,
             InferredTotalNotional = inferredNotional,
-            OfficialSharesCount = entries.Length,
-            DerivedSharesCount = 0,
+            OfficialSharesCount = officialCount,
+            DerivedSharesCount = Math.Max(0, entries.Length - officialCount),
         };
 
         AdjustmentSummaryV1? summary = null;

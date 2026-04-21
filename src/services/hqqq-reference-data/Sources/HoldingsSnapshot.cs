@@ -28,4 +28,28 @@ public sealed record HoldingsConstituent
     public required decimal SharesHeld { get; init; }
     public required decimal ReferencePrice { get; init; }
     public decimal? TargetWeight { get; init; }
+
+    /// <summary>
+    /// Per-row lineage tag for the <see cref="TargetWeight"/> source
+    /// (e.g. <c>"stockanalysis"</c>, <c>"schwab"</c>, <c>"alphavantage"</c>,
+    /// <c>"nasdaq-proxy"</c>, <c>"file"</c>, <c>"seed"</c>). Null on
+    /// historical in-memory rows that pre-date the Phase 1 port; wire
+    /// payloads / published events are filled with an explicit value.
+    /// </summary>
+    public string? WeightSource { get; init; }
+
+    /// <summary>
+    /// Per-row lineage tag for <see cref="SharesHeld"/>. <c>"stockanalysis"</c>
+    /// / <c>"schwab"</c> for anchor rows that carry authoritative shares;
+    /// <c>"unavailable"</c> for tail rows (weight-only, no disclosed
+    /// shares); <c>"split-adjusted"</c> suffix after the corporate-action
+    /// adjustment layer multiplies by a cumulative split factor.
+    /// </summary>
+    public string? SharesSource { get; init; }
+
+    /// <summary>Per-row lineage tag for <see cref="Name"/>.</summary>
+    public string? NameSource { get; init; }
+
+    /// <summary>Per-row lineage tag for <see cref="Sector"/> (<c>"unknown"</c> when not disclosed).</summary>
+    public string? SectorSource { get; init; }
 }

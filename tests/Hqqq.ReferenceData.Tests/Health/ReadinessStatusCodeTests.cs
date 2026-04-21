@@ -81,6 +81,11 @@ public class ReadinessStatusCodeTests : IClassFixture<ReadinessStatusCodeTests.I
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            // Seed mode keeps the startup refresh deterministic —
+            // CapturingPublisher always sees a valid basket and the
+            // PublishHealth state machine reaches Healthy predictably.
+            builder.UseSetting("ReferenceData:Basket:Mode", "Seed");
+
             builder.ConfigureServices(services =>
             {
                 // Swap the Kafka publisher so the startup refresh actually

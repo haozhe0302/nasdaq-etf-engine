@@ -608,18 +608,60 @@ jobs:
           DEPLOY_POSTURE: ${{ github.event.inputs.deploy_posture }}
         run: |
           set -euo pipefail
+          # Single contract for the whole deploy: deploy_posture drives
+          # BOTH the ingress toggle AND the reference-data corporate-
+          # actions / anchor-scraper posture. Workflow, bicep, and
+          # runtime must agree exactly:
+          #
+          #   with-ingress        → Tiingo corp-actions ON, anchor
+          #                         scrapers ON, offline-only OFF. The
+          #                         ingress Container App is deployed.
+          #   no-ingress-offline  → Tiingo corp-actions OFF, scrapers
+          #                         OFF, offline-only ON. The ingress
+          #                         Container App is NOT deployed.
           case "$DEPLOY_POSTURE" in
-            no-ingress-offline) DEPLOY_INGRESS=false ;;
-            *)                  DEPLOY_INGRESS=true ;;
+            no-ingress-offline)
+              DEPLOY_INGRESS=false
+              REFDATA_TIINGO_ENABLED=false
+              REFDATA_ALLOW_OFFLINE_CORP_ACTIONS=true
+              REFDATA_STOCKANALYSIS_ENABLED=false
+              REFDATA_SCHWAB_ENABLED=false
+              ;;
+            *)
+              DEPLOY_INGRESS=true
+              REFDATA_TIINGO_ENABLED=true
+              REFDATA_ALLOW_OFFLINE_CORP_ACTIONS=false
+              REFDATA_STOCKANALYSIS_ENABLED=true
+              REFDATA_SCHWAB_ENABLED=true
+              ;;
           esac
-          echo "deploy_ingress=$DEPLOY_INGRESS" >> "$GITHUB_OUTPUT"
-          echo "Resolved deploy_posture='$DEPLOY_POSTURE' -> deployIngress=$DEPLOY_INGRESS"
+          {
+            echo "deploy_ingress=$DEPLOY_INGRESS"
+            echo "refdata_tiingo_enabled=$REFDATA_TIINGO_ENABLED"
+            echo "refdata_allow_offline_corp_actions=$REFDATA_ALLOW_OFFLINE_CORP_ACTIONS"
+            echo "refdata_stockanalysis_enabled=$REFDATA_STOCKANALYSIS_ENABLED"
+            echo "refdata_schwab_enabled=$REFDATA_SCHWAB_ENABLED"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved deploy_posture='$DEPLOY_POSTURE':"
+          echo "  deployIngress=$DEPLOY_INGRESS"
+          echo "  refdataTiingoCorpActionsEnabled=$REFDATA_TIINGO_ENABLED"
+          echo "  refdataAllowOfflineOnlyInProduction=$REFDATA_ALLOW_OFFLINE_CORP_ACTIONS"
+          echo "  refdataStockAnalysisEnabled=$REFDATA_STOCKANALYSIS_ENABLED"
+          echo "  refdataSchwabEnabled=$REFDATA_SCHWAB_ENABLED"
 
       - name: Deployment what-if
         env:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
         run: |
           set -euo pipefail
+          # with-ingress reuses the same TIINGO_API_KEY secret for both
+          # ingress and reference-data corp-actions; no-ingress-offline
+          # passes an empty refdataTiingoApiKey (refdata runs offline).
+          if [[ "${{ github.event.inputs.deploy_posture }}" == "no-ingress-offline" ]]; then
+            REFDATA_TIINGO_KEY=""
+          else
+            REFDATA_TIINGO_KEY="${TIINGO_API_KEY:-}"
+          fi
           az deployment group what-if \
             --resource-group "$RESOURCE_GROUP" \
             --template-file infra/azure/main.bicep \
@@ -634,6 +676,11 @@ jobs:
               redisConfiguration="$REDIS_CONFIGURATION" \
               timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
               tiingoApiKey="${TIINGO_API_KEY:-}" \
+              refdataTiingoApiKey="$REFDATA_TIINGO_KEY" \
+              refdataTiingoCorpActionsEnabled=${{ steps.posture.outputs.refdata_tiingo_enabled }} \
+              refdataAllowOfflineOnlyInProduction=${{ steps.posture.outputs.refdata_allow_offline_corp_actions }} \
+              refdataStockAnalysisEnabled=${{ steps.posture.outputs.refdata_stockanalysis_enabled }} \
+              refdataSchwabEnabled=${{ steps.posture.outputs.refdata_schwab_enabled }} \
               deployIngress=${{ steps.posture.outputs.deploy_ingress }}
 
       - name: Deployment create
@@ -643,6 +690,11 @@ jobs:
           TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
         run: |
           set -euo pipefail
+          if [[ "${{ github.event.inputs.deploy_posture }}" == "no-ingress-offline" ]]; then
+            REFDATA_TIINGO_KEY=""
+          else
+            REFDATA_TIINGO_KEY="${TIINGO_API_KEY:-}"
+          fi
           DEPLOY_NAME="phase2-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_RUN_ID}"
           OUT_FILE="$(mktemp)"
           az deployment group create \
@@ -660,6 +712,11 @@ jobs:
               redisConfiguration="$REDIS_CONFIGURATION" \
               timescaleConnectionString="$TIMESCALE_CONNECTION_STRING" \
               tiingoApiKey="${TIINGO_API_KEY:-}" \
+              refdataTiingoApiKey="$REFDATA_TIINGO_KEY" \
+              refdataTiingoCorpActionsEnabled=${{ steps.posture.outputs.refdata_tiingo_enabled }} \
+              refdataAllowOfflineOnlyInProduction=${{ steps.posture.outputs.refdata_allow_offline_corp_actions }} \
+              refdataStockAnalysisEnabled=${{ steps.posture.outputs.refdata_stockanalysis_enabled }} \
+              refdataSchwabEnabled=${{ steps.posture.outputs.refdata_schwab_enabled }} \
               deployIngress=${{ steps.posture.outputs.deploy_ingress }} \
             --query properties.outputs \
             --output json > "$OUT_FILE"

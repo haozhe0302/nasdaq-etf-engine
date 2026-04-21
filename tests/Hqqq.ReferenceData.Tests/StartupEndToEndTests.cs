@@ -76,6 +76,13 @@ public class StartupEndToEndTests : IClassFixture<StartupEndToEndTests.Factory>
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            // Pin the test to the deterministic seed-only path — the
+            // four-source RealSource pipeline would fire live HTTP
+            // against Nasdaq/AlphaVantage/scrapers at startup. This
+            // test explicitly asserts `source == "fallback-seed"`, so
+            // the Seed posture preserves the documented behaviour.
+            builder.UseSetting("ReferenceData:Basket:Mode", "Seed");
+
             builder.ConfigureServices(services =>
             {
                 var existing = services

@@ -123,6 +123,16 @@ param gatewayBasketId = 'HQQQ'
 // and behaves identically to `standalone` at runtime.
 param operatingMode = 'standalone'
 
+// ── Reference-data Production posture (deploy_posture-driven) ────
+// These defaults match the `with-ingress` path (Tiingo-backed corp
+// actions ON, anchor scrapers ON, offline-only OFF). The workflow
+// overrides every one of these at deploy time to reflect the user-
+// selected `deploy_posture` so workflow/bicep/runtime agree exactly.
+param refdataTiingoCorpActionsEnabled = true
+param refdataAllowOfflineOnlyInProduction = false
+param refdataStockAnalysisEnabled = true
+param refdataSchwabEnabled = true
+
 // ── Secrets — placeholders so `bicep build` succeeds locally ────
 // The deploy workflow supplies real values via --parameters.
 // Leaving empty strings here would fail the @secure() requirement
@@ -136,3 +146,4 @@ param kafkaSaslPassword = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
 param redisConfiguration = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
 param timescaleConnectionString = 'OVERRIDE_ME_FROM_WORKFLOW_SECRET'
 param tiingoApiKey = ''
+param refdataTiingoApiKey = ''

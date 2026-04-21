@@ -42,12 +42,17 @@ builder.Services.AddHttpClient("hqqq-refdata-live-holdings");
 builder.Services.AddSingleton<LiveHoldingsSource>();
 builder.Services.AddSingleton<HoldingsValidator>();
 
-// Phase 2 basket pipeline (ported from the Phase 1 Basket module). JSON
-// adapters only; HTML scrapers are intentionally not ported. Mode=Seed
-// skips real-source registration so the composite chain degrades to
-// "live (file/http) → fallback-seed" just like before.
+// Phase 2 basket pipeline (ported from the Phase 1 Basket module). All
+// four Phase 1 adapters are registered; the scrapers (StockAnalysis,
+// Schwab) default OFF in appsettings and are flipped ON by Azure
+// Production bicep env injection so the standard Production path is
+// the full four-source anchored pipeline with real SharesHeld.
+builder.Services.AddHttpClient(StockAnalysisBasketAdapter.HttpClientName);
+builder.Services.AddHttpClient(SchwabBasketAdapter.HttpClientName);
 builder.Services.AddHttpClient(AlphaVantageBasketAdapter.HttpClientName);
 builder.Services.AddHttpClient(NasdaqBasketAdapter.HttpClientName);
+builder.Services.AddSingleton<StockAnalysisBasketAdapter>();
+builder.Services.AddSingleton<SchwabBasketAdapter>();
 builder.Services.AddSingleton<AlphaVantageBasketAdapter>();
 builder.Services.AddSingleton<NasdaqBasketAdapter>();
 builder.Services.AddSingleton<RawSourceCache>();
@@ -58,17 +63,18 @@ builder.Services.AddSingleton<RealSourceBasketHoldingsSource>();
 
 builder.Services.AddSingleton<IHoldingsSource>(sp =>
 {
-    var opts = sp.GetRequiredService<IOptions<ReferenceDataOptions>>().Value;
+    var opts = sp.GetRequiredService<IOptions<ReferenceDataOptions>>();
     var validator = sp.GetRequiredService<HoldingsValidator>();
     var fallback = sp.GetRequiredService<FallbackSeedHoldingsSource>();
+    var environment = sp.GetRequiredService<IWebHostEnvironment>();
     var logger = sp.GetRequiredService<ILogger<CompositeHoldingsSource>>();
     var primaries = new List<IHoldingsSource>();
-    if (opts.Basket.Mode == BasketMode.RealSource)
+    if (opts.Value.Basket.Mode == BasketMode.RealSource)
     {
         primaries.Add(sp.GetRequiredService<RealSourceBasketHoldingsSource>());
     }
     primaries.Add(sp.GetRequiredService<LiveHoldingsSource>());
-    return new CompositeHoldingsSource(primaries, fallback, validator, logger);
+    return new CompositeHoldingsSource(primaries, fallback, validator, opts, environment, logger);
 });
 
 // Phase-2-native corporate-action pipeline. File provider is
@@ -85,7 +91,18 @@ builder.Services.AddSingleton<BasketTransitionPlanner>();
 builder.Services.AddSingleton<ActiveBasketStore>();
 builder.Services.AddSingleton<PublishHealthTracker>();
 builder.Services.AddSingleton<PublishHealthMetrics>();
-builder.Services.AddSingleton<BasketRefreshPipeline>();
+builder.Services.AddSingleton<BasketRefreshPipeline>(sp => new BasketRefreshPipeline(
+    sp.GetRequiredService<IHoldingsSource>(),
+    sp.GetRequiredService<HoldingsValidator>(),
+    sp.GetRequiredService<CorporateActionAdjustmentService>(),
+    sp.GetRequiredService<BasketTransitionPlanner>(),
+    sp.GetRequiredService<ActiveBasketStore>(),
+    sp.GetRequiredService<IBasketPublisher>(),
+    sp.GetRequiredService<PublishHealthTracker>(),
+    sp.GetRequiredService<ILogger<BasketRefreshPipeline>>(),
+    sp.GetService<TimeProvider>(),
+    sp.GetService<Hqqq.Observability.Metrics.HqqqMetrics>(),
+    sp.GetService<PendingBasketStore>()));
 builder.Services.AddSingleton<IBasketService, BasketService>();
 builder.Services.AddSingleton<IBasketPublisher, KafkaBasketPublisher>();
 builder.Services.AddHostedService<BasketRefreshJob>();
@@ -110,11 +127,27 @@ app.Services.LogConfigurationPosture(
     app.Logger,
     "Kafka", "Redis", "Timescale", "ReferenceData");
 
-// Production fail-fast: deterministic seed fallback and offline-only
-// corp-actions are only permitted with explicit operator opt-in.
+// Production fail-fast: deterministic seed fallback, anchor-less proxy
+// posture, and offline-only corp-actions are only permitted with
+// explicit operator opt-in.
 var refOptions = app.Services.GetRequiredService<IOptions<ReferenceDataOptions>>().Value;
 ReferenceDataStartupGuard.Validate(app.Environment, refOptions, app.Logger);
 ReferenceDataStartupGuard.ValidateCorporateActions(app.Environment, refOptions, app.Logger);
+
+// Loud, structured posture line so the deploy log carries the truth.
+app.Logger.LogInformation(
+    "ReferenceData posture: env={Env} basket.mode={Mode} anchors=[stockanalysis={SA},schwab={SC}] tail=[alphavantage={AV},nasdaq={ND}] requireAnchor={RequireAnchor} allowAnchorlessProxy={AllowProxy} allowDeterministicSeedInProd={AllowSeed} tiingoCorpActions={TiingoCA} allowOfflineOnlyCorpActions={OfflineCA}",
+    app.Environment.EnvironmentName,
+    refOptions.Basket.Mode,
+    refOptions.Basket.Sources.StockAnalysis.Enabled,
+    refOptions.Basket.Sources.Schwab.Enabled,
+    refOptions.Basket.Sources.AlphaVantage.Enabled,
+    refOptions.Basket.Sources.Nasdaq.Enabled,
+    refOptions.Basket.RequireAnchorInProduction,
+    refOptions.Basket.AllowAnchorlessProxyInProduction,
+    refOptions.Basket.AllowDeterministicSeedInProduction,
+    refOptions.CorporateActions.Tiingo.Enabled,
+    refOptions.CorporateActions.AllowOfflineOnlyInProduction);
 
 // Eagerly instantiate PublishHealthMetrics so the observable gauges are
 // wired before the first /metrics scrape.

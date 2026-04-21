@@ -17,12 +17,29 @@ namespace Hqqq.Gateway.Tests.Fixtures;
 /// </summary>
 public sealed class GatewayAppFactory : WebApplicationFactory<Program>
 {
-    private readonly Dictionary<string, string?> _config = new();
+    // Phase 2-hotfix — realtime is disabled by default in the test host
+    // so aggregated-health / legacy-forwarding / mode-precedence tests
+    // never accidentally depend on a real Redis pub/sub transport on
+    // localhost:6379. Tests that exercise QuoteUpdateSubscriber behavior
+    // explicitly re-enable it via WithConfig("Gateway:Realtime:Enabled", "true").
+    private readonly Dictionary<string, string?> _config = new()
+    {
+        ["Gateway:Realtime:Enabled"] = "false",
+    };
     private FakeHttpMessageHandler? _fakeHandler;
     private FakeHttpMessageHandler? _fakeHealthHandler;
     private FakeGatewayRedisReader? _fakeRedisReader;
     private ITimescaleHistoryQueryService? _fakeHistoryQuery;
     private IServiceHealthClient? _fakeServiceHealthClient;
+
+    /// <summary>
+    /// Ad-hoc service overrides run after all other DI registration so
+    /// they win last-wins. Used by Phase 2-hotfix realtime tests to swap
+    /// <c>IRedisQuoteUpdateChannel</c> without having to hard-wire every
+    /// override into this fixture.
+    /// </summary>
+    internal List<Action<IServiceCollection>> TestServicesConfigurations { get; }
+        = new();
 
     public GatewayAppFactory WithConfig(string key, string value)
     {
@@ -117,6 +134,11 @@ public sealed class GatewayAppFactory : WebApplicationFactory<Program>
                 // source resolves the fake query service in tests without
                 // needing a real Timescale connection.
                 services.AddSingleton<ITimescaleHistoryQueryService>(_fakeHistoryQuery);
+            }
+
+            foreach (var extra in TestServicesConfigurations)
+            {
+                extra(services);
             }
         });
     }

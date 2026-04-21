@@ -30,7 +30,18 @@ builder.Services.AddSignalR();
 // events to its own connected clients. No SignalR Redis backplane needed:
 // the engine publishes once, every gateway receives the message, each one
 // fans out locally.
+//
+// Phase 2-hotfix — the Redis pub/sub bridge is governed by
+// `Gateway:Realtime:Enabled` (default true). The subscriber honors that
+// flag at runtime via IOptions, so test hosts can flip it off via
+// WebApplicationFactory config overrides without touching DI topology.
+// On Redis unavailability the subscriber retries with bounded backoff
+// instead of killing the host, so `/api/system/health` stays up and
+// realtime reattaches automatically once Redis is reachable again.
+builder.Services.Configure<GatewayRealtimeOptions>(
+    builder.Configuration.GetSection(GatewayRealtimeOptions.SectionName));
 builder.Services.AddSingleton<QuoteUpdateBroadcaster>();
+builder.Services.AddSingleton<IRedisQuoteUpdateChannel, StackExchangeRedisQuoteUpdateChannel>();
 builder.Services.AddHostedService<QuoteUpdateSubscriber>();
 
 var app = builder.Build();
@@ -56,6 +67,20 @@ app.Services.LogConfigurationPosture(
         "[gateway:resolved-modes] Quote={Quote} Constituents={Constituents} History={History} SystemHealth={SystemHealth}",
         resolvedModes.Quote, resolvedModes.Constituents,
         resolvedModes.History, resolvedModes.SystemHealth);
+
+    // Phase 2-hotfix — surface the effective realtime posture at startup
+    // so operators can see at a glance whether QuoteUpdateSubscriber is
+    // wired up in this process. Resolved via IOptions so the value
+    // reflects the fully-merged configuration (including any test-host
+    // or environment overrides), not the Program.cs-time defaults.
+    var realtimeOptions = app.Services
+        .GetRequiredService<Microsoft.Extensions.Options.IOptions<GatewayRealtimeOptions>>()
+        .Value;
+    app.Logger.LogInformation(
+        "[gateway:realtime] Enabled={Enabled} (InitialRetryDelayMs={Initial}, MaxRetryDelayMs={Max})",
+        realtimeOptions.Enabled,
+        realtimeOptions.InitialRetryDelayMs,
+        realtimeOptions.MaxRetryDelayMs);
 
     var legacyEndpoints = new List<string>();
     if (resolvedModes.Quote == GatewayDataSourceMode.Legacy) legacyEndpoints.Add("Quote");

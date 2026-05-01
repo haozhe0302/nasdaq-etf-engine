@@ -26,14 +26,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -u 10001 -r -s /usr/sbin/nologin app \
- && mkdir -p /app \
+RUN mkdir -p /app \
  && chown -R app:app /app
 
 WORKDIR /app
 COPY --from=build --chown=app:app /app/publish ./
 
-USER app
+USER $APP_UID
 
 # Worker has no primary Kestrel surface; the management host owns the only
 # port. Compose must set Management__BindAddress=0.0.0.0 so the gateway

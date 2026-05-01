@@ -36,14 +36,13 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -u 10001 -r -s /usr/sbin/nologin app \
- && mkdir -p /app /artifacts \
+RUN mkdir -p /app /artifacts \
  && chown -R app:app /app /artifacts
 
 WORKDIR /app
 COPY --from=build --chown=app:app /app/publish ./
 
-USER app
+USER $APP_UID
 
 ENV DOTNET_RUNNING_IN_CONTAINER=true \
     DOTNET_NOLOGO=true \

@@ -43,13 +43,11 @@ public sealed class RedisHealthCheck(
     {
         try
         {
-            using var mux = await StackExchange.Redis.ConnectionMultiplexer
-                .ConnectAsync(new StackExchange.Redis.ConfigurationOptions
-                {
-                    EndPoints = { options.Configuration },
-                    ConnectTimeout = 3000,
-                    AbortOnConnectFail = false,
-                });
+            var config = StackExchange.Redis.ConfigurationOptions.Parse(options.Configuration);
+            config.ConnectTimeout = 3000;
+            config.AbortOnConnectFail = false;
+            
+            using var mux = await StackExchange.Redis.ConnectionMultiplexer.ConnectAsync(config);
             var db = mux.GetDatabase();
             var pong = await db.PingAsync();
             return HealthCheckResult.Healthy($"Redis ping: {pong.TotalMilliseconds:F1}ms");

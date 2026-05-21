@@ -18,7 +18,7 @@
 #   docker build -f src/services/hqqq-analytics/Dockerfile -t hqqq-analytics:dev .
 
 # ── build ────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.204 AS build
 WORKDIR /src
 
 COPY global.json Directory.Build.props ./

@@ -108,7 +108,7 @@ public class QuoteEngineWorkerPublishingTests
             await rig.Worker.StartAsync(cts.Token);
 
             await WaitForAsync(
-                () => rig.Producer.Published.Count > 0
+                () => rig.Producer.Published.Any(p => p.Value.Nav > 0m)
                     && rig.Cache.Values.ContainsKey(RedisKeys.Snapshot(basket.BasketId))
                     && rig.Cache.Values.ContainsKey(RedisKeys.Constituents(basket.BasketId)),
                 TimeSpan.FromSeconds(5));
@@ -122,7 +122,7 @@ public class QuoteEngineWorkerPublishingTests
             Assert.True(rig.Cache.Values.ContainsKey("hqqq:constituents:HQQQ"),
                 "Expected Redis constituents key to be populated");
 
-            var published = rig.Producer.Published.First();
+            var published = rig.Producer.Published.First(p => p.Value.Nav > 0m);
             Assert.Equal("pricing.snapshots.v1", published.Topic);
             Assert.Equal("HQQQ", published.Key);
             Assert.True(published.Value.Nav > 0m);

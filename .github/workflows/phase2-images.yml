@@ -88,6 +88,18 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Verify pinned SDK
+        # Keep this gate aligned with phase2-ci.yml so both workflows
+        # enforce the same global.json feature-band contract.
+        run: |
+          dotnet --info
+          resolved=$(dotnet --version)
+          echo "Resolved SDK: $resolved"
+          case "$resolved" in
+            10.0.2*) echo "OK: SDK matches the 10.0.2xx feature band pinned in global.json" ;;
+            *) echo "::error::Resolved SDK $resolved does not match the 10.0.2xx feature band pinned in global.json"; exit 1 ;;
+          esac
+
       - name: Restore
         run: dotnet restore Hqqq.sln
 

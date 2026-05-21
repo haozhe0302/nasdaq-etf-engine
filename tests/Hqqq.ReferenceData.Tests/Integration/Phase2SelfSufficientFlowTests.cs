@@ -97,14 +97,22 @@ public class Phase2SelfSufficientFlowTests
         Assert.True(refresh.Changed);
         Assert.Single(bridge.Published);
         Assert.NotNull(universe.Current);
-        Assert.Equal(60, universe.Current!.Symbols.Count);
+
+        // Production wiring merges the default anchor (QQQ) into every
+        // basket-driven subscription set, so the universe always carries
+        // count = constituents + anchors (deduped). The 60-symbol
+        // SnapshotBuilder fixture never emits QQQ, so the merged set is
+        // exactly 61.
+        Assert.Equal(61, universe.Current!.Symbols.Count);
+        Assert.Contains("QQQ", universe.Current!.Symbols);
 
         // Wait for the worker → coordinator → fake-stream-client subscribe
         // to complete and for the synthetic ticks to flow through the
         // publish-and-record callback.
         await SpinUntilAsync(() => state.PublishedTickCount >= 3);
 
-        Assert.Equal(60, coordinator.CurrentAppliedSymbols.Count);
+        Assert.Equal(61, coordinator.CurrentAppliedSymbols.Count);
+        Assert.Contains("QQQ", coordinator.CurrentAppliedSymbols);
         Assert.Equal(refresh.Fingerprint, coordinator.AppliedFingerprint);
         Assert.True(streamClient.SubscribesReceived.Count >= 1,
             "ingress did not call ITiingoStreamClient.ConnectAndStreamAsync");

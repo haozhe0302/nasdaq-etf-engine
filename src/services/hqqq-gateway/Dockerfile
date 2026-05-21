@@ -9,7 +9,7 @@
 #   docker build -f src/services/hqqq-gateway/Dockerfile -t hqqq-gateway:dev .
 
 # ── build ────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:10.0.204 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.203 AS build
 WORKDIR /src
 
 COPY global.json Directory.Build.props ./

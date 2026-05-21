@@ -13,9 +13,12 @@ namespace Hqqq.QuoteEngine.Services;
 /// reader in B5 can serve the cached JSON payload without remapping.
 /// </summary>
 /// <remarks>
-/// Full provenance fields on <see cref="BasketSourceDto"/> (anchor/tail
-/// source, degraded flag) are filled with conservative defaults here; those
-/// will be wired from reference-data in a later step.
+/// Provenance fields on <see cref="BasketSourceDto"/> (anchor / tail
+/// source, basket-mode classification, degraded flag) are propagated
+/// from the active basket which in turn carries them from the
+/// reference-data merge pipeline via <c>BasketActiveStateV1</c>.
+/// Snapshots that pre-date the four-source anchored merge surface as
+/// empty strings + <c>isDegraded=false</c>.
 /// </remarks>
 public sealed class ConstituentsSnapshotMaterializer
 {
@@ -146,8 +149,6 @@ public sealed class ConstituentsSnapshotMaterializer
             ? Math.Round((decimal)priced / total * 100m, 1)
             : 0m;
 
-        var basketMode = basket.PricingBasis.DerivedSharesCount > 0 ? "hybrid" : "official";
-
         return new BasketQualityDto
         {
             TotalSymbols = total,
@@ -156,21 +157,34 @@ public sealed class ConstituentsSnapshotMaterializer
             PricedCount = priced,
             StaleCount = stale,
             PriceCoveragePct = coverage,
-            BasketMode = basketMode,
+            BasketMode = ResolveBasketMode(basket),
         };
     }
 
     private static BasketSourceDto BuildSource(ActiveBasket basket)
     {
-        var basketMode = basket.PricingBasis.DerivedSharesCount > 0 ? "hybrid" : "official";
         return new BasketSourceDto
         {
-            AnchorSource = string.Empty,
-            TailSource = string.Empty,
-            BasketMode = basketMode,
-            IsDegraded = false,
+            AnchorSource = basket.AnchorSource ?? string.Empty,
+            TailSource = basket.TailSource ?? string.Empty,
+            BasketMode = ResolveBasketMode(basket),
+            IsDegraded = basket.IsDegraded,
             AsOfDate = basket.AsOfDate.ToString("yyyy-MM-dd"),
             Fingerprint = basket.Fingerprint,
         };
+    }
+
+    /// <summary>
+    /// Prefer the merge pipeline's lineage classification when set
+    /// (<c>"anchored"</c>, <c>"anchored-proxy-tail"</c>,
+    /// <c>"anchor-less-proxy"</c>); otherwise fall back to the legacy
+    /// pricing-basis derivation (<c>"hybrid"</c> when derived rows
+    /// exist, else <c>"official"</c>).
+    /// </summary>
+    private static string ResolveBasketMode(ActiveBasket basket)
+    {
+        if (!string.IsNullOrWhiteSpace(basket.BasketMode))
+            return basket.BasketMode;
+        return basket.PricingBasis.DerivedSharesCount > 0 ? "hybrid" : "official";
     }
 }

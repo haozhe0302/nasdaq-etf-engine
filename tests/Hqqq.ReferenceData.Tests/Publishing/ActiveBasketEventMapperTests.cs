@@ -91,6 +91,44 @@ public class ActiveBasketEventMapperTests
         Assert.True(ev.ScaleFactor > 0);
     }
 
+    [Fact]
+    public void ToEvent_PropagatesMergeProvenanceFields()
+    {
+        var snap = SnapshotBuilder.Build(count: 60, source: "live:stockanalysis+alphavantage")
+            with
+            {
+                AnchorSource = "stockanalysis",
+                TailSource = "alphavantage",
+                BasketMode = "anchored",
+                IsDegraded = false,
+            };
+        var active = new ActiveBasket
+        {
+            Snapshot = snap,
+            Fingerprint = "fp-anchored",
+            ActivatedAtUtc = new DateTimeOffset(2026, 4, 20, 12, 0, 0, TimeSpan.Zero),
+        };
+
+        var ev = ActiveBasketEventMapper.ToEvent(active);
+
+        Assert.Equal("stockanalysis", ev.AnchorSource);
+        Assert.Equal("alphavantage", ev.TailSource);
+        Assert.Equal("anchored", ev.BasketMode);
+        Assert.False(ev.IsDegraded);
+    }
+
+    [Fact]
+    public void ToEvent_LegacySnapshotWithoutProvenance_EmitsEmptyDefaults()
+    {
+        var active = BuildActive(count: 5, source: "fallback-seed");
+        var ev = ActiveBasketEventMapper.ToEvent(active);
+
+        Assert.Equal(string.Empty, ev.AnchorSource);
+        Assert.Equal(string.Empty, ev.TailSource);
+        Assert.Equal(string.Empty, ev.BasketMode);
+        Assert.False(ev.IsDegraded);
+    }
+
     private static ActiveBasket BuildActive(int count, string source = "fallback-seed")
         => new()
         {

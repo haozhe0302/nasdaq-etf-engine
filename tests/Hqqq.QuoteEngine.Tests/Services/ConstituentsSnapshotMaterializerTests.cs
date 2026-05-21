@@ -82,6 +82,53 @@ public class ConstituentsSnapshotMaterializerTests
     }
 
     [Fact]
+    public void Build_PropagatesAnchoredMergeProvenance_ToSourceAndQuality()
+    {
+        var h = Build();
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-anchored")
+            .WithProvenance(
+                anchorSource: "stockanalysis",
+                tailSource: "alphavantage",
+                basketMode: "anchored",
+                isDegraded: false)
+            .AddConstituent("AAPL", "Apple", shares: 1000, referencePrice: 200m, weight: 0.6m, sector: "Tech", sharesOrigin: "stockanalysis")
+            .AddConstituent("MSFT", "Microsoft", shares: 500, referencePrice: 400m, weight: 0.4m, sector: "Tech", sharesOrigin: "schwab")
+            .Build();
+
+        h.Baskets.Replace(basket);
+
+        var dto = h.Materializer.Build();
+        Assert.NotNull(dto);
+
+        Assert.Equal("stockanalysis", dto!.Source.AnchorSource);
+        Assert.Equal("alphavantage", dto.Source.TailSource);
+        Assert.Equal("anchored", dto.Source.BasketMode);
+        Assert.False(dto.Source.IsDegraded);
+
+        Assert.Equal("anchored", dto.Quality.BasketMode);
+    }
+
+    [Fact]
+    public void Build_LegacyBasketWithoutProvenance_FallsBackToOfficialOrHybrid()
+    {
+        var h = Build();
+        var basket = new TestBasketBuilder()
+            .AddConstituent("AAPL", "Apple", shares: 1000, referencePrice: 200m, weight: 1.0m, sector: "Tech")
+            .Build();
+        h.Baskets.Replace(basket);
+
+        var dto = h.Materializer.Build();
+        Assert.NotNull(dto);
+
+        Assert.Equal(string.Empty, dto!.Source.AnchorSource);
+        Assert.Equal(string.Empty, dto.Source.TailSource);
+        Assert.Equal("official", dto.Source.BasketMode);
+        Assert.False(dto.Source.IsDegraded);
+    }
+
+    [Fact]
     public void Build_MarksSymbolsWithoutTicksAsStaleAndLeavesPriceNull()
     {
         var h = Build();

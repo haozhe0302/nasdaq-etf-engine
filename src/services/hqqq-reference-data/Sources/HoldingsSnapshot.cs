@@ -18,6 +18,37 @@ public sealed record HoldingsSnapshot
 
     /// <summary>Lineage tag (e.g. <c>"live:file"</c>, <c>"live:http"</c>, <c>"fallback-seed"</c>).</summary>
     public required string Source { get; init; }
+
+    /// <summary>
+    /// Anchor source name when the snapshot is the product of the
+    /// four-source anchored merge pipeline (e.g. <c>"stockanalysis"</c>,
+    /// <c>"schwab"</c>). <c>null</c> for seed / live-file / live-http
+    /// snapshots that pre-date the anchored pipeline.
+    /// </summary>
+    public string? AnchorSource { get; init; }
+
+    /// <summary>
+    /// Tail source name when the snapshot is the product of the
+    /// four-source anchored or anchor-less proxy merge pipeline
+    /// (e.g. <c>"alphavantage"</c>, <c>"nasdaq"</c>). <c>null</c> for
+    /// seed / live-file / live-http snapshots.
+    /// </summary>
+    public string? TailSource { get; init; }
+
+    /// <summary>
+    /// High-level basket lineage classification — <c>"anchored"</c>,
+    /// <c>"anchored-proxy-tail"</c>, <c>"anchor-less-proxy"</c>, or
+    /// <c>null</c> for legacy seed / file / http rows.
+    /// </summary>
+    public string? BasketMode { get; init; }
+
+    /// <summary>
+    /// True when the snapshot was produced under a degraded posture
+    /// (e.g. anchor-less proxy, or anchored merge with a Nasdaq-proxy
+    /// tail). Defaults to false; legacy snapshots without a recorded
+    /// lineage carry <c>false</c>.
+    /// </summary>
+    public bool IsDegraded { get; init; }
 }
 
 public sealed record HoldingsConstituent

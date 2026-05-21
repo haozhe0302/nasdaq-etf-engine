@@ -69,6 +69,36 @@ public sealed record BasketActiveStateV1
     /// legacy messages that pre-date the corp-action adjustment layer.
     /// </summary>
     public AdjustmentSummaryV1? AdjustmentSummary { get; init; }
+
+    /// <summary>
+    /// Anchor source name for the four-source anchored merge pipeline
+    /// (e.g. <c>"stockanalysis"</c>, <c>"schwab"</c>). Empty string for
+    /// seed / live-file snapshots that do not participate in the
+    /// anchored pipeline. Additive — historical events deserialize to
+    /// the empty string.
+    /// </summary>
+    public string AnchorSource { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Tail source name for the merge pipeline (e.g.
+    /// <c>"alphavantage"</c>, <c>"nasdaq"</c>). Empty string for
+    /// non-merge snapshots. Additive.
+    /// </summary>
+    public string TailSource { get; init; } = string.Empty;
+
+    /// <summary>
+    /// High-level basket lineage classification —
+    /// <c>"anchored"</c>, <c>"anchored-proxy-tail"</c>,
+    /// <c>"anchor-less-proxy"</c>, or empty for legacy seed/file/http
+    /// snapshots. Additive.
+    /// </summary>
+    public string BasketMode { get; init; } = string.Empty;
+
+    /// <summary>
+    /// True when the snapshot was produced under a degraded posture.
+    /// Defaults to false; historical messages deserialize to false.
+    /// </summary>
+    public bool IsDegraded { get; init; }
 }
 
 /// <summary>

@@ -115,6 +115,88 @@ public class HoldingsValidatorTests
         Assert.False(v.BlocksActivation(outcome));
     }
 
+    [Fact]
+    public void Validate_AcceptsAnchoredHybridSnapshot_InStrictMode()
+    {
+        // Mirrors the four-source anchored merge: anchor rows carry
+        // real SharesSource + SharesHeld > 0 but ReferencePrice = 0
+        // (price filled by pricing layer downstream); tail rows carry
+        // SharesSource="unavailable" with SharesHeld = 0 + ReferencePrice = 0.
+        var snap = SnapshotBuilder.Build(count: 60);
+        var hybrid = snap with
+        {
+            Constituents = snap.Constituents
+                .Select((c, i) => i < 25
+                    ? c with
+                    {
+                        SharesHeld = 1_000m + i,
+                        ReferencePrice = 0m,
+                        SharesSource = "stockanalysis",
+                    }
+                    : c with
+                    {
+                        SharesHeld = 0m,
+                        ReferencePrice = 0m,
+                        SharesSource = HoldingsValidator.UnavailableSharesSource,
+                    })
+                .ToArray(),
+        };
+
+        var validator = BuildValidator(strict: true);
+        var outcome = validator.Validate(hybrid);
+
+        Assert.True(outcome.IsValid);
+        Assert.False(validator.BlocksActivation(outcome));
+    }
+
+    [Fact]
+    public void Validate_AnchoredRowWithZeroShares_StillFails_EvenWithLineage()
+    {
+        // An anchor row that claims a real SharesSource but has zero
+        // shares is a data-quality bug in the upstream scraper — we
+        // must NOT silently accept it under the hybrid carve-out.
+        var snap = SnapshotBuilder.Build(count: 60);
+        var bad = snap with
+        {
+            Constituents = snap.Constituents
+                .Select((c, i) => i == 0
+                    ? c with { SharesHeld = 0m, ReferencePrice = 0m, SharesSource = "stockanalysis" }
+                    : c)
+                .ToArray(),
+        };
+
+        var validator = BuildValidator(strict: true);
+        var outcome = validator.Validate(bad);
+
+        Assert.False(outcome.IsValid);
+        Assert.Contains(outcome.Errors, e => e.Contains("sharesHeld must be > 0", StringComparison.Ordinal));
+        Assert.True(validator.BlocksActivation(outcome));
+    }
+
+    [Fact]
+    public void Validate_LegacyRowWithoutLineage_StillRequiresPositivePrice()
+    {
+        // Snapshot rows with no SharesSource lineage (e.g. seed or
+        // file-drop loaders) must continue to be held to the strict
+        // shares + price > 0 rule so existing callers don't regress.
+        var snap = SnapshotBuilder.Build(count: 60);
+        var bad = snap with
+        {
+            Constituents = snap.Constituents
+                .Select((c, i) => i == 0
+                    ? c with { ReferencePrice = 0m, SharesSource = null }
+                    : c)
+                .ToArray(),
+        };
+
+        var validator = BuildValidator(strict: true);
+        var outcome = validator.Validate(bad);
+
+        Assert.False(outcome.IsValid);
+        Assert.Contains(outcome.Errors, e => e.Contains("referencePrice must be > 0", StringComparison.Ordinal));
+        Assert.True(validator.BlocksActivation(outcome));
+    }
+
     private static HoldingsValidator BuildValidator(bool strict, int min = 50, int max = 150)
     {
         var options = Options.Create(new ReferenceDataOptions

@@ -19,6 +19,10 @@ public sealed class TestBasketBuilder
     private decimal _scaleFactor = 1m;
     private decimal? _navPreviousClose;
     private decimal? _qqqPreviousClose;
+    private string _anchorSource = string.Empty;
+    private string _tailSource = string.Empty;
+    private string _basketMode = string.Empty;
+    private bool _isDegraded;
 
     public TestBasketBuilder WithBasketId(string id) { _basketId = id; return this; }
     public TestBasketBuilder WithFingerprint(string fp) { _fingerprint = fp; return this; }
@@ -27,6 +31,19 @@ public sealed class TestBasketBuilder
     public TestBasketBuilder WithScaleFactor(decimal s) { _scaleFactor = s; return this; }
     public TestBasketBuilder WithNavPreviousClose(decimal? v) { _navPreviousClose = v; return this; }
     public TestBasketBuilder WithQqqPreviousClose(decimal? v) { _qqqPreviousClose = v; return this; }
+
+    public TestBasketBuilder WithProvenance(
+        string anchorSource,
+        string tailSource,
+        string basketMode,
+        bool isDegraded = false)
+    {
+        _anchorSource = anchorSource;
+        _tailSource = tailSource;
+        _basketMode = basketMode;
+        _isDegraded = isDegraded;
+        return this;
+    }
 
     public TestBasketBuilder AddConstituent(
         string symbol,
@@ -81,6 +98,10 @@ public sealed class TestBasketBuilder
             ScaleFactor = new ScaleFactor(_scaleFactor),
             NavPreviousClose = _navPreviousClose,
             QqqPreviousClose = _qqqPreviousClose,
+            AnchorSource = _anchorSource,
+            TailSource = _tailSource,
+            BasketMode = _basketMode,
+            IsDegraded = _isDegraded,
         };
     }
 

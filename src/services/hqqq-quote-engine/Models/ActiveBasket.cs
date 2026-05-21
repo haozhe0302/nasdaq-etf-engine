@@ -28,4 +28,32 @@ public sealed record ActiveBasket
     public decimal? NavPreviousClose { get; init; }
 
     public decimal? QqqPreviousClose { get; init; }
+
+    /// <summary>
+    /// Anchor source name for the four-source anchored merge pipeline
+    /// (e.g. <c>"stockanalysis"</c>, <c>"schwab"</c>). Empty string for
+    /// seed / live-file baskets that pre-date the anchored pipeline.
+    /// </summary>
+    public string AnchorSource { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Tail source name for the merge pipeline (e.g.
+    /// <c>"alphavantage"</c>, <c>"nasdaq"</c>). Empty string for
+    /// non-merge baskets.
+    /// </summary>
+    public string TailSource { get; init; } = string.Empty;
+
+    /// <summary>
+    /// High-level basket lineage classification: <c>"anchored"</c>,
+    /// <c>"anchored-proxy-tail"</c>, <c>"anchor-less-proxy"</c>, or
+    /// empty for legacy seed/file/http baskets.
+    /// </summary>
+    public string BasketMode { get; init; } = string.Empty;
+
+    /// <summary>
+    /// True when the basket was produced under a degraded posture
+    /// (e.g. anchor-less proxy or anchored merge with a Nasdaq-proxy
+    /// tail). Defaults to false.
+    /// </summary>
+    public bool IsDegraded { get; init; }
 }

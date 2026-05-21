@@ -198,6 +198,7 @@ public static class MergedBasketBuilder
         var hasOfficialShares = anchorConstituents.Any(c => c.SharesHeld > 0m);
         var source = $"live:{anchor.SourceName}+{tail.SourceName}" +
                      (tail.IsProxy ? ":proxy" : string.Empty);
+        var basketMode = tail.IsProxy ? "anchored-proxy-tail" : "anchored";
 
         var snapshot = new HoldingsSnapshot
         {
@@ -207,9 +208,11 @@ public static class MergedBasketBuilder
             ScaleFactor = 1m,
             Constituents = allConstituents,
             Source = source,
+            AnchorSource = anchor.SourceName,
+            TailSource = tail.SourceName,
+            BasketMode = basketMode,
+            IsDegraded = tail.IsProxy,
         };
-
-        var basketMode = tail.IsProxy ? "anchored-proxy-tail" : "anchored";
         var report = new MergeQualityReport
         {
             InputRowCount = anchor.Entries.Count + tail.Entries.Count,
@@ -294,6 +297,10 @@ public static class MergedBasketBuilder
             ScaleFactor = 1m,
             Constituents = constituents,
             Source = tail.IsProxy ? $"live:{tail.SourceName}:proxy" : $"live:{tail.SourceName}",
+            AnchorSource = null,
+            TailSource = tail.SourceName,
+            BasketMode = "anchor-less-proxy",
+            IsDegraded = true,
         };
 
         var report = new MergeQualityReport

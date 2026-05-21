@@ -65,6 +65,10 @@ public static class ActiveBasketMapper
             ScaleFactor = new ScaleFactor(state.ScaleFactor),
             NavPreviousClose = state.NavPreviousClose,
             QqqPreviousClose = state.QqqPreviousClose,
+            AnchorSource = state.AnchorSource ?? string.Empty,
+            TailSource = state.TailSource ?? string.Empty,
+            BasketMode = state.BasketMode ?? string.Empty,
+            IsDegraded = state.IsDegraded,
         };
     }
 
@@ -119,6 +123,10 @@ public static class ActiveBasketMapper
             ScaleFactor = basket.ScaleFactor.Value,
             NavPreviousClose = basket.NavPreviousClose,
             QqqPreviousClose = basket.QqqPreviousClose,
+            AnchorSource = basket.AnchorSource,
+            TailSource = basket.TailSource,
+            BasketMode = basket.BasketMode,
+            IsDegraded = basket.IsDegraded,
         };
     }
 }

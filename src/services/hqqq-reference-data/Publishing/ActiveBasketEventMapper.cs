@@ -122,6 +122,10 @@ public static class ActiveBasketEventMapper
             PreviousBasketId = previous?.Snapshot.BasketId,
             PreviousFingerprint = previous?.Fingerprint,
             AdjustmentSummary = summary,
+            AnchorSource = snapshot.AnchorSource ?? string.Empty,
+            TailSource = snapshot.TailSource ?? string.Empty,
+            BasketMode = snapshot.BasketMode ?? string.Empty,
+            IsDegraded = snapshot.IsDegraded,
         };
     }
 }

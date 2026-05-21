@@ -30,7 +30,8 @@ public class QuoteDeltaMaterializerTests
         var snap = new SnapshotMaterializer(quotes, baskets, runtime, clock, options);
         var delta = new QuoteDeltaMaterializer(baskets, runtime, snap, clock);
         var engine = new Hqqq.QuoteEngine.Services.QuoteEngine(
-            quotes, baskets, runtime, calculator, snap, delta);
+            quotes, baskets, runtime, calculator, snap, delta,
+            NullBootstrapCalibrationCoordinator.Instance);
 
         return (engine, snap, delta, clock);
     }

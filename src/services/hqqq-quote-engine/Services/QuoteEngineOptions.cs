@@ -61,4 +61,14 @@ public sealed class QuoteEngineOptions
     /// fast without losing the snapshot + delta pipeline coverage.
     /// </summary>
     public TimeSpan MaterializeInterval { get; init; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// TTL for the per-basket calibration record persisted by
+    /// <see cref="Persistence.RedisCalibrationStore"/>. After this window
+    /// the bootstrap calibrator will re-run on the next QQQ tick. The
+    /// 7-day default is long enough to survive routine restarts but
+    /// short enough that a forgotten basket cannot indefinitely pin a
+    /// stale scale across a corporate-action event.
+    /// </summary>
+    public TimeSpan CalibrationTtl { get; init; } = TimeSpan.FromDays(7);
 }

@@ -3,6 +3,7 @@ using Hqqq.Domain.ValueObjects;
 using Hqqq.QuoteEngine.Services;
 using Hqqq.QuoteEngine.State;
 using Hqqq.QuoteEngine.Tests.Fakes;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Hqqq.QuoteEngine.Tests.Services;
 
@@ -33,7 +34,8 @@ public class QuoteEnginePipelineTests
         var snap = new SnapshotMaterializer(quotes, baskets, runtime, clock, options);
         var delta = new QuoteDeltaMaterializer(baskets, runtime, snap, clock);
         var engine = new Hqqq.QuoteEngine.Services.QuoteEngine(
-            quotes, baskets, runtime, calculator, snap, delta);
+            quotes, baskets, runtime, calculator, snap, delta,
+            NullBootstrapCalibrationCoordinator.Instance);
         return new Rig(engine, clock, options);
     }
 
@@ -157,6 +159,119 @@ public class QuoteEnginePipelineTests
         var secondSnap = rig.Engine.BuildSnapshot();
         Assert.Equal(100m, secondSnap!.Nav); // 0.0005 * (400 * 500) = 100
         Assert.Equal(1, secondSnap.Freshness.SymbolsTotal); // only MSFT tracked now
+    }
+
+    [Fact]
+    public void Pipeline_WithBootstrapCoordinator_AnchorTickProducesRealisticNav()
+    {
+        // End-to-end coverage of the long-term hardening Issue 2: a
+        // freshly activated basket with placeholder ScaleFactor=1
+        // routed through the coordinator must yield nav ≈ QQQ price
+        // (anchor) on the first complete tick set.
+        var clock = new FakeSystemClock(T0);
+        var options = new QuoteEngineOptions { AnchorSymbol = "QQQ", SeriesCapacity = 64 };
+        var quotes = new PerSymbolQuoteStore(clock);
+        var baskets = new BasketStateStore();
+        var runtime = new EngineRuntimeState(options.SeriesCapacity);
+        var calculator = new IncrementalNavCalculator(quotes, baskets, runtime, clock, options);
+        var snap = new SnapshotMaterializer(quotes, baskets, runtime, clock, options);
+        var delta = new QuoteDeltaMaterializer(baskets, runtime, snap, clock);
+        var calibrationStore = new InMemoryCalibrationStore();
+        var coordinator = new BootstrapCalibrationCoordinator(
+            baskets, quotes, options, calibrationStore, clock,
+            NullLogger<BootstrapCalibrationCoordinator>.Instance);
+
+        var engine = new Hqqq.QuoteEngine.Services.QuoteEngine(
+            quotes, baskets, runtime, calculator, snap, delta, coordinator);
+
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-1")
+            .WithScaleFactor(1m)             // reference-data placeholder
+            .AddConstituent("AAPL", "Apple",     1000, 200m,  0.333m)
+            .AddConstituent("MSFT", "Microsoft",  500, 400m,  0.333m)
+            .AddConstituent("NVDA", "NVIDIA",     200, 1000m, 0.334m)
+            .Build();
+
+        engine.OnBasketActivated(basket);
+
+        // Before the first complete tick set: coordinator has downgraded
+        // scale to Uninitialized; the materializer flags the snapshot as
+        // not-yet-live so /api/quote stays off-air semantically (NAV=0).
+        Assert.False(engine.IsInitialized);
+        var preBootstrap = engine.BuildSnapshot();
+        Assert.NotNull(preBootstrap);
+        Assert.Equal("uninitialized", preBootstrap!.QuoteState);
+        Assert.False(preBootstrap.IsLive);
+        Assert.Equal(0m, preBootstrap.Nav);
+
+        engine.OnTick(TestBasketBuilder.Tick("AAPL", 205m, clock.UtcNow, previousClose: 200m));
+        engine.OnTick(TestBasketBuilder.Tick("MSFT", 402m, clock.UtcNow, previousClose: 400m));
+        engine.OnTick(TestBasketBuilder.Tick("NVDA", 1010m, clock.UtcNow, previousClose: 1000m));
+        engine.OnTick(TestBasketBuilder.Tick("QQQ", 500m, clock.UtcNow, previousClose: 495m));
+
+        var snapshot = engine.BuildSnapshot();
+        Assert.NotNull(snapshot);
+        // rawValue = 205*1000 + 402*500 + 1010*200 = 608_000
+        // scale ≈ 500/608000 → nav ≈ 500
+        Assert.Equal(500m, Math.Round(snapshot!.Nav, 0));
+        Assert.InRange(snapshot.Nav, 100m, 1000m);
+        Assert.Equal(500m, snapshot.MarketPrice);
+        Assert.Equal(500m, snapshot.Qqq);
+        Assert.Equal(1, calibrationStore.WriteCount);
+    }
+
+    [Fact]
+    public void Pipeline_WithBootstrapCoordinator_RestartRestoresCalibration()
+    {
+        // Round-trip: calibrate via the coordinator, write to the store,
+        // then simulate a process restart by creating a fresh engine
+        // with the same store. The new engine must restore scale on
+        // activation (no QQQ tick required) so /api/quote.nav is live
+        // from t=0 instead of waiting for the first anchor tick.
+        var clock = new FakeSystemClock(T0);
+        var options = new QuoteEngineOptions { AnchorSymbol = "QQQ", SeriesCapacity = 64 };
+        var sharedStore = new InMemoryCalibrationStore();
+
+        Hqqq.QuoteEngine.Services.QuoteEngine BuildEngine(
+            out BasketStateStore baskets,
+            out PerSymbolQuoteStore quotes)
+        {
+            quotes = new PerSymbolQuoteStore(clock);
+            baskets = new BasketStateStore();
+            var runtime = new EngineRuntimeState(options.SeriesCapacity);
+            var calculator = new IncrementalNavCalculator(quotes, baskets, runtime, clock, options);
+            var snap = new SnapshotMaterializer(quotes, baskets, runtime, clock, options);
+            var delta = new QuoteDeltaMaterializer(baskets, runtime, snap, clock);
+            var coordinator = new BootstrapCalibrationCoordinator(
+                baskets, quotes, options, sharedStore, clock,
+                NullLogger<BootstrapCalibrationCoordinator>.Instance);
+            return new Hqqq.QuoteEngine.Services.QuoteEngine(
+                quotes, baskets, runtime, calculator, snap, delta, coordinator);
+        }
+
+        // ── First lifetime: calibrate from scratch.
+        var firstEngine = BuildEngine(out var firstBaskets, out var firstQuotes);
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-survive")
+            .WithScaleFactor(1m)
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m)
+            .Build();
+
+        firstEngine.OnBasketActivated(basket);
+        firstEngine.OnTick(TestBasketBuilder.Tick("AAPL", 200m, clock.UtcNow));
+        firstEngine.OnTick(TestBasketBuilder.Tick("QQQ", 480m, clock.UtcNow));
+        var calibratedScale = firstBaskets.Current!.ScaleFactor.Value;
+        Assert.True(calibratedScale > 0m);
+        Assert.NotNull(sharedStore.Peek("HQQQ"));
+
+        // ── Restart: fresh engine with the same persistent store.
+        var secondEngine = BuildEngine(out var secondBaskets, out var _);
+        secondEngine.OnBasketActivated(basket);
+
+        Assert.True(secondBaskets.Current!.ScaleFactor.IsInitialized);
+        Assert.Equal(calibratedScale, secondBaskets.Current.ScaleFactor.Value);
     }
 
     [Fact]

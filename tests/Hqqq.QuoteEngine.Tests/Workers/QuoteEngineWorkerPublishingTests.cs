@@ -44,7 +44,8 @@ public class QuoteEngineWorkerPublishingTests
         var snap = new SnapshotMaterializer(quotes, baskets, runtime, clock, options);
         var delta = new QuoteDeltaMaterializer(baskets, runtime, snap, clock);
         var engine = new Hqqq.QuoteEngine.Services.QuoteEngine(
-            quotes, baskets, runtime, calculator, snap, delta);
+            quotes, baskets, runtime, calculator, snap, delta,
+            NullBootstrapCalibrationCoordinator.Instance);
 
         var cache = new InMemoryRedisStringCache();
         var producer = new RecordingPricingSnapshotProducer();

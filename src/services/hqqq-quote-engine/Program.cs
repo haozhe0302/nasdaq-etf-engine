@@ -10,6 +10,10 @@ using Hqqq.QuoteEngine.Services;
 using Hqqq.QuoteEngine.State;
 using Hqqq.QuoteEngine.Workers;
 using Microsoft.Extensions.Options;
+// ICalibrationStore + BootstrapCalibrationCoordinator live under
+// Persistence + Services namespaces (already imported above); explicit
+// register lines reference the types directly so DI sees the same
+// instance shared between OnTick + OnBasketActivated.
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -41,6 +45,17 @@ builder.Services.AddSingleton<SnapshotMaterializer>();
 builder.Services.AddSingleton<QuoteDeltaMaterializer>();
 builder.Services.AddSingleton<ConstituentsSnapshotMaterializer>();
 builder.Services.AddSingleton<QuoteSnapshotV1Mapper>();
+
+// ── Bootstrap calibration ───────────────────────────────────
+// Redis-backed calibration store + coordinator that anchors per-share
+// NAV to the live QQQ price. Without this seam, reference-data's
+// placeholder ScaleFactor=1 would yield NAV ≈ $340B (gross basket
+// value) instead of NAV ≈ QQQ price.
+builder.Services.AddSingleton<ICalibrationStore, RedisCalibrationStore>();
+builder.Services.AddSingleton<BootstrapCalibrationCoordinator>();
+builder.Services.AddSingleton<IBootstrapCalibrationCoordinator>(sp =>
+    sp.GetRequiredService<BootstrapCalibrationCoordinator>());
+
 builder.Services.AddSingleton<IQuoteEngine, QuoteEngine>();
 
 // ── Output sinks: Redis latest state + Kafka snapshot events ─

@@ -143,7 +143,16 @@ public class TiingoIngressWorkerStartupTests
                 SnapshotOnStartup = tiingoOptions.SnapshotOnStartup,
             };
         }
-        basketOptions ??= new IngressBasketOptions { StartupWaitSeconds = 0 };
+        // Existing tests in this file focus on basket / override
+        // mechanics; the anchor merge is exercised in AnchorSymbolMergeTests.
+        // We zero out AnchorSymbols here (and at every explicit call
+        // site below) so those assertions stay free of QQQ noise.
+        basketOptions ??= new IngressBasketOptions
+        {
+            StartupWaitSeconds = 0,
+            AnchorSymbols = Array.Empty<string>(),
+        };
+        basketOptions.AnchorSymbols = Array.Empty<string>();
 
         return new TiingoIngressWorker(
             streamClient: streamClient,

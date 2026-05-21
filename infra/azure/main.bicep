@@ -456,6 +456,14 @@ module ingressApp 'modules/containerApp.bicep' = if (deployIngress) {
       { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
       { name: 'Tiingo__WsUrl', value: 'wss://api.tiingo.com/iex' }
       { name: 'Tiingo__RestBaseUrl', value: 'https://api.tiingo.com/iex' }
+      // Anchor symbol(s) merged into every basket subscription set so the
+      // pipeline always has a live QQQ tick for `/api/quote.marketPrice`
+      // and the quote-engine NAV scale-factor bootstrap. Bound to
+      // IngressBasketOptions.AnchorSymbols (Ingress:Basket:AnchorSymbols
+      // array). The service has a safe default of `["QQQ"]` in code; this
+      // line makes the contract explicit at the IaC layer so it survives
+      // any future binder change.
+      { name: 'Ingress__Basket__AnchorSymbols__0', value: 'QQQ' }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
     kafkaSecurityProtocol: kafkaSecurityProtocol

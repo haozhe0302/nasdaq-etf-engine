@@ -150,10 +150,13 @@ public class BasketActiveConsumerTests
         var coordinator = new BasketSubscriptionCoordinator(
             universe, client, NullLogger<BasketSubscriptionCoordinator>.Instance);
 
+        // Existing assertions in this file target constituent-only
+        // behaviour; anchor-symbol merging is covered in
+        // AnchorSymbolMergeTests, so anchors are explicitly disabled here.
         var consumer = new BasketActiveConsumer(
             universe,
             Options.Create(new KafkaOptions()),
-            Options.Create(new IngressBasketOptions()),
+            Options.Create(new IngressBasketOptions { AnchorSymbols = Array.Empty<string>() }),
             NullLogger<BasketActiveConsumer>.Instance);
 
         return (consumer, universe, coordinator, client);

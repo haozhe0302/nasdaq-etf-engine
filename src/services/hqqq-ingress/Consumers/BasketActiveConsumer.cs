@@ -164,17 +164,26 @@ public sealed class BasketActiveConsumer : BackgroundService
             return false;
         }
 
+        // Anchor symbols (e.g. QQQ) are merged on top of every basket
+        // fingerprint so ingress always subscribes to them regardless of
+        // what reference-data emits. Normalization is centralized in
+        // ActiveSymbolUniverse.SetFromBasket so we pass the union as-is.
+        var anchors = _options.ResolveAnchorSymbols();
+        var merged = anchors.Count == 0
+            ? (IEnumerable<string>)symbols
+            : symbols.Concat(anchors);
+
         _universe.SetFromBasket(
             basketId: basket.BasketId,
             fingerprint: basket.Fingerprint,
             asOfDate: basket.AsOfDate,
-            symbols: symbols,
+            symbols: merged,
             source: basket.Source,
             updatedAtUtc: DateTimeOffset.UtcNow);
 
         _logger.LogInformation(
-            "Basket received: basketId={BasketId} fingerprint={Fingerprint} constituents={Count} source={Source}",
-            basket.BasketId, basket.Fingerprint, symbols.Length, basket.Source);
+            "Basket received: basketId={BasketId} fingerprint={Fingerprint} constituents={Count} anchors={Anchors} source={Source}",
+            basket.BasketId, basket.Fingerprint, symbols.Length, anchors.Count, basket.Source);
         return true;
     }
 }

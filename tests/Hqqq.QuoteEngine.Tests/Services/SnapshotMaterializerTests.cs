@@ -26,7 +26,8 @@ public class SnapshotMaterializerTests
         var snapMat = new SnapshotMaterializer(quotes, baskets, runtime, clock, options);
         var deltaMat = new QuoteDeltaMaterializer(baskets, runtime, snapMat, clock);
         var engine = new Hqqq.QuoteEngine.Services.QuoteEngine(
-            quotes, baskets, runtime, calculator, snapMat, deltaMat);
+            quotes, baskets, runtime, calculator, snapMat, deltaMat,
+            NullBootstrapCalibrationCoordinator.Instance);
 
         return (new QuoteEngineServices(quotes, baskets, runtime, calculator, snapMat, deltaMat, engine), clock);
     }

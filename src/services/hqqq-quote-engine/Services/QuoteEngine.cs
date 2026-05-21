@@ -17,6 +17,7 @@ public sealed class QuoteEngine : IQuoteEngine
     private readonly IncrementalNavCalculator _calculator;
     private readonly SnapshotMaterializer _snapshotMaterializer;
     private readonly QuoteDeltaMaterializer _deltaMaterializer;
+    private readonly IBootstrapCalibrationCoordinator _calibrationCoordinator;
 
     public QuoteEngine(
         PerSymbolQuoteStore quotes,
@@ -24,7 +25,8 @@ public sealed class QuoteEngine : IQuoteEngine
         EngineRuntimeState runtime,
         IncrementalNavCalculator calculator,
         SnapshotMaterializer snapshotMaterializer,
-        QuoteDeltaMaterializer deltaMaterializer)
+        QuoteDeltaMaterializer deltaMaterializer,
+        IBootstrapCalibrationCoordinator calibrationCoordinator)
     {
         _quotes = quotes;
         _baskets = baskets;
@@ -32,6 +34,7 @@ public sealed class QuoteEngine : IQuoteEngine
         _calculator = calculator;
         _snapshotMaterializer = snapshotMaterializer;
         _deltaMaterializer = deltaMaterializer;
+        _calibrationCoordinator = calibrationCoordinator;
     }
 
     public bool IsInitialized =>
@@ -40,6 +43,11 @@ public sealed class QuoteEngine : IQuoteEngine
     public void OnTick(NormalizedTick tick)
     {
         _quotes.Update(tick);
+        // Bootstrap calibration runs before the materializer so the
+        // first compute cycle that follows a freshly-arrived QQQ tick
+        // already sees a properly scaled basket and emits a real NAV
+        // instead of one transient Uninitialized snapshot.
+        _calibrationCoordinator.TryBootstrap(tick.Symbol);
         _calculator.TryRecompute();
     }
 
@@ -50,6 +58,10 @@ public sealed class QuoteEngine : IQuoteEngine
         // future B3 wiring can't leak across basket versions. The legacy
         // monolith does the same on a new-trading-day boundary.
         _runtime.ClearSeries();
+        // Coordinator either restores a persisted calibration or downgrades
+        // the basket to ScaleFactor.Uninitialized so the calculator stays
+        // off-air until the first anchor tick lands.
+        _calibrationCoordinator.OnBasketChanged();
         _calculator.TryRecompute();
     }
 

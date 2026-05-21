@@ -156,12 +156,25 @@ public sealed class TiingoIngressWorker : BackgroundService
         }
 
         var overrideSymbols = _tiingoOptions.ResolveOverrideSymbols();
-        if (overrideSymbols.Count > 0)
+        var anchors = _basketOptions.ResolveAnchorSymbols();
+
+        // Bootstrap window: merge override + anchors so a startup with
+        // no basket still subscribes to the anchor (e.g. QQQ). Without
+        // this, the only way to seed QQQ in the no-basket fallback would
+        // be to duplicate it into Tiingo:Symbols — keeping the two
+        // concerns separate avoids that drift.
+        var bootstrap = overrideSymbols.Concat(anchors)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim().ToUpperInvariant())
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (bootstrap.Length > 0)
         {
-            _coordinator.SeedBootstrapSymbols(overrideSymbols);
+            _coordinator.SeedBootstrapSymbols(bootstrap);
             _logger.LogWarning(
-                "TiingoIngressWorker: no basket within {Wait}s; falling back to Tiingo:Symbols override ({Count} symbols)",
-                waitSeconds, overrideSymbols.Count);
+                "TiingoIngressWorker: no basket within {Wait}s; falling back to bootstrap symbols (override={Override} anchors={Anchors} total={Total})",
+                waitSeconds, overrideSymbols.Count, anchors.Count, bootstrap.Length);
             return _coordinator.CurrentAppliedSymbols;
         }
 

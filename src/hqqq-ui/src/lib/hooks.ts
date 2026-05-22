@@ -1,6 +1,4 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { HubConnectionState } from "@microsoft/signalr";
-import type { HubConnection } from "@microsoft/signalr";
 import {
   fetchQuote,
   fetchConstituents,
@@ -9,15 +7,13 @@ import {
   createMarketHubConnection,
 } from "./api";
 import {
-  adaptQuote,
-  adaptQuoteDelta,
-  mergeQuoteDelta,
   adaptConstituents,
   adaptSystemHealth,
   adaptHistory,
   deriveSymbolCount,
   toHealthStatus,
 } from "./adapters";
+import { createMarketController } from "./marketController";
 import { recordUpdate, unregisterFeed, getMinIntervalMs } from "./updateTracker";
 import type {
   MarketSnapshot,
@@ -115,168 +111,88 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
   const [error, setError] = useState<string>();
-  const hubRef = useRef<HubConnection | null>(null);
-  const retryTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    const applyFullSnapshot = (raw: unknown) => {
-      if (cancelled) return;
-      try {
-        const snapshot = adaptQuote(raw);
-        const networkLatencyMs = getHealthProbeRttMs();
-        setData({
-          ...snapshot,
-          freshness: { ...snapshot.freshness, networkLatencyMs },
-        });
-        recordUpdate("market");
-        setConnectionState("live");
-        setError(undefined);
-      } catch (e) {
-        console.error("Failed to process full snapshot", e);
-      }
-    };
-
-    const onDelta = (raw: unknown) => {
-      if (cancelled) return;
-      try {
-        const delta = adaptQuoteDelta(raw);
-        const networkLatencyMs = getHealthProbeRttMs();
-        setData((prev) => {
-          const merged = mergeQuoteDelta(prev, delta);
-          return {
-            ...merged,
-            freshness: { ...merged.freshness, networkLatencyMs },
-          };
-        });
-        recordUpdate("market");
-        setConnectionState("live");
-        setError(undefined);
-      } catch (e) {
-        console.error("Failed to process QuoteUpdate delta", e);
-      }
-    };
-
-    const stopRetryTimer = () => {
-      if (retryTimerRef.current) {
-        clearInterval(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-    };
-
-    const setupHub = (hub: HubConnection) => {
-      hub.on("QuoteUpdate", onDelta);
-
-      hub.onreconnecting(() => {
-        if (!cancelled) {
-          setConnectionState("stale");
-          setError("Reconnecting to market feed\u2026");
-        }
-      });
-
-      hub.onreconnected(() => {
-        if (!cancelled) {
-          fetchQuote()
-            .then((raw) => { if (!cancelled) applyFullSnapshot(raw); })
-            .catch(() => {});
-          setConnectionState("live");
-          setError(undefined);
-        }
-      });
-
-      hub.onclose(() => {
-        if (cancelled) return;
-        setConnectionState("error");
-        setError("Market feed disconnected \u2014 retrying\u2026");
-        startRetryLoop();
-      });
-    };
-
-    const startRetryLoop = () => {
-      stopRetryTimer();
-      retryTimerRef.current = setInterval(async () => {
-        if (cancelled) { stopRetryTimer(); return; }
-        try {
-          const raw = await fetchQuote();
+    const controller = createMarketController(
+      {
+        fetchSnapshot: fetchQuote,
+        createHub: createMarketHubConnection,
+      },
+      {
+        onSnapshot: (snapshot) => {
           if (cancelled) return;
-          applyFullSnapshot(raw);
+          const networkLatencyMs = getHealthProbeRttMs();
+          setData({
+            ...snapshot,
+            freshness: { ...snapshot.freshness, networkLatencyMs },
+          });
+          recordUpdate("market");
+        },
+        onState: (state, err) => {
+          if (cancelled) return;
+          setConnectionState(state);
+          setError(err);
+        },
+      },
+    );
 
-          stopRetryTimer();
-          const newHub = createMarketHubConnection();
-          hubRef.current = newHub;
-          setupHub(newHub);
-          await newHub.start();
-        } catch {
-          // backend still down, keep retrying
-        }
-      }, 5_000);
-    };
-
-    fetchQuote()
-      .then((raw) => {
-        if (cancelled) return;
-        applyFullSnapshot(raw);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setConnectionState("error");
-        setError(err.message);
-        startRetryLoop();
-      });
-
-    const hub = createMarketHubConnection();
-    hubRef.current = hub;
-    setupHub(hub);
-
-    hub.start().catch((err) => {
-      if (!cancelled) {
-        setConnectionState("error");
-        setError(err.message);
-        startRetryLoop();
-      }
-    });
+    void controller.start();
 
     return () => {
       cancelled = true;
-      stopRetryTimer();
+      void controller.stop();
       unregisterFeed("market");
-      if (hubRef.current?.state !== HubConnectionState.Disconnected) {
-        hubRef.current?.stop();
-      }
     };
   }, []);
 
   return { data, connectionState, error };
 }
 
-// ── Constituents (poll every 3 s) ───────────────────
+// ── Constituents (poll every 5 s) ───────────────────
+//
+// Polls /api/constituents on a fixed 5s interval regardless of previous
+// success or failure. On failure we keep the last successful snapshot
+// displayed and only flip the connection state to "stale"/"error".
+
+const CONSTITUENTS_POLL_INTERVAL_MS = 5_000;
 
 export function useConstituentData(): LiveDataResult<ConstituentSnapshot> {
   const [data, setData] = useState<ConstituentSnapshot>(EMPTY_CONSTITUENTS);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
   const [error, setError] = useState<string>();
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const poll = useCallback(async () => {
     try {
       const raw = await fetchConstituents();
+      // adaptConstituents stamps lastRefreshAt = Date.now() on every success
       setData(adaptConstituents(raw));
       recordUpdate("constituents");
       setConnectionState("live");
       setError(undefined);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[constituents] poll failed, keeping last snapshot", err);
       setConnectionState((prev) => (prev === "live" ? "stale" : "error"));
       setError(msg);
     }
   }, []);
 
   useEffect(() => {
-    poll();
-    const id = setInterval(poll, 3_000);
+    void poll();
+    // Guard against accidental duplicate intervals (e.g. on fast remounts).
+    if (timerRef.current !== null) {
+      clearInterval(timerRef.current);
+    }
+    timerRef.current = setInterval(() => { void poll(); }, CONSTITUENTS_POLL_INTERVAL_MS);
     return () => {
-      clearInterval(id);
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
       unregisterFeed("constituents");
     };
   }, [poll]);

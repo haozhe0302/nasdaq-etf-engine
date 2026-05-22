@@ -21,8 +21,12 @@ public sealed class GatewayHealthOptions
     /// <c>QuoteEngine</c>, <c>Persistence</c>, <c>Analytics</c>) to a
     /// <see cref="ServiceEndpointOptions"/> describing where each one's
     /// management endpoint lives. Services with a missing or empty
-    /// <c>BaseUrl</c> surface in the aggregated payload as <c>idle</c>
-    /// (not configured) instead of <c>unknown</c>.
+    /// <c>BaseUrl</c>, or one of the documented idle sentinels
+    /// (<c>idle</c>, <c>disabled</c>, <c>none</c>, <c>not configured</c>),
+    /// surface in the aggregated payload as <c>idle</c> / "not configured"
+    /// and are not HTTP-probed. Use this to opt optional Phase 2 components
+    /// (e.g. hqqq-analytics, which runs as a job) out of the rollup
+    /// without producing spurious <c>unknown</c> rows.
     /// </summary>
     public Dictionary<string, ServiceEndpointOptions> Services { get; set; } = new();
 

@@ -44,6 +44,24 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         "hqqq-reference-data",
     };
 
+    /// <summary>
+    /// Configuration values that explicitly mark a downstream service as
+    /// "not deployed in this environment". Treated identically to a
+    /// missing/empty <c>BaseUrl</c>: the aggregator emits the dependency
+    /// as <c>idle</c> / "not configured" and skips the HTTP probe entirely.
+    /// Lets operators wire optional Phase 2 components (notably
+    /// hqqq-analytics, which runs as a job rather than a long-lived HTTP
+    /// service) without producing spurious <c>unknown</c> "invalid base
+    /// url" rows in /api/system/health.
+    /// </summary>
+    private static readonly HashSet<string> IdleBaseUrlSentinels = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "idle",
+        "disabled",
+        "none",
+        "not configured",
+    };
+
     public AggregatedSystemHealthSource(
         IServiceHealthClient client,
         HealthCheckService localHealth,
@@ -208,8 +226,15 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
     private async Task<ProbeResult> ProbeServiceAsync(
         string key, string serviceName, CancellationToken ct)
     {
-        if (!_options.Services.TryGetValue(key, out var endpoint)
-            || string.IsNullOrWhiteSpace(endpoint?.BaseUrl))
+        _options.Services.TryGetValue(key, out var endpoint);
+        var rawBaseUrl = endpoint?.BaseUrl?.Trim();
+
+        // Missing/empty BaseUrl, or one of the documented idle sentinels
+        // (idle/disabled/none/"not configured") means the operator has
+        // intentionally opted the service out in this environment. Skip
+        // the HTTP probe and surface a stable idle row instead of letting
+        // the URL parser produce an "unknown / invalid base url" entry.
+        if (string.IsNullOrWhiteSpace(rawBaseUrl) || IdleBaseUrlSentinels.Contains(rawBaseUrl))
         {
             return new ProbeResult(
                 new SystemHealthPayloadBuilder.DependencyEntry(
@@ -220,14 +245,15 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
                 null);
         }
 
-        if (!Uri.TryCreate(endpoint.BaseUrl, UriKind.Absolute, out var baseUri))
+        if (!Uri.TryCreate(rawBaseUrl, UriKind.Absolute, out var baseUri)
+            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
         {
             return new ProbeResult(
                 new SystemHealthPayloadBuilder.DependencyEntry(
                     Name: serviceName,
                     Status: SystemHealthPayloadBuilder.Status.Unknown,
                     LastCheckedAtUtc: DateTimeOffset.UtcNow,
-                    Details: $"invalid base url: {endpoint.BaseUrl}"),
+                    Details: $"invalid base url: {rawBaseUrl}"),
                 null);
         }
 

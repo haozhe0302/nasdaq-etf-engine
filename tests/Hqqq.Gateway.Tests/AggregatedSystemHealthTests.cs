@@ -287,6 +287,175 @@ public class AggregatedSystemHealthTests
         Assert.False(root.TryGetProperty("upstream", out _));
     }
 
+    [Theory]
+    [InlineData("idle")]
+    [InlineData("IDLE")]
+    [InlineData("disabled")]
+    [InlineData("none")]
+    [InlineData("not configured")]
+    [InlineData("  idle  ")]
+    public async Task AnalyticsBaseUrl_IdleSentinel_SurfacesAsIdleNotConfigured_AndDoesNotDegradeOverall(
+        string sentinel)
+    {
+        // hqqq-analytics is a job / optional component in Phase 2 — it is
+        // NOT in RequiredServices. Setting Gateway:Health:Services:Analytics:BaseUrl
+        // to one of the documented idle sentinels must:
+        //   1. Skip the HTTP probe entirely (no ProbeAsync call recorded).
+        //   2. Surface as `idle` / "not configured" in dependencies[].
+        //   3. Leave the top-level rollup `healthy` (idle never escalates).
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetHealthy("hqqq-ingress")
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence");
+
+        using var factory = new GatewayAppFactory()
+            .WithConfig("Gateway:DataSource", "stub")
+            .WithConfig("Gateway:Sources:SystemHealth", "aggregated")
+            .WithConfig("Gateway:Health:IncludeRedis", "false")
+            .WithConfig("Gateway:Health:IncludeTimescale", "false")
+            .WithConfig("Gateway:Health:Services:ReferenceData:BaseUrl", "http://refdata.test")
+            .WithConfig("Gateway:Health:Services:Ingress:BaseUrl", "http://ingress.test")
+            .WithConfig("Gateway:Health:Services:QuoteEngine:BaseUrl", "http://qe.test")
+            .WithConfig("Gateway:Health:Services:Persistence:BaseUrl", "http://persist.test")
+            .WithConfig("Gateway:Health:Services:Analytics:BaseUrl", sentinel)
+            .WithFakeServiceHealthClient(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+
+        var byName = root.GetProperty("dependencies")
+            .EnumerateArray()
+            .ToDictionary(d => d.GetProperty("name").GetString()!);
+        Assert.Equal("idle", byName["hqqq-analytics"].GetProperty("status").GetString());
+        Assert.Equal("not configured",
+            byName["hqqq-analytics"].GetProperty("details").GetString());
+
+        // Analytics is optional — an idle row must never drag the overall
+        // rollup off `healthy`.
+        Assert.Equal("healthy", root.GetProperty("status").GetString());
+
+        // And we must not have issued an HTTP probe for analytics.
+        Assert.DoesNotContain("hqqq-analytics", client.ProbedServices);
+    }
+
+    [Fact]
+    public async Task AnalyticsBaseUrl_Empty_SurfacesAsIdle_AndOverallStaysHealthy()
+    {
+        // hqqq-analytics is non-required, so unlike the reference-data
+        // case in UnconfiguredServiceBaseUrl_SurfacesAsIdle_NotConfigured
+        // an empty BaseUrl must NOT escalate the rollup — the system
+        // stays `healthy`. Operators wire this when running Phase 2
+        // without the optional analytics worker.
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetHealthy("hqqq-ingress")
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence");
+
+        using var factory = new GatewayAppFactory()
+            .WithConfig("Gateway:DataSource", "stub")
+            .WithConfig("Gateway:Sources:SystemHealth", "aggregated")
+            .WithConfig("Gateway:Health:IncludeRedis", "false")
+            .WithConfig("Gateway:Health:IncludeTimescale", "false")
+            .WithConfig("Gateway:Health:Services:ReferenceData:BaseUrl", "http://refdata.test")
+            .WithConfig("Gateway:Health:Services:Ingress:BaseUrl", "http://ingress.test")
+            .WithConfig("Gateway:Health:Services:QuoteEngine:BaseUrl", "http://qe.test")
+            .WithConfig("Gateway:Health:Services:Persistence:BaseUrl", "http://persist.test")
+            .WithConfig("Gateway:Health:Services:Analytics:BaseUrl", "")
+            .WithFakeServiceHealthClient(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+
+        var byName = root.GetProperty("dependencies")
+            .EnumerateArray()
+            .ToDictionary(d => d.GetProperty("name").GetString()!);
+        Assert.Equal("idle", byName["hqqq-analytics"].GetProperty("status").GetString());
+        Assert.Equal("not configured",
+            byName["hqqq-analytics"].GetProperty("details").GetString());
+        Assert.Equal("healthy", root.GetProperty("status").GetString());
+        Assert.DoesNotContain("hqqq-analytics", client.ProbedServices);
+    }
+
+    [Fact]
+    public async Task AnalyticsBaseUrl_ValidHttpUrl_StillHttpProbed()
+    {
+        // The escape hatch matters in both directions: when a real
+        // analytics deployment exists, the operator points Analytics:BaseUrl
+        // at it and the aggregator must resume the normal HTTP health
+        // check path (probe recorded, snapshot status mapped through).
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetHealthy("hqqq-ingress")
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence")
+            .SetHealthy("hqqq-analytics");
+
+        using var factory = FactoryWithAllServicesConfigured(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var byName = doc.RootElement.GetProperty("dependencies")
+            .EnumerateArray()
+            .ToDictionary(d => d.GetProperty("name").GetString()!);
+        Assert.Equal("healthy", byName["hqqq-analytics"].GetProperty("status").GetString());
+        Assert.Contains("hqqq-analytics", client.ProbedServices);
+    }
+
+    [Fact]
+    public async Task AnalyticsBaseUrl_NonsenseValue_StillReportedAsUnknownInvalidBaseUrl()
+    {
+        // Defensive: an unrecognized non-URL string that isn't one of the
+        // sentinels (e.g. a typo) should still surface as `unknown` so the
+        // misconfiguration is operator-visible. Analytics is non-required,
+        // so this still doesn't escalate the rollup.
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetHealthy("hqqq-ingress")
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence");
+
+        using var factory = new GatewayAppFactory()
+            .WithConfig("Gateway:DataSource", "stub")
+            .WithConfig("Gateway:Sources:SystemHealth", "aggregated")
+            .WithConfig("Gateway:Health:IncludeRedis", "false")
+            .WithConfig("Gateway:Health:IncludeTimescale", "false")
+            .WithConfig("Gateway:Health:Services:ReferenceData:BaseUrl", "http://refdata.test")
+            .WithConfig("Gateway:Health:Services:Ingress:BaseUrl", "http://ingress.test")
+            .WithConfig("Gateway:Health:Services:QuoteEngine:BaseUrl", "http://qe.test")
+            .WithConfig("Gateway:Health:Services:Persistence:BaseUrl", "http://persist.test")
+            .WithConfig("Gateway:Health:Services:Analytics:BaseUrl", "not-a-real-url")
+            .WithFakeServiceHealthClient(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+
+        var byName = root.GetProperty("dependencies")
+            .EnumerateArray()
+            .ToDictionary(d => d.GetProperty("name").GetString()!);
+        Assert.Equal("unknown", byName["hqqq-analytics"].GetProperty("status").GetString());
+        Assert.Contains("invalid base url",
+            byName["hqqq-analytics"].GetProperty("details").GetString()!);
+        Assert.Equal("healthy", root.GetProperty("status").GetString());
+        Assert.DoesNotContain("hqqq-analytics", client.ProbedServices);
+    }
+
     [Fact]
     public async Task AggregatedMode_UsesHealthAggregatorHttpClient_NotLegacyClient()
     {

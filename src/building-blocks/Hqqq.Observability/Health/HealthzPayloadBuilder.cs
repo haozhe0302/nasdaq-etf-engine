@@ -46,6 +46,13 @@ public static class HealthzPayloadBuilder
                     durationMs = e.Value.Duration.TotalMilliseconds,
                     error = e.Value.Exception?.Message,
                     tags = e.Value.Tags,
+                    // Surface the IHealthCheck.Data dictionary so downstream
+                    // aggregators (notably hqqq-gateway's
+                    // AggregatedSystemHealthSource) can pull structured
+                    // upstream/runtime fields without parsing description
+                    // strings. Checks that don't populate data emit null,
+                    // which the JSON options drop when writing.
+                    data = e.Value.Data.Count == 0 ? null : (IReadOnlyDictionary<string, object>)e.Value.Data,
                 })
                 .ToArray(),
         };

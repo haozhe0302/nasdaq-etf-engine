@@ -154,13 +154,23 @@ public class TiingoIngressWorkerStartupTests
         };
         basketOptions.AnchorSymbols = Array.Empty<string>();
 
+        var state = new IngestionState();
+        var fallbackLoop = new TiingoFallbackLoop(
+            snapshotClient: snapshotClient,
+            publisher: publisher,
+            state: state,
+            coordinator: coordinator,
+            options: Options.Create(tiingoOptions),
+            logger: NullLogger<TiingoFallbackLoop>.Instance);
+
         return new TiingoIngressWorker(
             streamClient: streamClient,
             snapshotClient: snapshotClient,
             publisher: publisher,
-            state: new IngestionState(),
+            state: state,
             universe: universe,
             coordinator: coordinator,
+            fallbackLoop: fallbackLoop,
             tiingoOptions: Options.Create(tiingoOptions),
             basketOptions: Options.Create(basketOptions),
             logger: NullLogger<TiingoIngressWorker>.Instance);

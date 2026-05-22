@@ -52,6 +52,56 @@ public class SystemHealthPayloadBuilderTests
         Assert.Equal("latency=200ms", depArr[1].GetProperty("details").GetString());
     }
 
+    [Fact]
+    public void Build_EmitsUpstreamBlock_WhenSupplied()
+    {
+        // Phase 2 ingress fallback contract: when the gateway has resolved
+        // structured upstream state from the ingress probe, it surfaces it
+        // here so the frontend /system page renders Fallback Active even
+        // though the websocket is down.
+        var deps = new List<SystemHealthPayloadBuilder.DependencyEntry>
+        {
+            new("hqqq-ingress", SystemHealthPayloadBuilder.Status.Degraded,
+                DateTimeOffset.UtcNow, "uptime=30s"),
+        };
+        var lastPub = DateTimeOffset.UtcNow.AddSeconds(-5);
+        var upstream = new SystemHealthPayloadBuilder.UpstreamView(
+            WebSocketConnected: false,
+            FallbackActive: true,
+            LastUpstreamError: "ws closed by server",
+            LastUpstreamErrorAtUtc: lastPub,
+            LastPublishedTickUtc: lastPub);
+
+        var json = SystemHealthPayloadBuilder.Build(
+            Identity(), SystemHealthPayloadBuilder.Status.Degraded, deps, upstream);
+
+        using var doc = JsonDocument.Parse(json);
+        var up = doc.RootElement.GetProperty("upstream");
+        Assert.False(up.GetProperty("webSocketConnected").GetBoolean());
+        Assert.True(up.GetProperty("fallbackActive").GetBoolean());
+        Assert.Equal("ws closed by server", up.GetProperty("lastUpstreamError").GetString());
+        Assert.True(up.TryGetProperty("lastPublishedTickUtc", out _));
+    }
+
+    [Fact]
+    public void Build_OmitsUpstreamBlock_WhenNotSupplied()
+    {
+        // Backwards-compatible default — no `upstream` field at all, not
+        // a null one, so the previous payload bytes are preserved for
+        // services that don't have upstream state to surface.
+        var deps = new List<SystemHealthPayloadBuilder.DependencyEntry>
+        {
+            new("hqqq-ingress", SystemHealthPayloadBuilder.Status.Healthy,
+                DateTimeOffset.UtcNow, "uptime=30s"),
+        };
+
+        var json = SystemHealthPayloadBuilder.Build(
+            Identity(), SystemHealthPayloadBuilder.Status.Healthy, deps);
+
+        using var doc = JsonDocument.Parse(json);
+        Assert.False(doc.RootElement.TryGetProperty("upstream", out _));
+    }
+
     [Theory]
     [InlineData(new[] { "healthy", "healthy" }, "healthy")]
     [InlineData(new[] { "healthy", "unknown" }, "healthy")]

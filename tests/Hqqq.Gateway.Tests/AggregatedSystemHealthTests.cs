@@ -193,6 +193,101 @@ public class AggregatedSystemHealthTests
     }
 
     [Fact]
+    public async Task IngressTiingoUpstreamDependency_ProjectsIntoUpstreamBlock_WithFallbackActive()
+    {
+        // Operating-in-fallback contract from the ingress side: when the
+        // websocket is down but the REST fallback loop is publishing,
+        // ingress emits structured `data` on its `tiingo-upstream`
+        // dependency. The gateway must project those fields into the
+        // `upstream` block of /api/system/health so the frontend /system
+        // page can render "Fallback Active".
+        var lastError = "ws closed by server";
+        var lastPub = DateTimeOffset.UtcNow.AddSeconds(-3);
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetSnapshot("hqqq-ingress", new Hqqq.Gateway.Services.Adapters.Aggregated.ServiceHealthSnapshot
+            {
+                ServiceName = "hqqq-ingress",
+                Status = "degraded",
+                UptimeSeconds = 30,
+                Dependencies = new[]
+                {
+                    new Hqqq.Gateway.Services.Adapters.Aggregated.ServiceHealthSnapshot.DependencyEntry(
+                        Name: "tiingo-upstream",
+                        Status: "degraded",
+                        Data: new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["webSocketConnected"] = false,
+                            ["fallbackActive"] = true,
+                            ["lastError"] = lastError,
+                            ["lastPublishedTickUtc"] = lastPub,
+                        }),
+                },
+                LastCheckedAtUtc = DateTimeOffset.UtcNow,
+            })
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence")
+            .SetHealthy("hqqq-analytics");
+
+        using var factory = FactoryWithAllServicesConfigured(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+
+        Assert.True(root.TryGetProperty("upstream", out var upstream),
+            "expected upstream block to be populated from ingress probe");
+        Assert.Equal(JsonValueKind.Object, upstream.ValueKind);
+        Assert.False(upstream.GetProperty("webSocketConnected").GetBoolean());
+        Assert.True(upstream.GetProperty("fallbackActive").GetBoolean());
+        Assert.Equal(lastError, upstream.GetProperty("lastUpstreamError").GetString());
+        Assert.True(upstream.TryGetProperty("lastPublishedTickUtc", out _));
+    }
+
+    [Fact]
+    public async Task IngressTiingoUpstreamDependency_WithoutDataDict_LeavesUpstreamNull()
+    {
+        // Older ingress builds (or any service that doesn't populate the
+        // structured data dict) must not break aggregation — the upstream
+        // block is simply omitted and the frontend falls back to defaults.
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetSnapshot("hqqq-ingress", new Hqqq.Gateway.Services.Adapters.Aggregated.ServiceHealthSnapshot
+            {
+                ServiceName = "hqqq-ingress",
+                Status = "healthy",
+                UptimeSeconds = 30,
+                Dependencies = new[]
+                {
+                    new Hqqq.Gateway.Services.Adapters.Aggregated.ServiceHealthSnapshot.DependencyEntry(
+                        Name: "tiingo-upstream",
+                        Status: "healthy",
+                        Data: null),
+                },
+                LastCheckedAtUtc = DateTimeOffset.UtcNow,
+            })
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence")
+            .SetHealthy("hqqq-analytics");
+
+        using var factory = FactoryWithAllServicesConfigured(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+
+        // `upstream` is serialized as null and dropped by WhenWritingNull,
+        // so it must not appear in the payload at all.
+        Assert.False(root.TryGetProperty("upstream", out _));
+    }
+
+    [Fact]
     public async Task AggregatedMode_UsesHealthAggregatorHttpClient_NotLegacyClient()
     {
         // Sanity: the aggregated source must NOT trigger any request through

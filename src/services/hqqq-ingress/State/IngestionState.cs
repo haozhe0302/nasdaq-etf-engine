@@ -27,6 +27,9 @@ public sealed class IngestionState
     private long _ticksIngested;
     private long _ticksPublished;
     private long _lastPublishedTicks;
+    private long _lastFallbackPollTicks;
+    private long _fallbackPollSuccessCount;
+    private long _fallbackPollFailureCount;
     private string? _lastError;
     private DateTimeOffset? _lastErrorAtUtc;
 
@@ -119,6 +122,46 @@ public sealed class IngestionState
         if (count <= 0) return;
         Interlocked.Add(ref _ticksPublished, count);
         Interlocked.Exchange(ref _lastPublishedTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    /// <summary>UTC timestamp of the last REST-fallback poll attempt, or <c>null</c> if none.</summary>
+    public DateTimeOffset? LastFallbackPollUtc
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _lastFallbackPollTicks);
+            return ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : null;
+        }
+    }
+
+    /// <summary>Number of REST-fallback polls that produced one or more ticks.</summary>
+    public long FallbackPollSuccessCount => Interlocked.Read(ref _fallbackPollSuccessCount);
+
+    /// <summary>Number of REST-fallback polls that threw or returned no rows when the basket was non-empty.</summary>
+    public long FallbackPollFailureCount => Interlocked.Read(ref _fallbackPollFailureCount);
+
+    /// <summary>
+    /// Stamps a successful REST-fallback poll. Caller decides what counts as
+    /// "success"; the fallback loop treats any poll that published at least one
+    /// tick as a success, and any thrown exception or empty result against a
+    /// non-empty basket as a failure.
+    /// </summary>
+    public void RecordFallbackPollSuccess()
+    {
+        Interlocked.Increment(ref _fallbackPollSuccessCount);
+        Interlocked.Exchange(ref _lastFallbackPollTicks, DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    /// <summary>
+    /// Stamps a failed REST-fallback poll. Records <paramref name="message"/>
+    /// as the last error so it surfaces in the health payload.
+    /// </summary>
+    public void RecordFallbackPollFailure(string message)
+    {
+        Interlocked.Increment(ref _fallbackPollFailureCount);
+        Interlocked.Exchange(ref _lastFallbackPollTicks, DateTimeOffset.UtcNow.UtcTicks);
+        if (!string.IsNullOrWhiteSpace(message))
+            RecordError(message);
     }
 
     /// <summary>

@@ -86,4 +86,67 @@ public class HealthzPayloadBuilderTests
         Assert.Equal("degraded", HealthzPayloadBuilder.MapStatus(HealthStatus.Degraded));
         Assert.Equal("unhealthy", HealthzPayloadBuilder.MapStatus(HealthStatus.Unhealthy));
     }
+
+    [Fact]
+    public void Build_SurfacesDependencyDataDict_WhenCheckPopulatesIt()
+    {
+        // The Phase 2 ingress probe stuffs structured upstream fields
+        // (webSocketConnected, fallbackActive, lastPublishedTickUtc) into
+        // HealthCheckResult.Data. The gateway aggregator depends on those
+        // keys being serialized here so the system-health `upstream` block
+        // can be populated end-to-end. Pin the contract.
+        var lastPub = DateTimeOffset.UtcNow.AddSeconds(-3);
+        var entries = new Dictionary<string, HealthReportEntry>
+        {
+            ["tiingo-upstream"] = new(
+                HealthStatus.Degraded,
+                "ingress: websocket disconnected, REST fallback active",
+                TimeSpan.FromMilliseconds(5),
+                exception: null,
+                data: new Dictionary<string, object>
+                {
+                    ["webSocketConnected"] = false,
+                    ["fallbackActive"] = true,
+                    ["lastPublishedTickUtc"] = lastPub,
+                },
+                tags: new[] { "ready" }),
+        };
+        var report = new HealthReport(entries, HealthStatus.Degraded, TimeSpan.FromMilliseconds(5));
+
+        var json = HealthzPayloadBuilder.Build(Identity(), report);
+
+        using var doc = JsonDocument.Parse(json);
+        var dep = doc.RootElement.GetProperty("dependencies")[0];
+        Assert.True(dep.TryGetProperty("data", out var data),
+            "data dict from HealthCheckResult.Data must be serialized");
+        Assert.False(data.GetProperty("webSocketConnected").GetBoolean());
+        Assert.True(data.GetProperty("fallbackActive").GetBoolean());
+        Assert.True(data.TryGetProperty("lastPublishedTickUtc", out _));
+    }
+
+    [Fact]
+    public void Build_OmitsDependencyDataWhenEmpty_KeepsLegacyShape()
+    {
+        // Services that don't populate the data dict (almost everything
+        // outside ingress) must not start emitting `"data": {}` — leaving
+        // the field off entirely keeps the payload byte-stable across
+        // releases.
+        var entries = new Dictionary<string, HealthReportEntry>
+        {
+            ["kafka"] = new(
+                HealthStatus.Healthy,
+                "ok",
+                TimeSpan.FromMilliseconds(7),
+                exception: null,
+                data: null,
+                tags: new[] { "ready" }),
+        };
+        var report = new HealthReport(entries, HealthStatus.Healthy, TimeSpan.FromMilliseconds(10));
+
+        var json = HealthzPayloadBuilder.Build(Identity(), report);
+
+        using var doc = JsonDocument.Parse(json);
+        var dep = doc.RootElement.GetProperty("dependencies")[0];
+        Assert.False(dep.TryGetProperty("data", out _));
+    }
 }

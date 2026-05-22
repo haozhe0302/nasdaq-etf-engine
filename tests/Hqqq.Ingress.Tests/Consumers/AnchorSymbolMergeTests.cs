@@ -140,25 +140,21 @@ public class AnchorSymbolMergeTests
         var coordinator = new BasketSubscriptionCoordinator(
             universe, fakeClient, NullLogger<BasketSubscriptionCoordinator>.Instance);
 
-        var worker = new TiingoIngressWorker(
-            streamClient: fakeClient,
-            snapshotClient: new NoOpSnapshotClient(),
-            publisher: new NoOpTickPublisher(),
-            state: new IngestionState(),
-            universe: universe,
-            coordinator: coordinator,
-            tiingoOptions: Options.Create(new TiingoOptions
+        var worker = BuildWorker(
+            fakeClient,
+            coordinator,
+            universe,
+            new TiingoOptions
             {
                 ApiKey = "real-key",
                 Symbols = "aapl,msft",
                 SnapshotOnStartup = false,
-            }),
-            basketOptions: Options.Create(new IngressBasketOptions
+            },
+            new IngressBasketOptions
             {
                 StartupWaitSeconds = 1,
                 AnchorSymbols = new[] { "QQQ" },
-            }),
-            logger: NullLogger<TiingoIngressWorker>.Instance);
+            });
 
         using var cts = new CancellationTokenSource();
         await worker.StartAsync(cts.Token);
@@ -180,25 +176,21 @@ public class AnchorSymbolMergeTests
         var coordinator = new BasketSubscriptionCoordinator(
             universe, fakeClient, NullLogger<BasketSubscriptionCoordinator>.Instance);
 
-        var worker = new TiingoIngressWorker(
-            streamClient: fakeClient,
-            snapshotClient: new NoOpSnapshotClient(),
-            publisher: new NoOpTickPublisher(),
-            state: new IngestionState(),
-            universe: universe,
-            coordinator: coordinator,
-            tiingoOptions: Options.Create(new TiingoOptions
+        var worker = BuildWorker(
+            fakeClient,
+            coordinator,
+            universe,
+            new TiingoOptions
             {
                 ApiKey = "real-key",
                 Symbols = string.Empty,
                 SnapshotOnStartup = false,
-            }),
-            basketOptions: Options.Create(new IngressBasketOptions
+            },
+            new IngressBasketOptions
             {
                 StartupWaitSeconds = 1,
                 AnchorSymbols = new[] { "QQQ" },
-            }),
-            logger: NullLogger<TiingoIngressWorker>.Instance);
+            });
 
         using var cts = new CancellationTokenSource();
         await worker.StartAsync(cts.Token);
@@ -237,6 +229,37 @@ public class AnchorSymbolMergeTests
         // override) must already subscribe to QQQ.
         var options = new IngressBasketOptions();
         Assert.Equal(new[] { "QQQ" }, options.ResolveAnchorSymbols().ToArray());
+    }
+
+    private static TiingoIngressWorker BuildWorker(
+        ITiingoStreamClient streamClient,
+        BasketSubscriptionCoordinator coordinator,
+        ActiveSymbolUniverse universe,
+        TiingoOptions tiingoOptions,
+        IngressBasketOptions basketOptions)
+    {
+        var snapshotClient = new NoOpSnapshotClient();
+        var publisher = new NoOpTickPublisher();
+        var state = new IngestionState();
+        var fallbackLoop = new TiingoFallbackLoop(
+            snapshotClient: snapshotClient,
+            publisher: publisher,
+            state: state,
+            coordinator: coordinator,
+            options: Options.Create(tiingoOptions),
+            logger: NullLogger<TiingoFallbackLoop>.Instance);
+
+        return new TiingoIngressWorker(
+            streamClient: streamClient,
+            snapshotClient: snapshotClient,
+            publisher: publisher,
+            state: state,
+            universe: universe,
+            coordinator: coordinator,
+            fallbackLoop: fallbackLoop,
+            tiingoOptions: Options.Create(tiingoOptions),
+            basketOptions: Options.Create(basketOptions),
+            logger: NullLogger<TiingoIngressWorker>.Instance);
     }
 
     private static (BasketActiveConsumer Consumer,

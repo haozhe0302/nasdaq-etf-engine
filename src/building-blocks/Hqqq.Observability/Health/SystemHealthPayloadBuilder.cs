@@ -47,14 +47,31 @@ public static class SystemHealthPayloadBuilder
         string? Details);
 
     /// <summary>
+    /// Operator-facing transport diagnostics for the system-health
+    /// <c>upstream</c> block. Mirrors the wire shape the legacy monolith
+    /// emitted (<c>Hqqq.Api.Modules.System.Contracts.UpstreamDiagnostics</c>)
+    /// so the existing frontend adapter keeps rendering without change.
+    /// </summary>
+    public sealed record UpstreamView(
+        bool WebSocketConnected,
+        bool FallbackActive,
+        string? LastUpstreamError = null,
+        DateTimeOffset? LastUpstreamErrorAtUtc = null,
+        DateTimeOffset? LastPublishedTickUtc = null);
+
+    /// <summary>
     /// Composes the full <c>BSystemHealth</c>-shaped payload.
     /// <paramref name="topLevelStatus"/> is computed by the caller using
     /// <see cref="RollupStatus"/> so the rule lives in one place.
+    /// <paramref name="upstream"/> populates the system-health <c>upstream</c>
+    /// block surfaced to the frontend /system page; pass <c>null</c> to keep
+    /// the previous behaviour of omitting the block entirely.
     /// </summary>
     public static string Build(
         ServiceIdentity identity,
         string topLevelStatus,
-        IReadOnlyList<DependencyEntry> dependencies)
+        IReadOnlyList<DependencyEntry> dependencies,
+        UpstreamView? upstream = null)
     {
         var runtime = RuntimeInfo.Capture(identity);
         var payload = new
@@ -74,7 +91,16 @@ public static class SystemHealthPayloadBuilder
                 threadCount = runtime.ThreadCount,
             },
             metrics = (object?)null,
-            upstream = (object?)null,
+            upstream = upstream is null
+                ? null
+                : new
+                {
+                    webSocketConnected = upstream.WebSocketConnected,
+                    fallbackActive = upstream.FallbackActive,
+                    lastUpstreamError = upstream.LastUpstreamError,
+                    lastUpstreamErrorAtUtc = upstream.LastUpstreamErrorAtUtc,
+                    lastPublishedTickUtc = upstream.LastPublishedTickUtc,
+                },
             dependencies = dependencies
                 .Select(d => new
                 {

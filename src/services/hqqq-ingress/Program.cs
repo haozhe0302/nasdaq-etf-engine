@@ -56,6 +56,12 @@ builder.Services.AddSingleton<ITickPublisher, KafkaTickPublisher>();
 // websocket subscribe/unsubscribe. The Kafka consumer feeds the
 // coordinator via ActiveSymbolUniverse.
 builder.Services.AddSingleton<BasketSubscriptionCoordinator>();
+
+// The REST fallback loop is a long-lived dependency of the worker — it
+// runs in parallel with the websocket loop and reads/writes the same
+// IngestionState. Registered as a singleton (not a hosted service) so the
+// worker owns its lifetime through ExecuteAsync.
+builder.Services.AddSingleton<TiingoFallbackLoop>();
 builder.Services.AddHostedService<BasketActiveConsumer>();
 builder.Services.AddHostedService<TiingoIngressWorker>();
 

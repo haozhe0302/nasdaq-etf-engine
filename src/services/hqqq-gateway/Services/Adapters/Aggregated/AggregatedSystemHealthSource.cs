@@ -77,8 +77,16 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         }
 
         var serviceEntries = await Task.WhenAll(serviceTasks).ConfigureAwait(false);
-        foreach (var entry in serviceEntries)
-            dependencies.Add(entry);
+        var ingressSnapshots = new List<ServiceHealthSnapshot>();
+        for (int i = 0; i < serviceEntries.Length; i++)
+        {
+            dependencies.Add(serviceEntries[i].Entry);
+            if (string.Equals(serviceEntries[i].Entry.Name, "hqqq-ingress", StringComparison.OrdinalIgnoreCase)
+                && serviceEntries[i].Snapshot is { } snap)
+            {
+                ingressSnapshots.Add(snap);
+            }
+        }
 
         if (localReport is not null)
         {
@@ -99,8 +107,69 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         }
 
         var topLevel = ComputeTopLevelStatus(dependencies);
-        var json = SystemHealthPayloadBuilder.Build(_identity, topLevel, dependencies);
+        var upstream = BuildUpstreamView(ingressSnapshots);
+        var json = SystemHealthPayloadBuilder.Build(_identity, topLevel, dependencies, upstream);
         return Results.Content(json, "application/json", Encoding.UTF8, statusCode: 200);
+    }
+
+    /// <summary>
+    /// Projects the ingress probe's <c>tiingo-upstream</c> dependency data
+    /// dict into the system-health <c>upstream</c> block. Returns
+    /// <c>null</c> when ingress is unreachable or does not advertise the
+    /// structured fields (older builds) so the frontend gracefully renders
+    /// the upstream tile in its default state.
+    /// </summary>
+    private static SystemHealthPayloadBuilder.UpstreamView? BuildUpstreamView(
+        IReadOnlyList<ServiceHealthSnapshot> ingressSnapshots)
+    {
+        foreach (var snap in ingressSnapshots)
+        {
+            if (snap.Error is not null) continue;
+            foreach (var dep in snap.Dependencies)
+            {
+                if (!string.Equals(dep.Name, "tiingo-upstream", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (dep.Data is null) continue;
+
+                var ws = ReadBool(dep.Data, "webSocketConnected", "isUpstreamConnected") ?? false;
+                var fallback = ReadBool(dep.Data, "fallbackActive") ?? false;
+                var lastErr = ReadString(dep.Data, "lastError");
+                var lastErrAt = ReadDateTimeOffset(dep.Data, "lastErrorAtUtc");
+                var lastPub = ReadDateTimeOffset(dep.Data, "lastPublishedTickUtc");
+
+                return new SystemHealthPayloadBuilder.UpstreamView(
+                    WebSocketConnected: ws,
+                    FallbackActive: fallback,
+                    LastUpstreamError: lastErr,
+                    LastUpstreamErrorAtUtc: lastErrAt,
+                    LastPublishedTickUtc: lastPub);
+            }
+        }
+        return null;
+    }
+
+    private static bool? ReadBool(IReadOnlyDictionary<string, object?> data, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (data.TryGetValue(key, out var value) && value is bool b) return b;
+        }
+        return null;
+    }
+
+    private static string? ReadString(IReadOnlyDictionary<string, object?> data, string key)
+    {
+        if (!data.TryGetValue(key, out var value) || value is null) return null;
+        return value as string ?? value.ToString();
+    }
+
+    private static DateTimeOffset? ReadDateTimeOffset(IReadOnlyDictionary<string, object?> data, string key)
+    {
+        if (!data.TryGetValue(key, out var value) || value is null) return null;
+        if (value is DateTimeOffset dt) return dt;
+        if (value is DateTime dtUtc) return new DateTimeOffset(dtUtc, TimeSpan.Zero);
+        if (value is string s && DateTimeOffset.TryParse(s, out var parsed)) return parsed;
+        return null;
     }
 
     /// <summary>
@@ -125,30 +194,45 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         return rollup;
     }
 
-    private async Task<SystemHealthPayloadBuilder.DependencyEntry> ProbeServiceAsync(
+    /// <summary>
+    /// Result of one downstream probe: the rolled-up dependency entry and
+    /// (when reachable) the raw <see cref="ServiceHealthSnapshot"/> so the
+    /// caller can pull additional fields out — e.g. the ingress
+    /// <c>tiingo-upstream</c> data dict for the system-health
+    /// <c>upstream</c> block.
+    /// </summary>
+    private readonly record struct ProbeResult(
+        SystemHealthPayloadBuilder.DependencyEntry Entry,
+        ServiceHealthSnapshot? Snapshot);
+
+    private async Task<ProbeResult> ProbeServiceAsync(
         string key, string serviceName, CancellationToken ct)
     {
         if (!_options.Services.TryGetValue(key, out var endpoint)
             || string.IsNullOrWhiteSpace(endpoint?.BaseUrl))
         {
-            return new SystemHealthPayloadBuilder.DependencyEntry(
-                Name: serviceName,
-                Status: SystemHealthPayloadBuilder.Status.Idle,
-                LastCheckedAtUtc: DateTimeOffset.UtcNow,
-                Details: "not configured");
+            return new ProbeResult(
+                new SystemHealthPayloadBuilder.DependencyEntry(
+                    Name: serviceName,
+                    Status: SystemHealthPayloadBuilder.Status.Idle,
+                    LastCheckedAtUtc: DateTimeOffset.UtcNow,
+                    Details: "not configured"),
+                null);
         }
 
         if (!Uri.TryCreate(endpoint.BaseUrl, UriKind.Absolute, out var baseUri))
         {
-            return new SystemHealthPayloadBuilder.DependencyEntry(
-                Name: serviceName,
-                Status: SystemHealthPayloadBuilder.Status.Unknown,
-                LastCheckedAtUtc: DateTimeOffset.UtcNow,
-                Details: $"invalid base url: {endpoint.BaseUrl}");
+            return new ProbeResult(
+                new SystemHealthPayloadBuilder.DependencyEntry(
+                    Name: serviceName,
+                    Status: SystemHealthPayloadBuilder.Status.Unknown,
+                    LastCheckedAtUtc: DateTimeOffset.UtcNow,
+                    Details: $"invalid base url: {endpoint.BaseUrl}"),
+                null);
         }
 
         var snapshot = await _client.ProbeAsync(serviceName, baseUri, ct).ConfigureAwait(false);
-        return BuildServiceEntry(serviceName, snapshot);
+        return new ProbeResult(BuildServiceEntry(serviceName, snapshot), snapshot);
     }
 
     private static SystemHealthPayloadBuilder.DependencyEntry BuildServiceEntry(

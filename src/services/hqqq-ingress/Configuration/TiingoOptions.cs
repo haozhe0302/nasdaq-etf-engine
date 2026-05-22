@@ -35,11 +35,30 @@ public sealed class TiingoOptions
     /// <summary>Maximum reconnect backoff cap (seconds).</summary>
     public int MaxReconnectDelaySeconds { get; set; } = 60;
 
-    /// <summary>REST polling interval (reserved for the future REST fallback path).</summary>
+    /// <summary>
+    /// Polling cadence for the REST fallback loop in
+    /// <see cref="Workers.TiingoFallbackLoop"/>. The fallback fetches IEX
+    /// snapshots for the active basket every <c>N</c> seconds whenever the
+    /// websocket is disconnected or stale, and idles otherwise. Default
+    /// <c>15</c>; smaller values yield fresher prices at the cost of more
+    /// Tiingo REST traffic.
+    /// </summary>
     public int RestPollingIntervalSeconds { get; set; } = 15;
 
     /// <summary>Number of seconds without a tick that classifies the upstream as stale (health probe).</summary>
     public int StaleAfterSeconds { get; set; } = 60;
+
+    /// <summary>
+    /// Number of seconds since the last published tick (websocket or REST)
+    /// after which the fallback loop treats the pipeline as "not delivering"
+    /// and activates REST polling, even if the websocket reports itself as
+    /// connected. Defaults to <c>30</c> so a quiet but live socket doesn't
+    /// thrash; raise for very low-cadence baskets. Capped at
+    /// <see cref="StaleAfterSeconds"/> at runtime so the fallback can never
+    /// be "less aggressive" than the staleness threshold the health probe
+    /// uses to flag the upstream as degraded.
+    /// </summary>
+    public int FallbackActivationStalenessSeconds { get; set; } = 30;
 
     /// <summary>
     /// Tiingo IEX threshold level. Default <c>6</c> matches the legacy

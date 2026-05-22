@@ -25,7 +25,17 @@ public sealed record ServiceHealthSnapshot
     /// </summary>
     public string? Error { get; init; }
 
-    public sealed record DependencyEntry(string Name, string Status);
+    /// <summary>
+    /// Per-dependency entry as parsed from the downstream <c>/healthz/ready</c>
+    /// JSON payload. <see cref="Data"/> is the structured <c>data</c> dict
+    /// the service emits (e.g. ingress publishes <c>webSocketConnected</c>
+    /// and <c>fallbackActive</c> there) — null when the service did not
+    /// emit any structured fields for this check.
+    /// </summary>
+    public sealed record DependencyEntry(
+        string Name,
+        string Status,
+        IReadOnlyDictionary<string, object?>? Data = null);
 }
 
 /// <summary>

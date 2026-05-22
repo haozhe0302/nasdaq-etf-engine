@@ -72,8 +72,23 @@ public sealed class HttpServiceHealthClient : IServiceHealthClient
                     if (d is not JsonObject dobj) continue;
                     var name = dobj["name"]?.GetValue<string>();
                     var status = dobj["status"]?.GetValue<string>();
-                    if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(status))
-                        deps.Add(new ServiceHealthSnapshot.DependencyEntry(name, status));
+                    if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(status)) continue;
+
+                    // Optional structured data dict — projected into the
+                    // upstream block by AggregatedSystemHealthSource for
+                    // known checks (e.g. tiingo-upstream). Unknown keys are
+                    // preserved verbatim so future fields can be picked up
+                    // without coordinated releases.
+                    IReadOnlyDictionary<string, object?>? data = null;
+                    if (dobj["data"] is JsonObject dataObj)
+                    {
+                        var map = new Dictionary<string, object?>(StringComparer.Ordinal);
+                        foreach (var (k, v) in dataObj)
+                            map[k] = UnwrapJsonValue(v);
+                        if (map.Count > 0) data = map;
+                    }
+
+                    deps.Add(new ServiceHealthSnapshot.DependencyEntry(name, status, data));
                 }
             }
 
@@ -118,4 +133,27 @@ public sealed class HttpServiceHealthClient : IServiceHealthClient
             LastCheckedAtUtc = checkedAt,
             Error = error,
         };
+
+    /// <summary>
+    /// Best-effort projection of a <see cref="JsonNode"/> leaf value into a
+    /// plain CLR object that survives a round-trip through
+    /// <c>JsonSerializer.Serialize</c> in
+    /// <see cref="Aggregated.SystemHealthPayloadBuilder"/>. We only need to
+    /// preserve the value, not its original JSON shape, so booleans / numbers
+    /// / strings are unwrapped to their typed CLR form and nested objects /
+    /// arrays are kept as <see cref="JsonNode"/> for the serializer to handle.
+    /// </summary>
+    internal static object? UnwrapJsonValue(JsonNode? node)
+    {
+        if (node is null) return null;
+        if (node is JsonValue v)
+        {
+            if (v.TryGetValue<bool>(out var b)) return b;
+            if (v.TryGetValue<long>(out var l)) return l;
+            if (v.TryGetValue<double>(out var d)) return d;
+            if (v.TryGetValue<DateTimeOffset>(out var dt)) return dt;
+            if (v.TryGetValue<string>(out var s)) return s;
+        }
+        return node;
+    }
 }

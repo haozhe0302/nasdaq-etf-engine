@@ -59,19 +59,34 @@ public class Phase2SelfSufficientFlowTests
             NullLogger<BasketActiveConsumer>.Instance);
 
         var tickPublisher = new RecordingTickPublisher();
+        var snapshotClient = new NoOpSnapshotClient();
+
+        var tiingoOptions = new TiingoOptions
+        {
+            ApiKey = "real-looking-key",
+            SnapshotOnStartup = false,
+        };
+
+        // The fallback loop runs alongside the websocket loop in production.
+        // Wired here with the same dependencies the worker uses so the
+        // end-to-end flow exercises both transports' shared state plumbing.
+        var fallbackLoop = new TiingoFallbackLoop(
+            snapshotClient: snapshotClient,
+            publisher: tickPublisher,
+            state: state,
+            coordinator: coordinator,
+            options: Options.Create(tiingoOptions),
+            logger: NullLogger<TiingoFallbackLoop>.Instance);
 
         var worker = new TiingoIngressWorker(
             streamClient: streamClient,
-            snapshotClient: new NoOpSnapshotClient(),
+            snapshotClient: snapshotClient,
             publisher: tickPublisher,
             state: state,
             universe: universe,
             coordinator: coordinator,
-            tiingoOptions: Options.Create(new TiingoOptions
-            {
-                ApiKey = "real-looking-key",
-                SnapshotOnStartup = false,
-            }),
+            fallbackLoop: fallbackLoop,
+            tiingoOptions: Options.Create(tiingoOptions),
             basketOptions: Options.Create(new IngressBasketOptions
             {
                 StartupWaitSeconds = 5,

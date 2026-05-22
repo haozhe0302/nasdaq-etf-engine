@@ -24,6 +24,7 @@ public sealed class TiingoIngressWorker : BackgroundService
     private readonly IngestionState _state;
     private readonly ActiveSymbolUniverse _universe;
     private readonly BasketSubscriptionCoordinator _coordinator;
+    private readonly TiingoFallbackLoop _fallbackLoop;
     private readonly TiingoOptions _tiingoOptions;
     private readonly IngressBasketOptions _basketOptions;
     private readonly ILogger<TiingoIngressWorker> _logger;
@@ -35,6 +36,7 @@ public sealed class TiingoIngressWorker : BackgroundService
         IngestionState state,
         ActiveSymbolUniverse universe,
         BasketSubscriptionCoordinator coordinator,
+        TiingoFallbackLoop fallbackLoop,
         IOptions<TiingoOptions> tiingoOptions,
         IOptions<IngressBasketOptions> basketOptions,
         ILogger<TiingoIngressWorker> logger)
@@ -45,6 +47,7 @@ public sealed class TiingoIngressWorker : BackgroundService
         _state = state;
         _universe = universe;
         _coordinator = coordinator;
+        _fallbackLoop = fallbackLoop;
         _tiingoOptions = tiingoOptions.Value;
         _basketOptions = basketOptions.Value;
         _logger = logger;
@@ -91,13 +94,22 @@ public sealed class TiingoIngressWorker : BackgroundService
                 symbols.Count, _coordinator.AppliedFingerprint ?? "<bootstrap>");
 
             await RunSnapshotWarmupAsync(symbols, stoppingToken).ConfigureAwait(false);
-            await RunWebsocketLoopAsync(stoppingToken).ConfigureAwait(false);
+
+            // Websocket loop is primary; REST fallback runs in parallel and
+            // self-arms whenever IngestionState shows the websocket is not
+            // delivering. Both share the same stoppingToken so a single
+            // cancel cleanly stops the whole pipeline.
+            var websocketTask = RunWebsocketLoopAsync(stoppingToken);
+            var fallbackTask = _fallbackLoop.RunAsync(stoppingToken);
+            await Task.WhenAll(websocketTask, fallbackTask).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
         finally
         {
+            _state.SetWebSocketConnected(false);
+            _state.SetFallbackActive(false);
             _state.SetRunning(false);
             _logger.LogInformation("TiingoIngressWorker stopping");
         }

@@ -29,6 +29,25 @@ public class TiingoQuoteNormalizerTests
         // IngressTimestamp is "now" — we just verify it was stamped.
         Assert.True(tick.IngressTimestamp <= DateTimeOffset.UtcNow);
         Assert.True(tick.IngressTimestamp > DateTimeOffset.UtcNow.AddMinutes(-1));
+        // previousClose defaults to null when callers omit it (e.g. WS frames).
+        Assert.Null(tick.PreviousClose);
+    }
+
+    [Fact]
+    public void Normalize_CarriesPreviousCloseWhenProvided()
+    {
+        var providerTime = new DateTimeOffset(2026, 4, 17, 14, 30, 0, TimeSpan.Zero);
+        var tick = TiingoQuoteNormalizer.Normalize(
+            symbol: "AAPL",
+            last: 215.30m,
+            bid: null,
+            ask: null,
+            currency: "USD",
+            providerTimestamp: providerTime,
+            sequence: 1,
+            previousClose: 213.45m);
+
+        Assert.Equal(213.45m, tick.PreviousClose);
     }
 
     [Fact]
@@ -45,6 +64,7 @@ public class TiingoQuoteNormalizerTests
             ProviderTimestamp = new DateTimeOffset(2026, 4, 17, 14, 31, 0, TimeSpan.Zero),
             IngressTimestamp = new DateTimeOffset(2026, 4, 17, 14, 31, 1, TimeSpan.Zero),
             Sequence = 100,
+            PreviousClose = 429.50m,
         };
 
         var latest = TiingoQuoteNormalizer.ToLatestQuote(tick);
@@ -58,5 +78,6 @@ public class TiingoQuoteNormalizerTests
         Assert.Equal(tick.ProviderTimestamp, latest.ProviderTimestamp);
         Assert.Equal(tick.IngressTimestamp, latest.IngressTimestamp);
         Assert.False(latest.IsStale);
+        Assert.Equal(429.50m, latest.PreviousClose);
     }
 }

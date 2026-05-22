@@ -471,7 +471,9 @@ export function adaptConstituents(raw: unknown): ConstituentSnapshot {
     weight: h.weight,
     shares: h.shares,
     price: h.price ?? 0,
-    changePct: h.changePct ?? 0,
+    // Preserve null so the UI can show "—" instead of a misleading +0.00%.
+    // Backend returns null when previous-close is unavailable.
+    changePct: h.changePct ?? null,
   }));
 
   const concentration: ConcentrationMetrics = {

@@ -140,7 +140,12 @@ export function getConstituentSnapshot(): ConstituentSnapshot {
     holdings: BASE_HOLDINGS.map((h) => ({
       ...h,
       price: jitter(h.price, 0.002),
-      changePct: +(h.changePct + (Math.random() - 0.5) * 0.04).toFixed(2),
+      // Mock fixtures always carry a numeric changePct; jitter it a bit when
+      // present, otherwise propagate the null (Constituent.changePct is
+      // number|null since wire backend can return null for missing prevClose).
+      changePct: h.changePct === null
+        ? null
+        : +(h.changePct + (Math.random() - 0.5) * 0.04).toFixed(2),
     })),
     concentration: { top5: 35.52, top10: 49.24, top20: 68.91, hhi: 0.041 },
     quality: { stalePrices: 0, missingSymbols: 0, coverage: 101, totalSymbols: 101 },

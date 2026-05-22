@@ -148,4 +148,27 @@ public class ConstituentsSnapshotMaterializerTests
         Assert.Equal(0m, dto.Quality.PriceCoveragePct);
         Assert.Equal(1, dto.Quality.StaleCount);
     }
+
+    [Fact]
+    public void Build_PricedSymbolWithoutPreviousClose_LeavesChangePctNull()
+    {
+        // Repro for the "+0.00%" bug: when the engine has a current price but
+        // no previousClose seed (e.g. symbol joined mid-session and was never
+        // covered by the snapshot warmup), ChangePct must stay null so the
+        // frontend can render "—" instead of a misleading 0.00%.
+        var h = Build();
+        var basket = new TestBasketBuilder()
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m, sector: "Tech")
+            .Build();
+
+        h.Baskets.Replace(basket);
+        h.Quotes.Update(TestBasketBuilder.Tick("AAPL", 205m, h.Clock.UtcNow, previousClose: null));
+
+        var dto = h.Materializer.Build();
+
+        Assert.NotNull(dto);
+        var row = Assert.Single(dto!.Holdings);
+        Assert.Equal(205m, row.Price);
+        Assert.Null(row.ChangePct);
+    }
 }

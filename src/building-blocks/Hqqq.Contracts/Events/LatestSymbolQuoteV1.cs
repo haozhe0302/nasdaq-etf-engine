@@ -16,4 +16,11 @@ public sealed record LatestSymbolQuoteV1
     public required DateTimeOffset ProviderTimestamp { get; init; }
     public required DateTimeOffset IngressTimestamp { get; init; }
     public required bool IsStale { get; init; }
+
+    /// <summary>
+    /// Previous regular-session close. Carried so a consumer cold-starting
+    /// off the compacted topic can compute today's %-change for symbols
+    /// without waiting for the next REST snapshot. Optional and additive.
+    /// </summary>
+    public decimal? PreviousClose { get; init; }
 }

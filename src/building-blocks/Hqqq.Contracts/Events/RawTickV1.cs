@@ -15,4 +15,14 @@ public sealed record RawTickV1
     public required DateTimeOffset ProviderTimestamp { get; init; }
     public required DateTimeOffset IngressTimestamp { get; init; }
     public required long Sequence { get; init; }
+
+    /// <summary>
+    /// Previous regular-session close for the symbol when the upstream
+    /// provider carries it (Tiingo IEX REST snapshot does, the websocket
+    /// frames do not). Optional and additive — older producers that omit
+    /// this field deserialize to <c>null</c> and downstream consumers
+    /// preserve any previously-known value via the per-symbol store
+    /// (see <c>PerSymbolQuoteStore.Update</c>).
+    /// </summary>
+    public decimal? PreviousClose { get; init; }
 }

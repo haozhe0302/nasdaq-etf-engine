@@ -4,6 +4,7 @@ import {
   mergeQuoteDelta,
   MAX_SERIES_POINTS,
   adaptQuote,
+  adaptConstituents,
 } from "./adapters";
 import type { MarketSnapshot, TimeSeriesPoint } from "./types";
 
@@ -364,5 +365,70 @@ describe("reconnect full snapshot replace", () => {
     expect(freshSnapshot.series[0].time).toBe("2026-04-05T14:00:00Z");
     expect(staleLocal.series[0].time).toBe("2026-04-05T12:00:00Z");
     expect(freshSnapshot.series).not.toEqual(staleLocal.series);
+  });
+});
+
+// ── adaptConstituents.changePct null handling ───────
+
+describe("adaptConstituents", () => {
+  function makeBackendConstituents(changePct: number | null) {
+    return {
+      holdings: [
+        {
+          symbol: "AAPL",
+          name: "Apple",
+          sector: "Tech",
+          weight: 60,
+          shares: 1000,
+          price: 200,
+          changePct,
+          marketValue: 200_000,
+          sharesOrigin: "official",
+          isStale: false,
+        },
+      ],
+      concentration: {
+        top5Pct: 100,
+        top10Pct: 100,
+        top20Pct: 100,
+        sectorCount: 1,
+        herfindahlIndex: 1,
+      },
+      quality: {
+        totalSymbols: 1,
+        officialSharesCount: 1,
+        derivedSharesCount: 0,
+        pricedCount: 1,
+        staleCount: 0,
+        priceCoveragePct: 100,
+        basketMode: "official",
+      },
+      source: {
+        anchorSource: "test",
+        tailSource: "test",
+        basketMode: "official",
+        isDegraded: false,
+        asOfDate: "2026-04-16",
+        fingerprint: "fp",
+      },
+      asOf: "2026-04-16T13:30:00Z",
+    };
+  }
+
+  it("preserves a numeric changePct as-is", () => {
+    const snapshot = adaptConstituents(makeBackendConstituents(1.23));
+    expect(snapshot.holdings[0].changePct).toBe(1.23);
+  });
+
+  it("preserves changePct=null instead of coercing to 0", () => {
+    // Regression: the old adapter mapped `h.changePct ?? 0`, which forced
+    // the UI to render "+0.00%" whenever the backend had no previous-close.
+    const snapshot = adaptConstituents(makeBackendConstituents(null));
+    expect(snapshot.holdings[0].changePct).toBeNull();
+  });
+
+  it("preserves changePct=0 as a real zero (no movement vs prev close)", () => {
+    const snapshot = adaptConstituents(makeBackendConstituents(0));
+    expect(snapshot.holdings[0].changePct).toBe(0);
   });
 });

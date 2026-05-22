@@ -13,11 +13,27 @@ namespace Hqqq.Ingress.Clients;
 /// have data before the first websocket tick.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Mirrors the legacy monolith's <c>TiingoRestClient</c> shape: batches
 /// requests into chunks of 50 symbols to stay under URL length limits,
 /// reads <c>tngoLast</c>/<c>last</c>/<c>lastSalePrice</c>/<c>mid</c>
 /// fields in priority order, and skips items whose price is missing or
 /// non-positive.
+/// </para>
+/// <para>
+/// Each snapshot row also carries the Tiingo IEX <c>prevClose</c> field
+/// when present, so downstream consumers can compute today's %-change
+/// without a separate reference-data hop. Live websocket frames do not
+/// carry <c>prevClose</c>; <see cref="State.PerSymbolQuoteStore.Update"/>
+/// preserves the snapshot-supplied value across subsequent WS ticks.
+/// </para>
+/// <para>
+/// TODO: mid-session basket additions today only flow through the
+/// websocket subscribe path and therefore never receive a
+/// <c>prevClose</c> seed. If/when that becomes a UX problem we should
+/// have <see cref="State.BasketSubscriptionCoordinator"/> trigger a
+/// targeted snapshot fetch over the newly-added symbols.
+/// </para>
 /// </remarks>
 public sealed class TiingoSnapshotClient : ITiingoSnapshotClient
 {
@@ -104,6 +120,9 @@ public sealed class TiingoSnapshotClient : ITiingoSnapshotClient
                 if (tsRaw is not null && DateTimeOffset.TryParse(tsRaw, out var parsed))
                     ts = parsed.ToUniversalTime();
 
+                var prevClose = ReadDecimal(item, "prevClose");
+                if (prevClose is <= 0m) prevClose = null;
+
                 yield return TiingoQuoteNormalizer.Normalize(
                     symbol: ticker.ToUpperInvariant(),
                     last: price.Value,
@@ -111,7 +130,8 @@ public sealed class TiingoSnapshotClient : ITiingoSnapshotClient
                     ask: ReadDecimal(item, "askPrice"),
                     currency: "USD",
                     providerTimestamp: ts,
-                    sequence: Interlocked.Increment(ref _sequence));
+                    sequence: Interlocked.Increment(ref _sequence),
+                    previousClose: prevClose);
             }
         }
     }

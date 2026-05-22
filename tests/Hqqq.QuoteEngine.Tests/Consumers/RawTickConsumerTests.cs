@@ -49,6 +49,31 @@ public class RawTickConsumerTests
         Assert.Equal(205.1m, normalized.Ask);
         Assert.Equal(42, normalized.Sequence);
         Assert.Equal(ts, normalized.ProviderTimestamp);
+        Assert.Null(normalized.PreviousClose);
+    }
+
+    [Fact]
+    public async Task Handle_PropagatesPreviousCloseOntoNormalizedTick()
+    {
+        var (consumer, sink) = Build();
+        var ts = new DateTimeOffset(2026, 4, 16, 13, 30, 0, TimeSpan.Zero);
+        var tick = new RawTickV1
+        {
+            Symbol = "AAPL",
+            Last = 205m,
+            Currency = "USD",
+            Provider = "tiingo",
+            ProviderTimestamp = ts,
+            IngressTimestamp = ts,
+            Sequence = 1,
+            PreviousClose = 198.50m,
+        };
+
+        var applied = await consumer.HandleAsync(tick, CancellationToken.None);
+
+        Assert.True(applied);
+        var normalized = Assert.Single(sink.Published);
+        Assert.Equal(198.50m, normalized.PreviousClose);
     }
 
     [Fact]

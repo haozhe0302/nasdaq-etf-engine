@@ -75,6 +75,7 @@ public sealed class RawTickConsumer : BackgroundService
             ProviderTimestamp = value.ProviderTimestamp,
             IngressTimestamp = value.IngressTimestamp,
             Sequence = value.Sequence,
+            PreviousClose = value.PreviousClose,
         };
 
         await _sink.PublishAsync(tick, ct).ConfigureAwait(false);

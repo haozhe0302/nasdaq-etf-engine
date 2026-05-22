@@ -57,6 +57,34 @@ public class KafkaTickPublisherTests
     }
 
     [Fact]
+    public async Task PublishAsync_PropagatesPreviousCloseToBothTopics()
+    {
+        var rawProducer = new InMemoryProducer<string, RawTickV1>();
+        var latestProducer = new InMemoryProducer<string, LatestSymbolQuoteV1>();
+        var publisher = new KafkaTickPublisher(rawProducer, latestProducer);
+
+        var tick = SampleTick("AAPL", last: 215.30m) with { PreviousClose = 213.45m };
+        await publisher.PublishAsync(tick, CancellationToken.None);
+
+        Assert.Equal(213.45m, rawProducer.Produced.Single().Value.PreviousClose);
+        Assert.Equal(213.45m, latestProducer.Produced.Single().Value.PreviousClose);
+    }
+
+    [Fact]
+    public async Task PublishAsync_NullPreviousClose_StaysNullOnLatestTopic()
+    {
+        var rawProducer = new InMemoryProducer<string, RawTickV1>();
+        var latestProducer = new InMemoryProducer<string, LatestSymbolQuoteV1>();
+        var publisher = new KafkaTickPublisher(rawProducer, latestProducer);
+
+        // Default sample tick has no PreviousClose set (mirrors a WS frame).
+        await publisher.PublishAsync(SampleTick("AAPL", last: 215.30m), CancellationToken.None);
+
+        Assert.Null(rawProducer.Produced.Single().Value.PreviousClose);
+        Assert.Null(latestProducer.Produced.Single().Value.PreviousClose);
+    }
+
+    [Fact]
     public async Task PublishBatchAsync_ProducesOncePerTickPerTopic()
     {
         var rawProducer = new InMemoryProducer<string, RawTickV1>();

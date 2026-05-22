@@ -18,7 +18,8 @@ public static class TiingoQuoteNormalizer
         decimal? ask,
         string currency,
         DateTimeOffset providerTimestamp,
-        long sequence)
+        long sequence,
+        decimal? previousClose = null)
     {
         return new RawTickV1
         {
@@ -31,6 +32,7 @@ public static class TiingoQuoteNormalizer
             ProviderTimestamp = providerTimestamp,
             IngressTimestamp = DateTimeOffset.UtcNow,
             Sequence = sequence,
+            PreviousClose = previousClose,
         };
     }
 
@@ -40,6 +42,8 @@ public static class TiingoQuoteNormalizer
     /// <c>market.latest_by_symbol.v1</c>. Live ticks are always
     /// <see cref="LatestSymbolQuoteV1.IsStale"/> = <c>false</c>; the
     /// stale flag is reserved for the future REST-fallback path.
+    /// <see cref="RawTickV1.PreviousClose"/> is propagated so cold-start
+    /// consumers can compute today's %-change without an extra REST hop.
     /// </summary>
     public static LatestSymbolQuoteV1 ToLatestQuote(RawTickV1 tick)
     {
@@ -54,6 +58,7 @@ public static class TiingoQuoteNormalizer
             ProviderTimestamp = tick.ProviderTimestamp,
             IngressTimestamp = tick.IngressTimestamp,
             IsStale = false,
+            PreviousClose = tick.PreviousClose,
         };
     }
 }

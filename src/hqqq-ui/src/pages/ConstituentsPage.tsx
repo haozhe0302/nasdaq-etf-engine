@@ -33,9 +33,21 @@ function compareConstituents(a: Constituent, b: Constituent, field: SortField): 
     case "weight": return a.weight - b.weight;
     case "shares": return a.shares - b.shares;
     case "price": return a.price - b.price;
-    case "changePct": return a.changePct - b.changePct;
+    // Treat null change% as 0 for ordering so rows without a previous-close
+    // sit between losers and winners instead of clustering at one end.
+    case "changePct": return (a.changePct ?? 0) - (b.changePct ?? 0);
     case "mktValue": return (a.shares * a.price) - (b.shares * b.price);
   }
+}
+
+function formatChangePct(value: number | null): string {
+  if (value === null) return "\u2014";
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
+}
+
+function changePctColorClass(value: number | null): string {
+  if (value === null) return "text-muted";
+  return value >= 0 ? "text-positive" : "text-negative";
 }
 
 function ConnectionBanner({ connectionState, error }: { connectionState: string; error?: string }) {
@@ -182,8 +194,8 @@ export function ConstituentsPage() {
                     <td className="px-3 py-1.5 text-right font-mono">{h.weight.toFixed(2)}%</td>
                     <td className="px-3 py-1.5 text-right font-mono text-muted">{h.shares.toLocaleString()}</td>
                     <td className="px-3 py-1.5 text-right font-mono">${h.price.toFixed(2)}</td>
-                    <td className={`px-3 py-1.5 text-right font-mono ${h.changePct >= 0 ? "text-positive" : "text-negative"}`}>
-                      {h.changePct >= 0 ? "+" : ""}{h.changePct.toFixed(2)}%
+                    <td className={`px-3 py-1.5 text-right font-mono ${changePctColorClass(h.changePct)}`}>
+                      {formatChangePct(h.changePct)}
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono text-muted">
                       ${((h.shares * h.price) / 1e9).toFixed(2)}B

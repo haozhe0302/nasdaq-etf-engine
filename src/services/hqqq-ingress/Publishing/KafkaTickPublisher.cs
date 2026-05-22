@@ -81,6 +81,7 @@ public sealed class KafkaTickPublisher : ITickPublisher, IDisposable
             ProviderTimestamp = tick.ProviderTimestamp,
             IngressTimestamp = tick.IngressTimestamp,
             IsStale = false,
+            PreviousClose = tick.PreviousClose,
         };
 
         var latestMessage = new Message<string, LatestSymbolQuoteV1>

@@ -84,7 +84,13 @@ export interface Constituent {
   weight: number;
   shares: number;
   price: number;
-  changePct: number;
+  /**
+   * Today's percent-change vs previous regular-session close. `null` when
+   * the backend cannot yet compute it (e.g. no previous close available
+   * for the symbol). The UI should render `null` as an em-dash rather
+   * than coercing it to `+0.00%`.
+   */
+  changePct: number | null;
 }
 
 export interface ConcentrationMetrics {

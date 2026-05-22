@@ -24,6 +24,7 @@ public sealed class QuoteEngineWorker : BackgroundService
     private readonly IRawTickFeed _tickFeed;
     private readonly IBasketStateFeed _basketFeed;
     private readonly QuoteEngineOptions _options;
+    private readonly BasketStateStore _basketStateStore;
     private readonly IEngineCheckpointStore _checkpointStore;
     private readonly IQuoteSnapshotSink _quoteSink;
     private readonly IConstituentSnapshotSink _constituentsSink;
@@ -44,6 +45,7 @@ public sealed class QuoteEngineWorker : BackgroundService
         IRawTickFeed tickFeed,
         IBasketStateFeed basketFeed,
         QuoteEngineOptions options,
+        BasketStateStore basketStateStore,
         IEngineCheckpointStore checkpointStore,
         IQuoteSnapshotSink quoteSink,
         IConstituentSnapshotSink constituentsSink,
@@ -57,6 +59,7 @@ public sealed class QuoteEngineWorker : BackgroundService
         _tickFeed = tickFeed;
         _basketFeed = basketFeed;
         _options = options;
+        _basketStateStore = basketStateStore;
         _checkpointStore = checkpointStore;
         _quoteSink = quoteSink;
         _constituentsSink = constituentsSink;
@@ -154,10 +157,14 @@ public sealed class QuoteEngineWorker : BackgroundService
             {
                 if (_engine.IsInitialized)
                 {
+                    var activeBasket = _lastActiveBasket ?? _basketStateStore.Current;
+                    if (_lastActiveBasket is null && activeBasket is not null)
+                        _lastActiveBasket = activeBasket;
+
                     var snapshot = _engine.BuildSnapshot();
                     var delta = _engine.BuildDelta();
 
-                    if (snapshot is not null && delta is not null && _lastActiveBasket is { } basket)
+                    if (snapshot is not null && delta is not null && activeBasket is { } basket)
                     {
                         _logger.LogDebug(
                             "Materialized snapshot nav={Nav} qqq={Qqq} premDisc={Pct}% fresh={Fresh}/{Total}",
@@ -179,7 +186,7 @@ public sealed class QuoteEngineWorker : BackgroundService
                     // are suppressed (e.g., market idle / no scalar changes).
                     // This avoids serving stale Redis constituents snapshots for
                     // long periods after a rollout.
-                    if (_lastActiveBasket is { } activeBasket && DateTimeOffset.UtcNow >= nextConstituentsRefreshAt)
+                    if (activeBasket is not null && DateTimeOffset.UtcNow >= nextConstituentsRefreshAt)
                     {
                         await TryWriteConstituentsProjectionAsync(activeBasket, ct).ConfigureAwait(false);
                         nextConstituentsRefreshAt = DateTimeOffset.UtcNow + ConstituentsRefreshInterval;
@@ -187,8 +194,8 @@ public sealed class QuoteEngineWorker : BackgroundService
 
                     if (DateTimeOffset.UtcNow >= nextCheckpointAt)
                     {
-                        if (_lastActiveBasket is { } checkpointBasket)
-                            await TryWriteCheckpointAsync(checkpointBasket, _lastSnapshotDigest, ct).ConfigureAwait(false);
+                        if (activeBasket is not null)
+                            await TryWriteCheckpointAsync(activeBasket, _lastSnapshotDigest, ct).ConfigureAwait(false);
 
                         nextCheckpointAt = DateTimeOffset.UtcNow + _options.CheckpointInterval;
                     }

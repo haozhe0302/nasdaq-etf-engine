@@ -17,8 +17,10 @@ public class QuoteEngineWorkerPublishingTests
 
     private sealed record Rig(
         QuoteEngineWorker Worker,
+        IQuoteEngine Engine,
         FakeBasketStateFeed BasketFeed,
         FakeRawTickFeed TickFeed,
+        BasketStateStore Baskets,
         InMemoryRedisStringCache Cache,
         RecordingPricingSnapshotProducer Producer,
         RecordingQuoteUpdatePublisher QuoteUpdatePublisher,
@@ -62,12 +64,12 @@ public class QuoteEngineWorkerPublishingTests
             options.CheckpointPath, NullLogger<FileEngineCheckpointStore>.Instance);
 
         var worker = new QuoteEngineWorker(
-            engine, tickFeed, basketFeed, options, store,
+            engine, tickFeed, basketFeed, options, baskets, store,
             quoteSink, constituentsSink, publisher, quoteUpdatePublisher,
             constituentsMat, eventMapper,
             NullLogger<QuoteEngineWorker>.Instance);
 
-        return new Rig(worker, basketFeed, tickFeed, cache, producer, quoteUpdatePublisher, clock, options.CheckpointPath);
+        return new Rig(worker, engine, basketFeed, tickFeed, baskets, cache, producer, quoteUpdatePublisher, clock, options.CheckpointPath);
     }
 
     private static ActiveBasket SampleBasket() =>
@@ -325,6 +327,49 @@ public class QuoteEngineWorkerPublishingTests
             Assert.True(
                 finalQuoteUpdates <= firstQuoteUpdates + 1,
                 $"Expected no-op suppression to keep quote updates nearly flat. first={firstQuoteUpdates} final={finalQuoteUpdates}");
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Worker_UsesRestoredBasketState_WhenActivationReplayIsSuppressed()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "hqqq-qe-worker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var rig = BuildRig(tempDir);
+            var basket = SampleBasket();
+
+            // Simulate checkpoint restore: engine/basket store are hydrated
+            // before worker start, but no new basket event is replayed into
+            // the worker's basket feed.
+            rig.Engine.OnBasketActivated(basket);
+            rig.Baskets.Replace(basket);
+
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("AAPL", 205m, rig.Clock.UtcNow, previousClose: 200m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("MSFT", 402m, rig.Clock.UtcNow, previousClose: 400m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await rig.Worker.StartAsync(cts.Token);
+
+            await WaitForAsync(
+                () => rig.Cache.Values.ContainsKey(RedisKeys.Snapshot(basket.BasketId))
+                    && rig.Cache.Values.ContainsKey(RedisKeys.Constituents(basket.BasketId)),
+                TimeSpan.FromSeconds(5));
+
+            rig.BasketFeed.Complete();
+            rig.TickFeed.Complete();
+            await rig.Worker.StopAsync(cts.Token);
+
+            Assert.True(rig.Cache.Values.ContainsKey(RedisKeys.Snapshot(basket.BasketId)),
+                "Expected snapshot projection to publish with restored basket state.");
+            Assert.True(rig.Cache.Values.ContainsKey(RedisKeys.Constituents(basket.BasketId)),
+                "Expected constituents projection to publish with restored basket state.");
         }
         finally
         {

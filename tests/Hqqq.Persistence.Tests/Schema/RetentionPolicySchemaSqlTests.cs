@@ -57,6 +57,43 @@ public class RetentionPolicySchemaSqlTests
         Assert.Contains("INTERVAL '730 days'", statements[3]);
     }
 
+    [Fact]
+    public void BuildTargets_WithoutRollups_OmitsContinuousAggregateViews()
+    {
+        var options = new PersistenceOptions
+        {
+            RawTickRetention = TimeSpan.FromDays(30),
+            QuoteSnapshotRetention = TimeSpan.FromDays(365),
+            RollupRetention = TimeSpan.FromDays(730),
+        };
+
+        var targets = RetentionPolicySchemaSql.BuildTargets(options, includeRollups: false);
+
+        Assert.Equal(2, targets.Count);
+        Assert.Equal("raw_ticks", targets[0].Relation);
+        Assert.Equal("quote_snapshots", targets[1].Relation);
+        Assert.DoesNotContain(targets, t => t.Relation == "quote_snapshots_1m");
+        Assert.DoesNotContain(targets, t => t.Relation == "quote_snapshots_5m");
+    }
+
+    [Fact]
+    public void BuildStatements_WithoutRollups_EmitsOnlyBaseHypertablePolicies()
+    {
+        var options = new PersistenceOptions
+        {
+            RawTickRetention = TimeSpan.FromDays(30),
+            QuoteSnapshotRetention = TimeSpan.FromDays(365),
+        };
+
+        var statements = RetentionPolicySchemaSql.BuildStatements(options, includeRollups: false);
+
+        Assert.Equal(2, statements.Count);
+        Assert.Contains("'raw_ticks'", statements[0]);
+        Assert.Contains("'quote_snapshots'", statements[1]);
+        Assert.DoesNotContain(statements, s => s.Contains("quote_snapshots_1m"));
+        Assert.DoesNotContain(statements, s => s.Contains("quote_snapshots_5m"));
+    }
+
     [Theory]
     [InlineData(30, 0, 0, 0, "30 days")]
     [InlineData(1, 0, 0, 0, "1 days")]

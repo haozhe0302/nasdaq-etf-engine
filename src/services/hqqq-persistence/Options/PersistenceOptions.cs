@@ -14,11 +14,49 @@ public sealed class PersistenceOptions
     /// <summary>
     /// When true (default), the service ensures the Timescale schema on
     /// startup via the registered bootstrappers (quote snapshots, raw ticks,
-    /// rollups, retention policies). Bootstrap failures fail the host fast;
-    /// malformed Kafka events never do. Disable in tests or environments
-    /// where a migration/owner process has already provisioned the tables.
+    /// rollups, retention policies). Base hypertable bootstrap failures fail
+    /// the host fast; malformed Kafka events never do. Disable in tests or
+    /// environments where a migration/owner process has already provisioned
+    /// the tables.
     /// </summary>
     public bool SchemaBootstrapOnStart { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), the continuous-aggregate rollups
+    /// (<c>quote_snapshots_1m</c>, <c>quote_snapshots_5m</c>) and their
+    /// background refresh policies are created at startup. Disable in
+    /// managed PostgreSQL environments (e.g. Azure Database for PostgreSQL
+    /// Flexible Server with the Apache-licensed TimescaleDB extension)
+    /// where <c>CREATE MATERIALIZED VIEW ... WITH (timescaledb.continuous)</c>
+    /// and <c>add_continuous_aggregate_policy</c> are rejected with
+    /// SQLSTATE <c>0A000</c>. Base tables (<c>quote_snapshots</c>,
+    /// <c>raw_ticks</c>) are unaffected, so <c>/api/history</c> continues
+    /// to serve from the snapshot hypertable.
+    /// </summary>
+    public bool EnableContinuousAggregates { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), Timescale retention policies are registered at
+    /// startup for the raw-tick and snapshot hypertables (and the rollup
+    /// views when <see cref="EnableContinuousAggregates"/> is also true).
+    /// Disable in environments where <c>add_retention_policy</c> is
+    /// rejected as a community-only feature, or where retention is owned
+    /// externally.
+    /// </summary>
+    public bool EnableRetentionPolicies { get; set; } = true;
+
+    /// <summary>
+    /// When true (default), <see cref="Npgsql.PostgresException"/> with
+    /// SQLSTATE <c>0A000</c> ("feature not supported") raised by the
+    /// rollup bootstrapper or by any retention-policy statement is logged
+    /// as a warning and bootstrap continues, instead of failing the host.
+    /// This keeps the persistence service viable on managed PostgreSQL
+    /// environments that ship only the Apache-licensed TimescaleDB
+    /// extension. Set to false to surface the original "fail fast"
+    /// behavior — useful in CI / self-hosted Timescale Community where
+    /// these features are expected to work.
+    /// </summary>
+    public bool ContinueOnUnsupportedRollups { get; set; } = true;
 
     // ── Quote snapshot pipeline (C1) ──
 

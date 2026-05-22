@@ -11,6 +11,10 @@ public class PersistenceOptionsBindingTests
         var opts = new PersistenceOptions();
 
         Assert.True(opts.SchemaBootstrapOnStart);
+        Assert.True(opts.EnableContinuousAggregates);
+        Assert.True(opts.EnableRetentionPolicies);
+        Assert.True(opts.ContinueOnUnsupportedRollups);
+
         Assert.Equal(128, opts.SnapshotWriteBatchSize);
         Assert.Equal(TimeSpan.FromMilliseconds(500), opts.SnapshotFlushInterval);
         Assert.Equal(2048, opts.SnapshotChannelCapacity);
@@ -31,6 +35,9 @@ public class PersistenceOptionsBindingTests
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
                 ["Persistence:SchemaBootstrapOnStart"] = "false",
+                ["Persistence:EnableContinuousAggregates"] = "false",
+                ["Persistence:EnableRetentionPolicies"] = "false",
+                ["Persistence:ContinueOnUnsupportedRollups"] = "false",
                 ["Persistence:SnapshotWriteBatchSize"] = "256",
                 ["Persistence:SnapshotFlushInterval"] = "00:00:01",
                 ["Persistence:SnapshotChannelCapacity"] = "4096",
@@ -47,6 +54,10 @@ public class PersistenceOptionsBindingTests
         config.GetSection("Persistence").Bind(opts);
 
         Assert.False(opts.SchemaBootstrapOnStart);
+        Assert.False(opts.EnableContinuousAggregates);
+        Assert.False(opts.EnableRetentionPolicies);
+        Assert.False(opts.ContinueOnUnsupportedRollups);
+
         Assert.Equal(256, opts.SnapshotWriteBatchSize);
         Assert.Equal(TimeSpan.FromSeconds(1), opts.SnapshotFlushInterval);
         Assert.Equal(4096, opts.SnapshotChannelCapacity);
@@ -71,6 +82,9 @@ public class PersistenceOptionsBindingTests
         config.GetSection("Persistence").Bind(opts);
 
         Assert.True(opts.SchemaBootstrapOnStart);
+        Assert.True(opts.EnableContinuousAggregates);
+        Assert.True(opts.EnableRetentionPolicies);
+        Assert.True(opts.ContinueOnUnsupportedRollups);
         Assert.Equal(128, opts.SnapshotWriteBatchSize);
         Assert.Equal(256, opts.RawTickWriteBatchSize);
         Assert.Equal(TimeSpan.FromDays(30), opts.RawTickRetention);

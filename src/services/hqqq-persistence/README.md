@@ -78,6 +78,9 @@ Narrow, persistence-only knobs:
 | Key | Default | Purpose |
 |-----|---------|---------|
 | `SchemaBootstrapOnStart` | `true` | Run idempotent DDL + rollup + retention-policy bootstrap at startup. Disable in environments where schema is owned externally. |
+| `EnableContinuousAggregates` | `true` | Bootstrap the `quote_snapshots_1m` / `quote_snapshots_5m` continuous-aggregate rollups and their `add_continuous_aggregate_policy` refresh policies. Set to `false` on Apache-only TimescaleDB builds (e.g. Azure Database for PostgreSQL Flexible Server) where these features are rejected with SQLSTATE `0A000`. Base hypertables are always created. |
+| `EnableRetentionPolicies` | `true` | Register `add_retention_policy` on the raw-tick / snapshot hypertables (and on rollup views when continuous aggregates are also enabled). Set to `false` when retention is owned externally or the Timescale community features are unavailable. |
+| `ContinueOnUnsupportedRollups` | `true` | When a rollup or retention statement raises `PostgresException` with SQLSTATE `0A000` ("feature not supported"), downgrade the failure to a warning and continue startup instead of failing the host. Lets `hqqq-persistence` boot on the Apache-only TimescaleDB build while `EnableContinuousAggregates` is still optimistically true. Set to `false` in self-hosted Timescale Community / CI where these features must work. |
 | `SnapshotWriteBatchSize` | `128` | Maximum snapshot rows per transactional flush. |
 | `SnapshotFlushInterval` | `00:00:00.500` | Upper bound on flush latency at low snapshot ingest rates. |
 | `SnapshotChannelCapacity` | `2048` | Bounded in-proc buffer between snapshot consumer and worker. |
@@ -148,9 +151,18 @@ rounding to zero.
   for retry. Each worker has its own `ConsecutiveFailureCount` and
   `TotalFailureCount` so raw-tick and snapshot pipeline health is
   observable independently.
-- Schema bootstrap failures at startup **are fatal** (fail fast). We do
-  not want to begin consuming when any destination table, rollup, or
-  retention policy is missing.
+- Base hypertable bootstrap failures at startup **are fatal** (fail fast):
+  we do not want to begin consuming when `quote_snapshots` or `raw_ticks`
+  is missing.
+- Continuous-aggregate rollups and retention policies are
+  community-licensed Timescale features. On the Apache-only build shipped
+  by some managed PostgreSQL services (e.g. Azure Database for PostgreSQL
+  Flexible Server) they raise `PostgresException` with SQLSTATE `0A000`.
+  With the default `ContinueOnUnsupportedRollups=true`, that failure is
+  logged as a warning and bootstrap continues — `/api/history` keeps
+  serving from `quote_snapshots` directly. Set
+  `EnableContinuousAggregates=false` (and/or `EnableRetentionPolicies=false`)
+  to skip those steps outright instead of relying on the runtime catch.
 
 ## Running locally
 

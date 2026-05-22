@@ -25,9 +25,14 @@ public static class RetentionPolicySchemaSql
     /// <summary>
     /// Enumerates the full retention target list built from the supplied
     /// options. Ordered: raw ticks first (shortest), then quote snapshots,
-    /// then each rollup view.
+    /// then each rollup view when <paramref name="includeRollups"/> is
+    /// <c>true</c>. Rollup targets are excluded when continuous aggregates
+    /// are disabled or unavailable, so the caller never attempts to attach
+    /// a retention policy to a view that does not exist.
     /// </summary>
-    public static IReadOnlyList<RetentionTarget> BuildTargets(PersistenceOptions options)
+    public static IReadOnlyList<RetentionTarget> BuildTargets(
+        PersistenceOptions options,
+        bool includeRollups = true)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -37,9 +42,12 @@ public static class RetentionPolicySchemaSql
             new("quote_snapshots", options.QuoteSnapshotRetention),
         };
 
-        foreach (var view in QuoteSnapshotRollupSchemaSql.RollupViews)
+        if (includeRollups)
         {
-            targets.Add(new RetentionTarget(view, options.RollupRetention));
+            foreach (var view in QuoteSnapshotRollupSchemaSql.RollupViews)
+            {
+                targets.Add(new RetentionTarget(view, options.RollupRetention));
+            }
         }
 
         return targets;
@@ -49,11 +57,14 @@ public static class RetentionPolicySchemaSql
     /// Builds the ordered list of idempotent retention-policy SQL
     /// statements. One statement per target. Windows are formatted via
     /// <see cref="FormatInterval(TimeSpan)"/> into PostgreSQL
-    /// <c>INTERVAL</c> literals.
+    /// <c>INTERVAL</c> literals. Rollup-specific statements are emitted
+    /// only when <paramref name="includeRollups"/> is <c>true</c>.
     /// </summary>
-    public static IReadOnlyList<string> BuildStatements(PersistenceOptions options)
+    public static IReadOnlyList<string> BuildStatements(
+        PersistenceOptions options,
+        bool includeRollups = true)
     {
-        var targets = BuildTargets(options);
+        var targets = BuildTargets(options, includeRollups);
         var statements = new List<string>(targets.Count);
 
         foreach (var target in targets)

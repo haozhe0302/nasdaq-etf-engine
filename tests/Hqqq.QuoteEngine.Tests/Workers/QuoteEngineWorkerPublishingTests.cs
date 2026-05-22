@@ -282,6 +282,57 @@ public class QuoteEngineWorkerPublishingTests
     }
 
     [Fact]
+    public async Task Worker_RefreshesConstituentsRedis_EvenWhenQuoteUpdatesAreSuppressed()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "hqqq-qe-worker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var rig = BuildRig(tempDir);
+            var basket = SampleBasket();
+            var constituentsKey = RedisKeys.Constituents(basket.BasketId);
+
+            rig.BasketFeed.Enqueue(basket);
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("AAPL", 205m, rig.Clock.UtcNow, previousClose: 200m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("MSFT", 402m, rig.Clock.UtcNow, previousClose: 400m));
+            rig.TickFeed.Enqueue(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            await rig.Worker.StartAsync(cts.Token);
+
+            await WaitForAsync(
+                () => rig.Cache.Values.ContainsKey(constituentsKey),
+                TimeSpan.FromSeconds(5));
+
+            var firstConstituentWrites = rig.Cache.Writes.Count(w => w.Key == constituentsKey);
+            var firstQuoteUpdates = rig.QuoteUpdatePublisher.Published.Count;
+
+            // Keep inputs idle to trigger no-op quote-update suppression while the
+            // worker is still expected to refresh the Redis constituents key.
+            await Task.Delay(TimeSpan.FromSeconds(6));
+
+            rig.BasketFeed.Complete();
+            rig.TickFeed.Complete();
+            await rig.Worker.StopAsync(cts.Token);
+
+            var finalConstituentWrites = rig.Cache.Writes.Count(w => w.Key == constituentsKey);
+            var finalQuoteUpdates = rig.QuoteUpdatePublisher.Published.Count;
+
+            Assert.True(
+                finalConstituentWrites > firstConstituentWrites,
+                $"Expected constituents Redis projection to refresh during idle window. first={firstConstituentWrites} final={finalConstituentWrites}");
+
+            Assert.True(
+                finalQuoteUpdates <= firstQuoteUpdates + 1,
+                $"Expected no-op suppression to keep quote updates nearly flat. first={firstQuoteUpdates} final={finalQuoteUpdates}");
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
     public async Task Worker_QuoteUpdatePayload_RoundTripsToFrontendShape()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "hqqq-qe-worker-" + Guid.NewGuid().ToString("N"));

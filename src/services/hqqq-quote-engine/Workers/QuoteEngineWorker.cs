@@ -18,6 +18,8 @@ namespace Hqqq.QuoteEngine.Workers;
 /// </summary>
 public sealed class QuoteEngineWorker : BackgroundService
 {
+    private static readonly TimeSpan ConstituentsRefreshInterval = TimeSpan.FromSeconds(5);
+
     private readonly IQuoteEngine _engine;
     private readonly IRawTickFeed _tickFeed;
     private readonly IBasketStateFeed _basketFeed;
@@ -144,6 +146,7 @@ public sealed class QuoteEngineWorker : BackgroundService
         // so the B4 cut-over lines up with what the current frontend expects.
         var interval = _options.MaterializeInterval;
         var nextCheckpointAt = DateTimeOffset.UtcNow + _options.CheckpointInterval;
+        var nextConstituentsRefreshAt = DateTimeOffset.UtcNow + ConstituentsRefreshInterval;
 
         try
         {
@@ -170,6 +173,16 @@ public sealed class QuoteEngineWorker : BackgroundService
                             PremiumDiscountPct = snapshot.PremiumDiscountPct,
                             ComputedAtUtc = snapshot.AsOf,
                         };
+                    }
+
+                    // Keep constituents projection fresh even when quote deltas
+                    // are suppressed (e.g., market idle / no scalar changes).
+                    // This avoids serving stale Redis constituents snapshots for
+                    // long periods after a rollout.
+                    if (_lastActiveBasket is { } activeBasket && DateTimeOffset.UtcNow >= nextConstituentsRefreshAt)
+                    {
+                        await TryWriteConstituentsProjectionAsync(activeBasket, ct).ConfigureAwait(false);
+                        nextConstituentsRefreshAt = DateTimeOffset.UtcNow + ConstituentsRefreshInterval;
                     }
 
                     if (DateTimeOffset.UtcNow >= nextCheckpointAt)
@@ -210,21 +223,7 @@ public sealed class QuoteEngineWorker : BackgroundService
                 "Redis snapshot write failed for basket {BasketId}", basket.BasketId);
         }
 
-        try
-        {
-            var constituentsDto = _constituentsMaterializer.Build();
-            if (constituentsDto is not null)
-            {
-                await _constituentsSink
-                    .WriteAsync(basket.BasketId, constituentsDto, ct)
-                    .ConfigureAwait(false);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "Redis constituents write failed for basket {BasketId}", basket.BasketId);
-        }
+        await TryWriteConstituentsProjectionAsync(basket, ct).ConfigureAwait(false);
 
         try
         {
@@ -243,6 +242,25 @@ public sealed class QuoteEngineWorker : BackgroundService
         if (snapshotWriteSucceeded)
         {
             await PublishQuoteUpdateAsync(basket, delta, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task TryWriteConstituentsProjectionAsync(ActiveBasket basket, CancellationToken ct)
+    {
+        try
+        {
+            var constituentsDto = _constituentsMaterializer.Build();
+            if (constituentsDto is not null)
+            {
+                await _constituentsSink
+                    .WriteAsync(basket.BasketId, constituentsDto, ct)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Redis constituents write failed for basket {BasketId}", basket.BasketId);
         }
     }
 

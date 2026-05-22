@@ -166,6 +166,8 @@ param quoteEngineMemory string = '1.0Gi'
 param quoteEngineMinReplicas int = 1
 @description('Max replicas for quote-engine worker. Should typically be 1 to keep checkpoint state coherent.')
 param quoteEngineMaxReplicas int = 1
+@description('Cadence of quote-engine materialization/broadcast loop (TimeSpan string). Use 00:00:00.100 for ~10 Hz.')
+param quoteEngineMaterializeInterval string = '00:00:01'
 
 @description('CPU cores per replica for persistence worker.')
 param persistenceCpu string = '0.25'
@@ -531,6 +533,7 @@ module quoteEngineApp 'modules/containerApp.bicep' = {
       { name: 'DOTNET_ENVIRONMENT', value: 'Production' }
       { name: 'QuoteEngine__CheckpointPath', value: quoteEngineCheckpointPathValue }
       { name: 'QuoteEngine__CheckpointInterval', value: '00:00:10' }
+      { name: 'QuoteEngine__MaterializeInterval', value: quoteEngineMaterializeInterval }
     ])
     kafkaBootstrapServers: kafkaBootstrapServers
     kafkaSecurityProtocol: kafkaSecurityProtocol
@@ -620,6 +623,11 @@ module gatewayApp 'modules/containerApp.bicep' = {
       { name: 'Gateway__Health__Services__ReferenceData__BaseUrl', value: 'https://${refDataApp.outputs.fqdn}' }
       { name: 'Gateway__Health__Services__QuoteEngine__BaseUrl', value: 'https://${quoteEngineApp.outputs.fqdn}' }
       { name: 'Gateway__Health__Services__Persistence__BaseUrl', value: 'https://${persistenceApp.outputs.fqdn}' }
+      // Phase 2 runs analytics as a one-shot Container Apps Job (no always-on
+      // /healthz endpoint). Keep it explicit in aggregated health so operators
+      // see "idle / not configured" rather than probing a stale localhost
+      // default from appsettings.
+      { name: 'Gateway__Health__Services__Analytics__BaseUrl', value: 'idle' }
     ], ingressHealthProbeEnv)
     redisConfiguration: redisConfiguration
     timescaleConnectionString: timescaleConnectionString

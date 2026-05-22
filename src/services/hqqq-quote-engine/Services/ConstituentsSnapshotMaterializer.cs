@@ -70,7 +70,10 @@ public sealed class ConstituentsSnapshotMaterializer
         foreach (var e in entries)
             entryBySymbol[e.Symbol] = e;
 
-        var results = new List<ConstituentHoldingDto>(constituents.Count);
+        var rows = new List<HoldingRow>(constituents.Count);
+        decimal anchorWeightSum = 0m;
+        decimal anchorMarketValueSum = 0m;
+
         foreach (var c in constituents)
         {
             entryBySymbol.TryGetValue(c.Symbol, out var entry);
@@ -89,11 +92,12 @@ public sealed class ConstituentsSnapshotMaterializer
             var weightPct = entry is { TargetWeight: { } w }
                 ? Math.Round(w * 100m, 4)
                 : (c.TargetWeight is { } cw ? Math.Round(cw * 100m, 4) : 0m);
+            var weightFraction = entry?.TargetWeight ?? c.TargetWeight;
 
             var isStale = state is null
                 || FreshnessSummarizer.IsStale(state.ReceivedAtUtc, now, _options.StaleAfter);
 
-            results.Add(new ConstituentHoldingDto
+            rows.Add(new HoldingRow
             {
                 Symbol = c.Symbol,
                 Name = c.SecurityName,
@@ -102,13 +106,78 @@ public sealed class ConstituentsSnapshotMaterializer
                 Shares = c.SharesHeld,
                 Price = price,
                 ChangePct = changePct,
-                MarketValue = marketValue is null ? null : Math.Round(marketValue.Value, 2),
+                MarketValue = marketValue,
                 SharesOrigin = c.SharesOrigin,
                 IsStale = isStale,
+                WeightFraction = weightFraction,
+            });
+
+            if (c.SharesHeld > 0m && price is > 0m && weightFraction is > 0m)
+            {
+                anchorWeightSum += weightFraction.Value;
+                anchorMarketValueSum += marketValue!.Value;
+            }
+        }
+
+        // Tail symbols from the anchored merge intentionally arrive with
+        // SharesHeld=0/SharesOrigin="unavailable". For UI diagnostics, infer
+        // display-only shares/market value from target weight when enough
+        // priced anchor rows exist to estimate total basket notional.
+        var inferredTotalNotional = anchorWeightSum > 0m
+            ? anchorMarketValueSum / anchorWeightSum
+            : (decimal?)null;
+
+        var results = new List<ConstituentHoldingDto>(rows.Count);
+        foreach (var row in rows)
+        {
+            var shares = row.Shares;
+            var marketValue = row.MarketValue;
+            var sharesOrigin = row.SharesOrigin;
+
+            var canInfer = inferredTotalNotional is > 0m
+                && row.Shares <= 0m
+                && row.Price is > 0m
+                && row.WeightFraction is > 0m
+                && string.Equals(row.SharesOrigin, "unavailable", StringComparison.OrdinalIgnoreCase);
+
+            if (canInfer && inferredTotalNotional is decimal total && row.WeightFraction is decimal weight && row.Price is decimal price)
+            {
+                marketValue = Math.Round(total * weight, 2);
+                shares = Math.Round(marketValue.Value / price, 4);
+                sharesOrigin = "derived-from-weight";
+            }
+
+            results.Add(new ConstituentHoldingDto
+            {
+                Symbol = row.Symbol,
+                Name = row.Name,
+                Sector = row.Sector,
+                Weight = row.Weight,
+                Shares = shares,
+                Price = row.Price,
+                ChangePct = row.ChangePct,
+                MarketValue = marketValue is null ? null : Math.Round(marketValue.Value, 2),
+                SharesOrigin = sharesOrigin,
+                IsStale = row.IsStale,
             });
         }
 
         return results;
+    }
+
+    private sealed record HoldingRow
+    {
+        public required string Symbol { get; init; }
+        public required string Name { get; init; }
+        public required string Sector { get; init; }
+        public required decimal Weight { get; init; }
+        public required decimal Shares { get; init; }
+        public decimal? Price { get; init; }
+        public decimal? ChangePct { get; init; }
+        public decimal? MarketValue { get; init; }
+        public required string SharesOrigin { get; init; }
+        public required bool IsStale { get; init; }
+        public decimal? WeightFraction { get; init; }
     }
 
     private static ConcentrationDto BuildConcentration(ActiveBasket basket)

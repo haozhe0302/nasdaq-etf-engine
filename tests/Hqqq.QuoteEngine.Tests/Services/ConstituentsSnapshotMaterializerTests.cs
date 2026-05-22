@@ -171,4 +171,31 @@ public class ConstituentsSnapshotMaterializerTests
         Assert.Equal(205m, row.Price);
         Assert.Null(row.ChangePct);
     }
+
+    [Fact]
+    public void Build_InfersTailSharesAndMarketValue_WhenUnavailableSharesCanBeEstimated()
+    {
+        var h = Build();
+        var basket = new TestBasketBuilder()
+            .WithProvenance("stockanalysis", "alphavantage", "anchored")
+            .AddConstituent("AAPL", "Apple", shares: 1000, referencePrice: 200m, weight: 0.6m, sector: "Tech", sharesOrigin: "stockanalysis")
+            .AddConstituent("MSFT", "Microsoft", shares: 500, referencePrice: 400m, weight: 0.2m, sector: "Tech", sharesOrigin: "stockanalysis")
+            .AddConstituent("TSLA", "Tesla", shares: 0, referencePrice: 250m, weight: 0.2m, sector: "Auto", sharesOrigin: "unavailable")
+            .Build();
+        h.Baskets.Replace(basket);
+
+        h.Quotes.Update(TestBasketBuilder.Tick("AAPL", 210m, h.Clock.UtcNow, previousClose: 205m));
+        h.Quotes.Update(TestBasketBuilder.Tick("MSFT", 390m, h.Clock.UtcNow, previousClose: 385m));
+        h.Quotes.Update(TestBasketBuilder.Tick("TSLA", 250m, h.Clock.UtcNow, previousClose: 245m));
+
+        var dto = h.Materializer.Build();
+        Assert.NotNull(dto);
+
+        // Anchor inferred total = (1000*210 + 500*390) / (0.6 + 0.2) = 506,250.
+        // Tail TSLA target-weight = 0.2 => inferred MV = 101,250 and shares = 405.
+        var tsla = dto!.Holdings.Single(h => h.Symbol == "TSLA");
+        Assert.Equal(405m, tsla.Shares);
+        Assert.Equal(101_250m, tsla.MarketValue);
+        Assert.Equal("derived-from-weight", tsla.SharesOrigin);
+    }
 }

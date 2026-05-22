@@ -113,6 +113,7 @@ param quoteEngineCpu = '1.0'
 param quoteEngineMemory = '2.0Gi'
 param quoteEngineMinReplicas = 1
 param quoteEngineMaxReplicas = 3
+param quoteEngineMaterializeInterval = '00:00:00.100'
 
 param persistenceCpu = '0.5'
 param persistenceMemory = '1.0Gi'

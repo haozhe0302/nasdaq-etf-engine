@@ -1,7 +1,9 @@
 using Confluent.Kafka;
 using Hqqq.Contracts.Events;
 using Hqqq.Infrastructure.Kafka;
+using Hqqq.Observability.Metrics;
 using Hqqq.Persistence.Abstractions;
+using Hqqq.Persistence.MarketSession;
 using Microsoft.Extensions.Options;
 
 namespace Hqqq.Persistence.Consumers;
@@ -20,17 +22,29 @@ namespace Hqqq.Persistence.Consumers;
 /// </remarks>
 public sealed class QuoteSnapshotConsumer : BackgroundService
 {
+    // Log a sampled summary every N skipped rows so out-of-session traffic
+    // (which is continuous overnight) does not produce a log line per row.
+    private const long SkipLogSampleInterval = 500;
+
     private readonly IOptions<KafkaOptions> _kafkaOptions;
     private readonly IQuoteSnapshotSink _sink;
+    private readonly RegularSessionClock _session;
+    private readonly HqqqMetrics _metrics;
     private readonly ILogger<QuoteSnapshotConsumer> _logger;
+
+    private long _skippedOutOfSession;
 
     public QuoteSnapshotConsumer(
         IOptions<KafkaOptions> kafkaOptions,
         IQuoteSnapshotSink sink,
+        RegularSessionClock session,
+        HqqqMetrics metrics,
         ILogger<QuoteSnapshotConsumer> logger)
     {
         _kafkaOptions = kafkaOptions;
         _sink = sink;
+        _session = session;
+        _metrics = metrics;
         _logger = logger;
     }
 
@@ -66,6 +80,23 @@ public sealed class QuoteSnapshotConsumer : BackgroundService
             _logger.LogWarning(
                 "Dropping QuoteSnapshotV1 for basket {BasketId} with empty QuoteQuality",
                 value.BasketId);
+            return false;
+        }
+
+        // History records the regular trading session only (09:30–16:00 ET).
+        // Pre-market / after-hours / weekend snapshots are dropped here so
+        // they never reach quote_snapshots. Redis latest-quote updates and
+        // /market live display are unaffected — this gate is persistence-only.
+        if (!_session.IsRegularSessionPoint(value.Timestamp))
+        {
+            _metrics.PersistenceSnapshotsSkippedOutOfSession.Add(1);
+            var total = Interlocked.Increment(ref _skippedOutOfSession);
+            if (total % SkipLogSampleInterval == 0)
+            {
+                _logger.LogInformation(
+                    "Skipped {Count} out-of-session quote snapshots so far (most recent ts {Timestamp:o}).",
+                    total, value.Timestamp);
+            }
             return false;
         }
 

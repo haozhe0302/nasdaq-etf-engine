@@ -14,6 +14,7 @@ public static class MetricNames
     public const string QuoteSnapshotsPublished = "hqqq.quote_engine.snapshots_published";
     public const string BasketRefreshes = "hqqq.refdata.basket_refreshes";
     public const string PersistenceRowsWritten = "hqqq.persistence.rows_written";
+    public const string PersistenceSnapshotsSkippedOutOfSession = "hqqq.persistence.snapshots_skipped_out_of_session";
     public const string GatewayActiveConnections = "hqqq.gateway.active_connections";
     public const string GatewayRequestDuration = "hqqq.gateway.request_duration_ms";
     public const string HealthCheckDuration = "hqqq.health.check_duration_ms";

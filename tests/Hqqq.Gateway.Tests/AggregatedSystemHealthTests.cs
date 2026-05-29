@@ -332,7 +332,7 @@ public class AggregatedSystemHealthTests
             .EnumerateArray()
             .ToDictionary(d => d.GetProperty("name").GetString()!);
         Assert.Equal("idle", byName["hqqq-analytics"].GetProperty("status").GetString());
-        Assert.Equal("not configured",
+        Assert.Equal("Optional analytics job \u2014 not configured",
             byName["hqqq-analytics"].GetProperty("details").GetString());
 
         // Analytics is optional — an idle row must never drag the overall
@@ -380,7 +380,7 @@ public class AggregatedSystemHealthTests
             .EnumerateArray()
             .ToDictionary(d => d.GetProperty("name").GetString()!);
         Assert.Equal("idle", byName["hqqq-analytics"].GetProperty("status").GetString());
-        Assert.Equal("not configured",
+        Assert.Equal("Optional analytics job \u2014 not configured",
             byName["hqqq-analytics"].GetProperty("details").GetString());
         Assert.Equal("healthy", root.GetProperty("status").GetString());
         Assert.DoesNotContain("hqqq-analytics", client.ProbedServices);

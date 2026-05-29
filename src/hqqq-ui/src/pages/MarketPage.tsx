@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { useMarketData } from "@/lib/hooks";
+import { useMarketData, useNowTick, useLastSessionFallback } from "@/lib/hooks";
+import { getChartMode, getChartBoundsUtc } from "@/lib/marketSessionClient";
 import { Panel } from "@/components/Panel";
 import { StatCard } from "@/components/StatCard";
 import { Chart } from "@/components/Chart";
@@ -9,23 +9,12 @@ import type { EChartsOption } from "echarts";
 
 const AX = { text: "#8b949e", grid: "#1e293b" };
 
-function getMarketBoundsUtc(): { open: number; close: number } {
-  const now = new Date();
-  const todayEt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(now);
-
-  const utcParsed = new Date(now.toLocaleString("en-US", { timeZone: "UTC" }));
-  const nyParsed = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const offsetMs = utcParsed.getTime() - nyParsed.getTime();
-
-  return {
-    open: new Date(`${todayEt}T09:30:00Z`).getTime() + offsetMs,
-    close: new Date(`${todayEt}T16:00:00Z`).getTime() + offsetMs,
-  };
+function fmtAge(ageMs: number | null): string {
+  if (ageMs == null || !Number.isFinite(ageMs)) return "\u2014";
+  const secs = Math.max(0, Math.round(ageMs / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s ago`;
+  return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ago`;
 }
 
 function formatEtTime(utcMs: number): string {
@@ -93,22 +82,69 @@ function SessionBanner({ snapshot }: { snapshot: ReturnType<typeof useMarketData
 
 export function MarketPage() {
   const { data: d, connectionState, error } = useMarketData();
-  const bounds = useMemo(() => getMarketBoundsUtc(), []);
-  const hasSeries = d.series.length > 0;
-  const networkLatencyMs = Number.isFinite(d.freshness.networkLatencyMs)
-    ? d.freshness.networkLatencyMs
-    : 0;
-  const lastMarketTickText = d.marketSession.isRegularSessionOpen
-    ? `${d.freshness.lastTickMs}ms ago`
-    : "Market Closed";
+  const nowMs = useNowTick(1_000);
+  const now = new Date(nowMs);
 
-  const navData = d.series.map((p) => [p.time, p.nav]);
-  const marketData = d.series.map((p) => [p.time, p.market]);
+  const chartMode = getChartMode(now);
+  const bounds = getChartBoundsUtc(now);
 
-  const pdData = d.series.map((p) => {
+  // After-hours fallback: load the most recent completed regular session
+  // from /api/history?range=1D when the live series is no longer appending.
+  const fallbackSeries = useLastSessionFallback(chartMode === "after_hours");
+
+  // Decide which series feeds the chart based on session mode.
+  //  - regular:        live series (primary path).
+  //  - pre_open_reset: blank ("waiting for market open").
+  //  - after_hours:    live series if it still holds the most recent
+  //                    completed session; otherwise the history fallback.
+  let chartSource = d.series;
+  if (chartMode === "pre_open_reset") {
+    chartSource = [];
+  } else if (chartMode === "after_hours") {
+    const lastLiveMs = d.series.length
+      ? new Date(d.series[d.series.length - 1].time).getTime()
+      : 0;
+    const liveCoversSession = Number.isFinite(lastLiveMs) && lastLiveMs >= bounds.open;
+    chartSource = liveCoversSession && d.series.length ? d.series : fallbackSeries;
+  }
+
+  const hasSeries = chartSource.length > 0;
+
+  // ── Freshness ages (driven by the 1s clock, from preserved timestamps) ──
+  const asOfAgeMs = d.freshness.asOfUtc ? nowMs - new Date(d.freshness.asOfUtc).getTime() : null;
+  const lastTickAgeMs = d.freshness.lastTickUtc ? nowMs - new Date(d.freshness.lastTickUtc).getTime() : null;
+  const pricingActive =
+    d.quoteState === "live" && asOfAgeMs != null && asOfAgeMs < 30_000;
+  const transportLabel =
+    connectionState === "live"
+      ? "SignalR live"
+      : connectionState === "stale"
+        ? "REST fallback"
+        : connectionState === "connecting"
+          ? "Connecting"
+          : "Disconnected";
+  const sessionLabel =
+    d.marketSession.label ||
+    (chartMode === "regular"
+      ? "Regular session"
+      : chartMode === "pre_open_reset"
+        ? "Pre-open"
+        : "Closed");
+
+  const navData = chartSource.map((p) => [p.time, p.nav]);
+  const marketData = chartSource.map((p) => [p.time, p.market]);
+
+  const pdData = chartSource.map((p) => {
     const bps = p.nav > 0 ? +(((p.market - p.nav) / p.nav) * 10000).toFixed(1) : 0;
     return { time: p.time, value: bps };
   });
+
+  const chartCaption =
+    chartMode === "after_hours"
+      ? "Last regular session"
+      : chartMode === "pre_open_reset"
+        ? "Waiting for market open (09:30 ET)"
+        : null;
 
   const mainChart: EChartsOption = {
     backgroundColor: "transparent",
@@ -206,6 +242,11 @@ export function MarketPage() {
 
       <div className="grid grid-cols-3 gap-3">
         <Panel title="iNAV vs Market Price" className="col-span-2">
+          {chartCaption && (
+            <div className="px-3 pt-2 text-[11px] text-muted">
+              {chartCaption}
+            </div>
+          )}
           <Chart option={mainChart} className="h-64 p-1" />
         </Panel>
         <div className="flex flex-col gap-3">
@@ -214,10 +255,26 @@ export function MarketPage() {
           </Panel>
           <Panel title="Quote Freshness" className="flex-1">
             <div className="space-y-0.5 p-3">
-              <MetricRow label="Last iNAV Calc" value={`${d.freshness.lastNavCalcMs}ms ago`} />
-              <MetricRow label="Last Market Tick" value={lastMarketTickText} />
-              <MetricRow label="Network Latency" value={`${networkLatencyMs}ms`} />
-              <MetricRow label="Stale Symbols" value={d.marketSession.isRegularSessionOpen ? `${d.freshness.staleSymbols} / ${d.freshness.totalSymbols}` : "Market Closed"} />
+              <MetricRow label="Last quote update" value={fmtAge(asOfAgeMs)} />
+              <MetricRow label="Last upstream tick" value={fmtAge(lastTickAgeMs)} />
+              <MetricRow
+                label="Symbol freshness"
+                value={
+                  d.freshness.totalSymbols > 0
+                    ? `${d.freshness.totalSymbols - d.freshness.staleSymbols} / ${d.freshness.totalSymbols}${d.freshness.staleSymbols > 0 ? ` \u00b7 ${d.freshness.staleSymbols} stale` : ""}`
+                    : "\u2014"
+                }
+              />
+              <MetricRow
+                label="Avg tick interval"
+                value={d.freshness.avgTickIntervalMs > 0 ? `${d.freshness.avgTickIntervalMs}ms` : "\u2014"}
+              />
+              <MetricRow label="Transport" value={transportLabel} />
+              <MetricRow
+                label="Pricing"
+                value={<StatusBadge status={pricingActive ? "healthy" : "degraded"} label={pricingActive ? "Active" : "Idle"} />}
+              />
+              <MetricRow label="Session" value={sessionLabel} />
             </div>
           </Panel>
         </div>

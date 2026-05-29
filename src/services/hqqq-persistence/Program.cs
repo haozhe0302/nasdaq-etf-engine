@@ -37,6 +37,11 @@ builder.Services.AddSingleton(sp =>
     return TimescaleConnectionFactory.Create(options, logger);
 });
 
+// Regular-session gate: only 09:30–16:00 ET snapshots are persisted to
+// quote_snapshots (history). Shared singleton resolves the ET time zone once.
+builder.Services.AddSingleton(_ =>
+    new Hqqq.Persistence.MarketSession.RegularSessionClock());
+
 // ── Quote snapshot pipeline (C1): Kafka → channel → batch writer → Timescale ──
 builder.Services.AddSingleton<InMemoryQuoteSnapshotFeed>();
 builder.Services.AddSingleton<IQuoteSnapshotFeed>(sp => sp.GetRequiredService<InMemoryQuoteSnapshotFeed>());

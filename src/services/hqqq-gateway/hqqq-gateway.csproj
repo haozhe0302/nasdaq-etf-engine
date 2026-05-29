@@ -10,4 +10,8 @@
     <ProjectReference Include="..\..\building-blocks\Hqqq.Observability\Hqqq.Observability.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Hqqq.Gateway.Tests" />
+  </ItemGroup>
+
 </Project>

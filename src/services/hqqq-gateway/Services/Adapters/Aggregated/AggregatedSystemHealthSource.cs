@@ -236,12 +236,19 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         // the URL parser produce an "unknown / invalid base url" entry.
         if (string.IsNullOrWhiteSpace(rawBaseUrl) || IdleBaseUrlSentinels.Contains(rawBaseUrl))
         {
+            // hqqq-analytics is a one-shot/optional job, not a required
+            // long-running service. Make the idle label explicit so the UI
+            // does not read it as a missing dependency.
+            var details = string.Equals(serviceName, "hqqq-analytics", StringComparison.OrdinalIgnoreCase)
+                ? "Optional analytics job \u2014 not configured"
+                : "not configured";
+
             return new ProbeResult(
                 new SystemHealthPayloadBuilder.DependencyEntry(
                     Name: serviceName,
                     Status: SystemHealthPayloadBuilder.Status.Idle,
                     LastCheckedAtUtc: DateTimeOffset.UtcNow,
-                    Details: "not configured"),
+                    Details: details),
                 null);
         }
 

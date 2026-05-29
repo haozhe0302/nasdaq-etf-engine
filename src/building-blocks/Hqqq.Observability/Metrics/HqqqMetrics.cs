@@ -28,6 +28,12 @@ public sealed class HqqqMetrics
     public Counter<long> PersistenceRowsWritten { get; } =
         Meter.CreateCounter<long>(MetricNames.PersistenceRowsWritten, "rows");
 
+    // hqqq-persistence — snapshots dropped because they fall outside the
+    // regular trading session (09:30–16:00 ET). History only records the
+    // regular session.
+    public Counter<long> PersistenceSnapshotsSkippedOutOfSession { get; } =
+        Meter.CreateCounter<long>(MetricNames.PersistenceSnapshotsSkippedOutOfSession, "snapshots");
+
     public UpDownCounter<long> GatewayActiveConnections { get; } =
         Meter.CreateUpDownCounter<long>(MetricNames.GatewayActiveConnections, "connections");
 

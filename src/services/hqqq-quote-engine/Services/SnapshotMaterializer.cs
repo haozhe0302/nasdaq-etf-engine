@@ -83,7 +83,10 @@ public sealed class SnapshotMaterializer
             SymbolsStale = summary.SymbolsStale,
             FreshPct = summary.FreshPct,
             LastTickUtc = summary.LastTickUtc,
-            AvgTickIntervalMs = summary.AvgTickIntervalMs,
+            // Use the bounded rolling tick-arrival average (current ingest
+            // throughput) rather than the cross-symbol last-seen spacing,
+            // which drifts upward unbounded as symbols go stale.
+            AvgTickIntervalMs = _quotes.GetRollingAvgTickIntervalMs() ?? summary.AvgTickIntervalMs,
         };
     }
 

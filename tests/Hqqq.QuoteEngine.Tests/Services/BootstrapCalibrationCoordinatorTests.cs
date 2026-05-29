@@ -376,11 +376,163 @@ public class BootstrapCalibrationCoordinatorTests
         // No new write — restore is read-only.
         Assert.Equal(baselineWrites, rig.Store.WriteCount);
 
-        // And subsequent ticks do not re-calibrate.
-        rig.Quotes.Update(TestBasketBuilder.Tick("AAPL", 200m, rig.Clock.UtcNow));
-        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 999m, rig.Clock.UtcNow));
+        // And subsequent ticks consistent with the restored scale do not
+        // re-calibrate: rawValue = 1000 * 200_000 = 200_000_000, so
+        // nav = 0.000_002_5 * 200_000_000 = 500 ≈ QQQ → no drift.
+        rig.Quotes.Update(TestBasketBuilder.Tick("AAPL", 200_000m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow));
         Assert.False(rig.Coordinator.TryBootstrap("QQQ"));
         Assert.Equal(0.000_002_5m, rig.Baskets.Current!.ScaleFactor.Value);
+    }
+
+    [Fact]
+    public void TryBootstrap_PartialCoverage_DoesNotCalibrate_ThenCalibratesWhenCovered()
+    {
+        // After a restart, ticks trickle in. Calibrating against a
+        // sparsely-priced basket would lock a wildly inflated scale, so
+        // the coordinator must hold off until coverage is sufficient.
+        var rig = BuildRig();
+
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-1")
+            .WithScaleFactor(1m)
+            .AddConstituent("AAPL", "Apple",     1000, 200m,  0.25m)
+            .AddConstituent("MSFT", "Microsoft",  500, 400m,  0.25m)
+            .AddConstituent("NVDA", "NVIDIA",     200, 1000m, 0.25m)
+            .AddConstituent("AMZN", "Amazon",     300, 150m,  0.25m)
+            .Build();
+        rig.Baskets.Replace(basket);
+        rig.Coordinator.OnBasketChanged();
+
+        // Only 1 of 4 constituents priced (25% coverage < 90%).
+        rig.Quotes.Update(TestBasketBuilder.Tick("AAPL", 200m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 540m, rig.Clock.UtcNow));
+
+        Assert.False(rig.Coordinator.TryBootstrap("QQQ"));
+        Assert.False(rig.Baskets.Current!.ScaleFactor.IsInitialized);
+        Assert.Equal(0, rig.Store.WriteCount);
+
+        // Remaining constituents price in (100% coverage) — next QQQ tick calibrates.
+        rig.Quotes.Update(TestBasketBuilder.Tick("MSFT", 400m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("NVDA", 1000m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("AMZN", 150m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 540m, rig.Clock.UtcNow));
+
+        Assert.True(rig.Coordinator.TryBootstrap("QQQ"));
+        Assert.True(rig.Baskets.Current!.ScaleFactor.IsInitialized);
+        Assert.Equal(1, rig.Store.WriteCount);
+    }
+
+    [Fact]
+    public void TryBootstrap_PartialCoverageButMaxWaitElapsed_Calibrates()
+    {
+        // If a few illiquid constituents never tick, the max-wait fallback
+        // must still let the engine come online rather than stay dark.
+        var rig = BuildRig();
+
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-1")
+            .WithScaleFactor(1m)
+            .AddConstituent("AAPL", "Apple",     1000, 200m,  0.25m)
+            .AddConstituent("MSFT", "Microsoft",  500, 400m,  0.25m)
+            .AddConstituent("NVDA", "NVIDIA",     200, 1000m, 0.25m)
+            .AddConstituent("AMZN", "Amazon",     300, 150m,  0.25m)
+            .Build();
+        rig.Baskets.Replace(basket);
+        rig.Coordinator.OnBasketChanged();
+
+        // 1 of 4 priced — first anchor tick starts the max-wait clock.
+        rig.Quotes.Update(TestBasketBuilder.Tick("AAPL", 200m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 540m, rig.Clock.UtcNow));
+        Assert.False(rig.Coordinator.TryBootstrap("QQQ"));
+
+        // Advance past CalibrationMaxWait (default 90s) and re-tick QQQ.
+        rig.Clock.Advance(TimeSpan.FromSeconds(91));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 540m, rig.Clock.UtcNow));
+
+        Assert.True(rig.Coordinator.TryBootstrap("QQQ"));
+        Assert.True(rig.Baskets.Current!.ScaleFactor.IsInitialized);
+        Assert.Equal(1, rig.Store.WriteCount);
+    }
+
+    [Fact]
+    public void TryBootstrap_RestoredScalePoisoned_SelfHealsWhenCovered()
+    {
+        // Redis carries a scale from a prior partial-coverage bootstrap.
+        // Once the basket is near-complete and the anchored NAV is grossly
+        // detached from QQQ, the coordinator must recalibrate + overwrite.
+        var rig = BuildRig();
+        rig.Store.Set(new CalibrationRecord
+        {
+            BasketId = "HQQQ",
+            Fingerprint = "fp-1",
+            ScaleFactor = 0.05m,   // poisoned: far too large
+            AnchorPrice = 540m,
+            RawValue = 10_800m,
+            CalibratedAtUtc = T0,
+        });
+
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-1")
+            .WithScaleFactor(1m)
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m)
+            .Build();
+        rig.Baskets.Replace(basket);
+        rig.Coordinator.OnBasketChanged();
+
+        // Restored verbatim first.
+        Assert.Equal(0.05m, rig.Baskets.Current!.ScaleFactor.Value);
+
+        // Full coverage; nav = 0.05 * (200*1000) = 10_000 ≫ QQQ 540 → drift huge.
+        rig.Quotes.Update(TestBasketBuilder.Tick("AAPL", 200m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 540m, rig.Clock.UtcNow));
+
+        Assert.True(rig.Coordinator.TryBootstrap("QQQ"));
+
+        var healed = rig.Baskets.Current!;
+        // scale = 540 / 200_000 = 0.0027 → nav ≈ 540.
+        Assert.Equal(540m, Math.Round(healed.ScaleFactor.Value * 200_000m, 4));
+        var record = rig.Store.Peek("HQQQ");
+        Assert.NotNull(record);
+        Assert.Equal(healed.ScaleFactor.Value, record!.ScaleFactor);
+    }
+
+    [Fact]
+    public void TryBootstrap_RestoredScaleHealthy_DoesNotSelfHeal()
+    {
+        // A consistent restored scale (nav ≈ QQQ) must never be disturbed,
+        // preserving the legitimate premium/discount signal.
+        var rig = BuildRig();
+        rig.Store.Set(new CalibrationRecord
+        {
+            BasketId = "HQQQ",
+            Fingerprint = "fp-1",
+            ScaleFactor = 0.0027m,
+            AnchorPrice = 540m,
+            RawValue = 200_000m,
+            CalibratedAtUtc = T0,
+        });
+
+        var basket = new TestBasketBuilder()
+            .WithBasketId("HQQQ")
+            .WithFingerprint("fp-1")
+            .WithScaleFactor(1m)
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m)
+            .Build();
+        rig.Baskets.Replace(basket);
+        rig.Coordinator.OnBasketChanged();
+        var baselineWrites = rig.Store.WriteCount;
+
+        // nav = 0.0027 * 200_000 = 540 ≈ QQQ 541 (tiny premium) → no heal.
+        rig.Quotes.Update(TestBasketBuilder.Tick("AAPL", 200m, rig.Clock.UtcNow));
+        rig.Quotes.Update(TestBasketBuilder.Tick("QQQ", 541m, rig.Clock.UtcNow));
+
+        Assert.False(rig.Coordinator.TryBootstrap("QQQ"));
+        Assert.Equal(0.0027m, rig.Baskets.Current!.ScaleFactor.Value);
+        Assert.Equal(baselineWrites, rig.Store.WriteCount);
     }
 
     [Fact]

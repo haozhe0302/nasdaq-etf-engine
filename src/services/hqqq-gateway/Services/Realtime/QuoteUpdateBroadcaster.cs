@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Hqqq.Contracts.Dtos;
 using Hqqq.Gateway.Hubs;
+using Hqqq.Gateway.Services.Upstream;
 using Hqqq.Infrastructure.Redis;
 using Hqqq.Infrastructure.Serialization;
 using Hqqq.Observability.Metrics;
@@ -28,6 +29,7 @@ public sealed class QuoteUpdateBroadcaster
 
     private readonly IHubContext<MarketHub> _hubContext;
     private readonly HqqqMetrics _metrics;
+    private readonly IQuoteFeedEnricher _feedEnricher;
     private readonly ILogger<QuoteUpdateBroadcaster> _logger;
     private readonly JsonSerializerOptions _jsonOptions;
 
@@ -35,18 +37,29 @@ public sealed class QuoteUpdateBroadcaster
         IHubContext<MarketHub> hubContext,
         HqqqMetrics metrics,
         ILogger<QuoteUpdateBroadcaster> logger)
-        : this(hubContext, metrics, logger, HqqqJsonDefaults.Options)
+        : this(hubContext, metrics, NullQuoteFeedEnricher.Instance, logger, HqqqJsonDefaults.Options)
     {
     }
 
     public QuoteUpdateBroadcaster(
         IHubContext<MarketHub> hubContext,
         HqqqMetrics metrics,
+        IQuoteFeedEnricher feedEnricher,
+        ILogger<QuoteUpdateBroadcaster> logger)
+        : this(hubContext, metrics, feedEnricher, logger, HqqqJsonDefaults.Options)
+    {
+    }
+
+    public QuoteUpdateBroadcaster(
+        IHubContext<MarketHub> hubContext,
+        HqqqMetrics metrics,
+        IQuoteFeedEnricher feedEnricher,
         ILogger<QuoteUpdateBroadcaster> logger,
         JsonSerializerOptions jsonOptions)
     {
         _hubContext = hubContext;
         _metrics = metrics;
+        _feedEnricher = feedEnricher;
         _logger = logger;
         _jsonOptions = jsonOptions;
     }
@@ -80,10 +93,19 @@ public sealed class QuoteUpdateBroadcaster
             return;
         }
 
+        // Overlay real ingress transport / market-session state onto the
+        // delta's feeds (the engine ships placeholders) so the live SignalR
+        // path agrees with the REST snapshot's "Market Data" tile.
+        var update = envelope.Update;
+        if (update.Feeds is not null)
+        {
+            update = update with { Feeds = _feedEnricher.Patch(update.Feeds) };
+        }
+
         try
         {
             await _hubContext.Clients.All
-                .SendAsync(ClientEventName, envelope.Update, ct)
+                .SendAsync(ClientEventName, update, ct)
                 .ConfigureAwait(false);
             _metrics.GatewaySignalrBroadcasts.Add(1);
         }

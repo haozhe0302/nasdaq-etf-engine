@@ -2,6 +2,7 @@ using System.Text.Json;
 using Hqqq.Contracts.Dtos;
 using Hqqq.Gateway.Configuration;
 using Hqqq.Gateway.Services.Infrastructure;
+using Hqqq.Gateway.Services.Upstream;
 using Hqqq.Infrastructure.Redis;
 using Hqqq.Infrastructure.Serialization;
 using Microsoft.Extensions.Options;
@@ -24,15 +25,18 @@ public sealed class RedisQuoteSource : IQuoteSource
 {
     private readonly IGatewayRedisReader _reader;
     private readonly IOptions<GatewayOptions> _options;
+    private readonly IQuoteFeedEnricher _feedEnricher;
     private readonly ILogger<RedisQuoteSource> _logger;
 
     public RedisQuoteSource(
         IGatewayRedisReader reader,
         IOptions<GatewayOptions> options,
+        IQuoteFeedEnricher feedEnricher,
         ILogger<RedisQuoteSource> logger)
     {
         _reader = reader;
         _options = options;
+        _feedEnricher = feedEnricher;
         _logger = logger;
     }
 
@@ -101,6 +105,14 @@ public sealed class RedisQuoteSource : IQuoteSource
                 new { error = "quote_malformed", basketId },
                 HqqqJsonDefaults.Options,
                 statusCode: StatusCodes.Status502BadGateway);
+        }
+
+        // Overlay real ingress transport / market-session state the
+        // quote-engine cannot observe, so the Market page "Market Data"
+        // tile reflects the live feed rather than the engine's placeholder.
+        if (dto.Feeds is not null)
+        {
+            dto = dto with { Feeds = _feedEnricher.Patch(dto.Feeds) };
         }
 
         return Results.Json(dto, HqqqJsonDefaults.Options);

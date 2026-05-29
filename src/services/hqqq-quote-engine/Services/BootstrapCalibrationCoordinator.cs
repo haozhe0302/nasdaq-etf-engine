@@ -58,6 +58,13 @@ public sealed class BootstrapCalibrationCoordinator : IBootstrapCalibrationCoord
     /// <summary>Fingerprint that has been (re)calibrated in this coordinator's lifetime.</summary>
     private string? _calibratedFingerprint;
 
+    /// <summary>
+    /// UTC of the first anchor tick observed since the current basket
+    /// fingerprint was activated. Drives the <see cref="QuoteEngineOptions.CalibrationMaxWait"/>
+    /// fallback so a sparsely-priced basket cannot stall calibration forever.
+    /// </summary>
+    private DateTimeOffset? _firstAnchorTickUtc;
+
     public BootstrapCalibrationCoordinator(
         BasketStateStore baskets,
         PerSymbolQuoteStore quotes,
@@ -101,7 +108,11 @@ public sealed class BootstrapCalibrationCoordinator : IBootstrapCalibrationCoord
             // gap while we wait for the next QQQ tick.
             var restored = basket with { ScaleFactor = new ScaleFactor(record.ScaleFactor) };
             _baskets.Replace(restored);
-            lock (_gate) _calibratedFingerprint = basket.Fingerprint;
+            lock (_gate)
+            {
+                _calibratedFingerprint = basket.Fingerprint;
+                _firstAnchorTickUtc = null;
+            }
 
             _logger.LogInformation(
                 "Restored calibration for {BasketId} fp={Fingerprint}: scale={Scale} anchor={Anchor} raw={Raw} calibratedAt={At}",
@@ -121,7 +132,11 @@ public sealed class BootstrapCalibrationCoordinator : IBootstrapCalibrationCoord
             _baskets.Replace(pending);
         }
 
-        lock (_gate) _calibratedFingerprint = null;
+        lock (_gate)
+        {
+            _calibratedFingerprint = null;
+            _firstAnchorTickUtc = null;
+        }
 
         _logger.LogInformation(
             "Bootstrap pending for {BasketId} fp={Fingerprint} — waiting for {Anchor} tick to calibrate scale",
@@ -132,24 +147,14 @@ public sealed class BootstrapCalibrationCoordinator : IBootstrapCalibrationCoord
     {
         if (string.IsNullOrWhiteSpace(tickSymbol)) return false;
 
-        // Fast path: only the anchor symbol can drive a fresh
-        // calibration. Other tick paths short-circuit so we don't take
-        // the lock on every tick.
+        // Fast path: only the anchor symbol can drive a fresh calibration
+        // or a self-heal recalibration. Other tick paths short-circuit so
+        // we don't take the lock on every tick.
         if (!string.Equals(tickSymbol, _options.AnchorSymbol, StringComparison.OrdinalIgnoreCase))
             return false;
 
         var basket = _baskets.Current;
         if (basket is null) return false;
-
-        lock (_gate)
-        {
-            if (string.Equals(_calibratedFingerprint, basket.Fingerprint, StringComparison.Ordinal))
-                return false;
-        }
-
-        // Defensive: the basket could have been replaced with a
-        // calibrated scale between the read above and here.
-        if (basket.ScaleFactor.IsInitialized) return false;
 
         var anchor = _quotes.Get(_options.AnchorSymbol);
         if (anchor is null || anchor.Price <= 0m) return false;
@@ -160,9 +165,78 @@ public sealed class BootstrapCalibrationCoordinator : IBootstrapCalibrationCoord
         var rawValue = BasketRawValueCalculator.Compute(basket.PricingBasis.Entries, latestPrices);
         if (rawValue <= 0m) return false;
 
+        var totalCount = basket.PricingBasis.Entries.Count;
+        var coverage = totalCount > 0 ? (double)latestPrices.Count / totalCount : 0d;
+
+        // Already calibrated: the only reason to act is self-heal — a
+        // locked scale (typically restored from Redis) whose anchored NAV
+        // is grossly detached from the live QQQ price once the basket is
+        // near-complete. This is the signature of a prior partial-coverage
+        // bootstrap that poisoned the persisted record.
+        if (basket.ScaleFactor.IsInitialized)
+            return TrySelfHeal(basket, anchor.Price, rawValue, coverage);
+
+        // Fresh bootstrap path. Record the first anchor tick so the
+        // max-wait fallback has a reference point.
+        DateTimeOffset firstAnchorTick;
+        lock (_gate)
+        {
+            _firstAnchorTickUtc ??= _clock.UtcNow;
+            firstAnchorTick = _firstAnchorTickUtc.Value;
+        }
+
+        var coverageMet = coverage >= _options.CalibrationMinCoverage;
+        var waited = _clock.UtcNow - firstAnchorTick >= _options.CalibrationMaxWait;
+        if (!coverageMet && !waited)
+        {
+            // Hold off — calibrating now would lock a scale against a
+            // sparsely-priced basket. Wait for the next QQQ tick.
+            return false;
+        }
+
         var scale = ScaleFactorCalibrator.Calibrate(anchor.Price, rawValue);
         if (!scale.IsInitialized) return false;
 
+        Persist(basket, scale, anchor.Price, rawValue);
+
+        _logger.LogInformation(
+            "Calibrated {BasketId} fp={Fingerprint}: scale={Scale} anchor={Anchor} raw={Raw} coverage={Coverage:P0} waited={Waited} → nav≈{Nav}",
+            basket.BasketId, basket.Fingerprint,
+            scale.Value, anchor.Price, rawValue, coverage, waited && !coverageMet, scale.Value * rawValue);
+
+        return true;
+    }
+
+    private bool TrySelfHeal(
+        Models.ActiveBasket basket,
+        decimal anchorPrice,
+        decimal rawValue,
+        double coverage)
+    {
+        // Only judge drift on a near-complete basket: a partial rawValue
+        // legitimately understates NAV and must not trigger a recalibration.
+        if (coverage < _options.CalibrationMinCoverage) return false;
+
+        var nav = basket.ScaleFactor.Value * rawValue;
+        var drift = Math.Abs(nav - anchorPrice) / anchorPrice;
+        if (drift <= _options.CalibrationMaxDriftPct) return false;
+
+        var scale = ScaleFactorCalibrator.Calibrate(anchorPrice, rawValue);
+        if (!scale.IsInitialized) return false;
+
+        Persist(basket, scale, anchorPrice, rawValue);
+
+        _logger.LogWarning(
+            "Recalibrated (self-heal) {BasketId} fp={Fingerprint}: anchored NAV {OldNav} drifted {Drift:P1} from QQQ {Anchor} at coverage {Coverage:P0}; scale {OldScale}→{NewScale} raw={Raw}",
+            basket.BasketId, basket.Fingerprint,
+            Math.Round(nav, 4), drift, anchorPrice, coverage,
+            basket.ScaleFactor.Value, scale.Value, rawValue);
+
+        return true;
+    }
+
+    private void Persist(Models.ActiveBasket basket, ScaleFactor scale, decimal anchorPrice, decimal rawValue)
+    {
         var calibrated = basket with { ScaleFactor = scale };
         _baskets.Replace(calibrated);
 
@@ -171,20 +245,13 @@ public sealed class BootstrapCalibrationCoordinator : IBootstrapCalibrationCoord
             BasketId = basket.BasketId,
             Fingerprint = basket.Fingerprint,
             ScaleFactor = scale.Value,
-            AnchorPrice = anchor.Price,
+            AnchorPrice = anchorPrice,
             RawValue = rawValue,
             CalibratedAtUtc = _clock.UtcNow,
         };
         _store.Set(record);
 
         lock (_gate) _calibratedFingerprint = basket.Fingerprint;
-
-        _logger.LogInformation(
-            "Calibrated {BasketId} fp={Fingerprint}: scale={Scale} anchor={Anchor} raw={Raw} → nav≈{Nav}",
-            basket.BasketId, basket.Fingerprint,
-            scale.Value, anchor.Price, rawValue, scale.Value * rawValue);
-
-        return true;
     }
 
     private IReadOnlyDictionary<string, decimal> BuildPriceMap(Models.ActiveBasket basket)

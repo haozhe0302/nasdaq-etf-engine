@@ -2,9 +2,12 @@ using Hqqq.Gateway.Services.Adapters.Aggregated;
 using Hqqq.Gateway.Services.Adapters.Legacy;
 using Hqqq.Gateway.Services.Adapters.Stub;
 using Hqqq.Gateway.Services.Infrastructure;
+using Hqqq.Gateway.Services.MarketSession;
 using Hqqq.Gateway.Services.Sources;
 using Hqqq.Gateway.Services.Timescale;
+using Hqqq.Gateway.Services.Upstream;
 using Hqqq.Infrastructure.Timescale;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -108,8 +111,48 @@ public static class GatewaySourceRegistration
         RegisterConstituentsSource(services, constituentsMode);
         RegisterHistorySource(services, historyMode);
         RegisterSystemHealthSource(services, configuration, systemHealthMode);
+        RegisterQuoteFeedEnrichment(services, configuration, quoteMode);
 
         return services;
+    }
+
+    /// <summary>
+    /// Wires the quote-feed enricher used by <see cref="RedisQuoteSource"/>
+    /// and <see cref="Services.Realtime.QuoteUpdateBroadcaster"/> to overlay
+    /// real ingress transport state + market-session phase onto the
+    /// quote-engine's placeholder feed flags. Only the Redis quote posture
+    /// serves engine-produced snapshots/deltas, so other modes register a
+    /// no-op enricher (the broadcaster is always constructed and needs the
+    /// dependency resolvable).
+    /// </summary>
+    private static void RegisterQuoteFeedEnrichment(
+        IServiceCollection services,
+        IConfiguration configuration,
+        GatewayDataSourceMode quoteMode)
+    {
+        if (quoteMode != GatewayDataSourceMode.Redis)
+        {
+            services.TryAddSingleton<IQuoteFeedEnricher>(NullQuoteFeedEnricher.Instance);
+            return;
+        }
+
+        // The enricher reads ingress upstream state via the same health
+        // client the aggregator uses. Register its dependencies defensively
+        // (TryAdd / idempotent) so enrichment works even when system-health
+        // is not in aggregated mode.
+        services.Configure<GatewayHealthOptions>(
+            configuration.GetSection(GatewayHealthOptions.SectionName));
+        services.AddHttpClient(HttpServiceHealthClient.HttpClientName);
+        services.TryAddSingleton<IServiceHealthClient, HttpServiceHealthClient>();
+        services.TryAddSingleton(_ => new RegularSessionClock());
+
+        services.AddSingleton<IngressUpstreamStateCache>();
+        services.AddSingleton<IIngressUpstreamState>(
+            sp => sp.GetRequiredService<IngressUpstreamStateCache>());
+        services.AddHostedService(
+            sp => sp.GetRequiredService<IngressUpstreamStateCache>());
+
+        services.AddSingleton<IQuoteFeedEnricher, QuoteFeedEnricher>();
     }
 
     private static void RegisterQuoteSource(IServiceCollection services, GatewayDataSourceMode mode)

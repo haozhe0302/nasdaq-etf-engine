@@ -19,6 +19,19 @@ public sealed class PerSymbolQuoteStore
 
     private readonly ISystemClock _clock;
 
+    /// <summary>
+    /// Bounded rolling window of recent tick arrival times across all
+    /// symbols, used to compute a stable "average time between incoming
+    /// ticks" throughput metric. Capped so the average reflects current
+    /// activity and cannot grow unbounded as individual symbols go stale
+    /// (the prior per-symbol last-seen spacing metric drifted upward for
+    /// the entire session). Mirrors the legacy monolith's
+    /// <c>InMemoryLatestPriceStore</c> 500-sample approach.
+    /// </summary>
+    private const int MaxTickSamples = 500;
+    private readonly Queue<DateTimeOffset> _recentArrivals = new(MaxTickSamples + 1);
+    private readonly object _arrivalsGate = new();
+
     public PerSymbolQuoteStore(ISystemClock clock)
     {
         _clock = clock;
@@ -29,6 +42,13 @@ public sealed class PerSymbolQuoteStore
     public void Update(NormalizedTick tick)
     {
         var receivedAt = _clock.UtcNow;
+
+        lock (_arrivalsGate)
+        {
+            _recentArrivals.Enqueue(receivedAt);
+            while (_recentArrivals.Count > MaxTickSamples)
+                _recentArrivals.Dequeue();
+        }
 
         _states.AddOrUpdate(
             tick.Symbol,
@@ -83,6 +103,32 @@ public sealed class PerSymbolQuoteStore
         return FreshnessSummarizer.Summarize(trackedSymbols, observations, now, staleAfter);
     }
 
+    /// <summary>
+    /// Average gap (in ms) between consecutive tick arrivals in the rolling
+    /// window, or <c>null</c> when fewer than two ticks have been observed.
+    /// Reflects current ingest throughput and is bounded by the window size,
+    /// so it stays stable instead of drifting upward as symbols go stale.
+    /// </summary>
+    public double? GetRollingAvgTickIntervalMs()
+    {
+        DateTimeOffset[] arrivals;
+        lock (_arrivalsGate)
+        {
+            if (_recentArrivals.Count < 2) return null;
+            arrivals = _recentArrivals.ToArray();
+        }
+
+        // The queue is naturally ordered by arrival (FIFO), so the span is
+        // simply last - first divided by the number of gaps.
+        var totalMs = (arrivals[^1] - arrivals[0]).TotalMilliseconds;
+        var gaps = arrivals.Length - 1;
+        return Math.Round(totalMs / gaps, 2);
+    }
+
     /// <summary>Test / ops hook — drop everything.</summary>
-    public void Clear() => _states.Clear();
+    public void Clear()
+    {
+        _states.Clear();
+        lock (_arrivalsGate) _recentArrivals.Clear();
+    }
 }

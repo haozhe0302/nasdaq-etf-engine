@@ -110,26 +110,10 @@ export function MarketPage() {
 
   const hasSeries = chartSource.length > 0;
 
-  // ── Freshness ages (driven by the 1s clock, from preserved timestamps) ──
+  // ── Freshness age (driven by the 1s clock, from preserved timestamps) ──
   const asOfAgeMs = d.freshness.asOfUtc ? nowMs - new Date(d.freshness.asOfUtc).getTime() : null;
-  const lastTickAgeMs = d.freshness.lastTickUtc ? nowMs - new Date(d.freshness.lastTickUtc).getTime() : null;
   const pricingActive =
     d.quoteState === "live" && asOfAgeMs != null && asOfAgeMs < 30_000;
-  const transportLabel =
-    connectionState === "live"
-      ? "SignalR live"
-      : connectionState === "stale"
-        ? "REST fallback"
-        : connectionState === "connecting"
-          ? "Connecting"
-          : "Disconnected";
-  const sessionLabel =
-    d.marketSession.label ||
-    (chartMode === "regular"
-      ? "Regular session"
-      : chartMode === "pre_open_reset"
-        ? "Pre-open"
-        : "Closed");
 
   const navData = chartSource.map((p) => [p.time, p.nav]);
   const marketData = chartSource.map((p) => [p.time, p.market]);
@@ -256,25 +240,14 @@ export function MarketPage() {
           <Panel title="Quote Freshness" className="flex-1">
             <div className="space-y-0.5 p-3">
               <MetricRow label="Last quote update" value={fmtAge(asOfAgeMs)} />
-              <MetricRow label="Last upstream tick" value={fmtAge(lastTickAgeMs)} />
-              <MetricRow
-                label="Symbol freshness"
-                value={
-                  d.freshness.totalSymbols > 0
-                    ? `${d.freshness.totalSymbols - d.freshness.staleSymbols} / ${d.freshness.totalSymbols}${d.freshness.staleSymbols > 0 ? ` \u00b7 ${d.freshness.staleSymbols} stale` : ""}`
-                    : "\u2014"
-                }
-              />
               <MetricRow
                 label="Avg tick interval"
                 value={d.freshness.avgTickIntervalMs > 0 ? `${d.freshness.avgTickIntervalMs}ms` : "\u2014"}
               />
-              <MetricRow label="Transport" value={transportLabel} />
               <MetricRow
                 label="Pricing"
                 value={<StatusBadge status={pricingActive ? "healthy" : "degraded"} label={pricingActive ? "Active" : "Idle"} />}
               />
-              <MetricRow label="Session" value={sessionLabel} />
             </div>
           </Panel>
         </div>

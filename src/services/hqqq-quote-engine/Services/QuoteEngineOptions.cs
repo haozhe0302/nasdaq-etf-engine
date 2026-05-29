@@ -71,4 +71,35 @@ public sealed class QuoteEngineOptions
     /// stale scale across a corporate-action event.
     /// </summary>
     public TimeSpan CalibrationTtl { get; init; } = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Minimum fraction of basket constituents that must be priced before
+    /// the bootstrap calibrator is allowed to lock a scale factor. After a
+    /// restart the per-symbol store is empty and ticks arrive gradually;
+    /// calibrating against a sparsely-priced basket would lock a wildly
+    /// inflated scale (<c>scale = qqq / partialRaw</c>) that then survives
+    /// in Redis. Requiring near-complete coverage keeps the anchored NAV
+    /// close to QQQ. Range (0, 1]; default 0.90.
+    /// </summary>
+    public double CalibrationMinCoverage { get; init; } = 0.90;
+
+    /// <summary>
+    /// Upper bound on how long the calibrator waits for
+    /// <see cref="CalibrationMinCoverage"/> before calibrating against
+    /// whatever coverage is available. Prevents the engine from staying
+    /// uninitialized indefinitely when a handful of illiquid constituents
+    /// never tick. Measured from the first anchor tick after activation.
+    /// </summary>
+    public TimeSpan CalibrationMaxWait { get; init; } = TimeSpan.FromSeconds(90);
+
+    /// <summary>
+    /// Drift tolerance used by the self-heal guard. Once the basket is
+    /// near-complete (<see cref="CalibrationMinCoverage"/>), if the
+    /// anchored NAV deviates from the live QQQ price by more than this
+    /// fraction the coordinator treats the locked scale as poisoned (e.g.
+    /// from a prior partial-coverage bootstrap persisted to Redis) and
+    /// recalibrates. The 0.20 default sits well above any plausible
+    /// premium/discount, so normal pricing is never disturbed.
+    /// </summary>
+    public decimal CalibrationMaxDriftPct { get; init; } = 0.20m;
 }

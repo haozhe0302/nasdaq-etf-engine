@@ -1,6 +1,12 @@
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
+using Hqqq.Contracts.Dtos;
+using Hqqq.Gateway.Configuration;
+using Hqqq.Gateway.Services.Infrastructure;
 using Hqqq.Gateway.Services.Sources;
+using Hqqq.Infrastructure.Redis;
+using Hqqq.Infrastructure.Serialization;
 using Hqqq.Observability.Health;
 using Hqqq.Observability.Identity;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
@@ -29,6 +35,8 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
     private readonly HealthCheckService _localHealth;
     private readonly ServiceIdentity _identity;
     private readonly GatewayHealthOptions _options;
+    private readonly IOptions<GatewayOptions> _gatewayOptions;
+    private readonly IGatewayRedisReader? _redisReader;
     private readonly ILogger<AggregatedSystemHealthSource> _logger;
 
     /// <summary>
@@ -67,13 +75,17 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         HealthCheckService localHealth,
         ServiceIdentity identity,
         IOptions<GatewayHealthOptions> options,
-        ILogger<AggregatedSystemHealthSource> logger)
+        IOptions<GatewayOptions> gatewayOptions,
+        ILogger<AggregatedSystemHealthSource> logger,
+        IGatewayRedisReader? redisReader = null)
     {
         _client = client;
         _localHealth = localHealth;
         _identity = identity;
         _options = options.Value;
+        _gatewayOptions = gatewayOptions;
         _logger = logger;
+        _redisReader = redisReader;
     }
 
     public async Task<IResult> GetSystemHealthAsync(CancellationToken ct)
@@ -106,6 +118,16 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
             }
         }
 
+        // Surface a "basket" dependency derived from the reference-data
+        // active-basket probe. The frontend status bar parses its
+        // "{N} constituents" details to display the tracked symbol count,
+        // so without this row the header always reads "0 symbols".
+        var basketDependency = BuildBasketDependency(serviceEntries);
+        if (basketDependency is not null)
+        {
+            dependencies.Add(basketDependency);
+        }
+
         if (localReport is not null)
         {
             foreach (var entry in localReport.Entries)
@@ -126,7 +148,8 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
 
         var topLevel = ComputeTopLevelStatus(dependencies);
         var upstream = BuildUpstreamView(ingressSnapshots);
-        var json = SystemHealthPayloadBuilder.Build(_identity, topLevel, dependencies, upstream);
+        var metrics = await BuildMetricsAsync(ct).ConfigureAwait(false);
+        var json = SystemHealthPayloadBuilder.Build(_identity, topLevel, dependencies, upstream, metrics);
         return Results.Content(json, "application/json", Encoding.UTF8, statusCode: 200);
     }
 
@@ -188,6 +211,133 @@ public sealed class AggregatedSystemHealthSource : ISystemHealthSource
         if (value is DateTime dtUtc) return new DateTimeOffset(dtUtc, TimeSpan.Zero);
         if (value is string s && DateTimeOffset.TryParse(s, out var parsed)) return parsed;
         return null;
+    }
+
+    private static long? ReadInt64(IReadOnlyDictionary<string, object?>? data, string key)
+    {
+        if (data is null || !data.TryGetValue(key, out var value) || value is null) return null;
+        return value switch
+        {
+            long l => l,
+            int i => i,
+            double d => (long)d,
+            string s when long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var p) => p,
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Builds the synthetic <c>basket</c> dependency the frontend uses to
+    /// derive the tracked symbol count. The count is read from the
+    /// hqqq-reference-data <c>active-basket</c> probe's
+    /// <c>constituentCount</c> data field; the details are formatted as
+    /// <c>"{N} constituents"</c> to match the frontend's parser. Returns
+    /// <c>null</c> when reference-data is unreachable or does not advertise
+    /// the field (older builds) so the row is simply omitted.
+    /// </summary>
+    private static SystemHealthPayloadBuilder.DependencyEntry? BuildBasketDependency(
+        IReadOnlyList<ProbeResult> serviceEntries)
+    {
+        foreach (var result in serviceEntries)
+        {
+            if (!string.Equals(result.Entry.Name, "hqqq-reference-data", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (result.Snapshot is not { Error: null } snap)
+                return null;
+
+            foreach (var dep in snap.Dependencies)
+            {
+                if (!string.Equals(dep.Name, "active-basket", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var count = ReadInt64(dep.Data, "constituentCount");
+                if (count is null)
+                    return null;
+
+                var status = count.Value > 0
+                    ? NormalizeStatus(dep.Status)
+                    : SystemHealthPayloadBuilder.Status.Unhealthy;
+
+                return new SystemHealthPayloadBuilder.DependencyEntry(
+                    Name: "basket",
+                    Status: status,
+                    LastCheckedAtUtc: snap.LastCheckedAtUtc,
+                    Details: $"{count.Value} constituents");
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Derives the system-health <c>metrics</c> block from the latest quote /
+    /// constituents snapshots in Redis so the frontend Runtime Metrics panel
+    /// renders instead of being stuck on its "waiting for metrics"
+    /// placeholder. Only the freshness-derived fields are populated from data
+    /// the gateway can observe; latency/counter fields are emitted as empty
+    /// (sampleCount=0 → the panel shows "—"). Returns <c>null</c> when no
+    /// Redis reader is wired (non-redis postures) or no snapshot exists, which
+    /// preserves the previous behaviour of omitting the block.
+    /// </summary>
+    private async Task<object?> BuildMetricsAsync(CancellationToken ct)
+    {
+        if (_redisReader is null) return null;
+
+        var basketId = _gatewayOptions.Value.ResolveBasketId();
+
+        QuoteSnapshotDto? snapshot = null;
+        try
+        {
+            var raw = await _redisReader.StringGetAsync(RedisKeys.Snapshot(basketId), ct).ConfigureAwait(false);
+            if (raw is not null)
+                snapshot = JsonSerializer.Deserialize<QuoteSnapshotDto>(raw, HqqqJsonDefaults.Options);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed reading quote snapshot for metrics block (basket {BasketId})", basketId);
+        }
+
+        if (snapshot is null) return null;
+
+        BasketQualityDto? quality = null;
+        try
+        {
+            var rawConstituents = await _redisReader
+                .StringGetAsync(RedisKeys.Constituents(basketId), ct).ConfigureAwait(false);
+            if (rawConstituents is not null)
+            {
+                quality = JsonSerializer
+                    .Deserialize<ConstituentsSnapshotDto>(rawConstituents, HqqqJsonDefaults.Options)?.Quality;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogDebug(ex, "Failed reading constituents snapshot for metrics block (basket {BasketId})", basketId);
+        }
+
+        var total = snapshot.Freshness.SymbolsTotal;
+        var staleRatio = total > 0 ? (double)snapshot.Freshness.SymbolsStale / total : 0d;
+        var coverage = quality is not null && quality.TotalSymbols > 0
+            ? (double)quality.PricedCount / quality.TotalSymbols
+            : (total > 0 ? (double)snapshot.Freshness.SymbolsFresh / total : 0d);
+        var snapshotAgeMs = Math.Max(0d, (DateTimeOffset.UtcNow - snapshot.AsOf).TotalMilliseconds);
+
+        var emptyLatency = new { p50 = 0d, p95 = 0d, p99 = 0d, sampleCount = 0L };
+
+        return new
+        {
+            snapshotAgeMs,
+            pricedWeightCoverage = coverage,
+            staleSymbolRatio = staleRatio,
+            tickToQuoteMs = emptyLatency,
+            quoteBroadcastMs = emptyLatency,
+            lastFailoverRecoverySeconds = (double?)null,
+            lastActivationJumpBps = (double?)null,
+            totalTicksIngested = 0L,
+            totalQuoteBroadcasts = 0L,
+            totalFallbackActivations = 0L,
+            totalBasketActivations = 0L,
+        };
     }
 
     /// <summary>

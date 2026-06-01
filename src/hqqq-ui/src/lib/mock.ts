@@ -92,8 +92,6 @@ export function getMarketSnapshot(): MarketSnapshot {
     series: _series.map((p) => ({ ...p })),
     movers: getMovers(),
     freshness: {
-      asOfUtc: new Date().toISOString(),
-      lastTickUtc: new Date(Date.now() - (5 + Math.floor(Math.random() * 25))).toISOString(),
       lastNavCalcMs: 15 + Math.floor(Math.random() * 50),
       lastTickMs: 5 + Math.floor(Math.random() * 25),
       networkLatencyMs: 8 + Math.floor(Math.random() * 20),

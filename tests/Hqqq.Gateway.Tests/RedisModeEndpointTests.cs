@@ -328,6 +328,46 @@ public class RedisModeEndpointTests
     }
 
     [Fact]
+    public async Task SystemHealth_RedisMode_PopulatesMetricsBlock_FromSnapshot()
+    {
+        // The frontend Runtime Metrics panel renders only when the health
+        // payload carries a non-null `metrics` block. In a redis-backed
+        // posture the aggregator derives it from the latest quote /
+        // constituents snapshots so the panel shows real freshness/coverage
+        // instead of being stuck on "waiting for metrics data".
+        var reader = new FakeGatewayRedisReader();
+        reader.Set(
+            RedisKeys.Snapshot(TestBasketId),
+            JsonSerializer.Serialize(BuildQuoteSnapshot(), HqqqJsonDefaults.Options));
+        reader.Set(
+            RedisKeys.Constituents(TestBasketId),
+            JsonSerializer.Serialize(BuildConstituentsSnapshot(), HqqqJsonDefaults.Options));
+
+        using var factory = BuildFactory(reader);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var root = doc.RootElement;
+
+        Assert.True(root.TryGetProperty("metrics", out var metrics),
+            "expected a non-null metrics block in redis-backed aggregated health");
+        Assert.Equal(JsonValueKind.Object, metrics.ValueKind);
+
+        // Snapshot freshness: 1 stale of 100 tracked → 0.01.
+        Assert.Equal(0.01, metrics.GetProperty("staleSymbolRatio").GetDouble(), 3);
+        // Constituents quality: 100 priced of 100 → 1.0.
+        Assert.Equal(1.0, metrics.GetProperty("pricedWeightCoverage").GetDouble(), 3);
+        Assert.True(metrics.GetProperty("snapshotAgeMs").GetDouble() >= 0);
+        // Latency stats emitted empty (sampleCount 0 → panel shows "—").
+        Assert.Equal(
+            0,
+            metrics.GetProperty("tickToQuoteMs").GetProperty("sampleCount").GetInt64());
+    }
+
+    [Fact]
     public void QuoteSource_IsRedisQuoteSource_WhenRedisModeSelected()
     {
         var reader = new FakeGatewayRedisReader();

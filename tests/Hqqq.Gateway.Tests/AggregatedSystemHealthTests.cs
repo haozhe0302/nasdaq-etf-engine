@@ -491,4 +491,80 @@ public class AggregatedSystemHealthTests
         Assert.DoesNotContain(legacy.Requests,
             r => r.RequestUri!.AbsolutePath == "/api/system/health");
     }
+
+    [Fact]
+    public async Task ReferenceDataActiveBasket_ProjectsBasketDependency_WithConstituentCount()
+    {
+        // The frontend status bar derives its tracked symbol count from a
+        // dependency named "basket" whose details match "{N} constituents".
+        // The aggregator must synthesize that row from the reference-data
+        // active-basket probe's constituentCount data field.
+        var client = new ScriptedServiceHealthClient()
+            .SetSnapshot("hqqq-reference-data", new Hqqq.Gateway.Services.Adapters.Aggregated.ServiceHealthSnapshot
+            {
+                ServiceName = "hqqq-reference-data",
+                Status = "healthy",
+                UptimeSeconds = 42,
+                Dependencies = new[]
+                {
+                    new Hqqq.Gateway.Services.Adapters.Aggregated.ServiceHealthSnapshot.DependencyEntry(
+                        Name: "active-basket",
+                        Status: "healthy",
+                        Data: new Dictionary<string, object?>(StringComparer.Ordinal)
+                        {
+                            ["constituentCount"] = 101L,
+                            ["basketId"] = "HQQQ",
+                        }),
+                },
+                LastCheckedAtUtc = DateTimeOffset.UtcNow,
+            })
+            .SetHealthy("hqqq-ingress")
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence")
+            .SetHealthy("hqqq-analytics");
+
+        using var factory = FactoryWithAllServicesConfigured(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var byName = doc.RootElement.GetProperty("dependencies")
+            .EnumerateArray()
+            .ToDictionary(d => d.GetProperty("name").GetString()!);
+
+        Assert.True(byName.ContainsKey("basket"),
+            "expected a synthetic 'basket' dependency for the frontend symbol count");
+        Assert.Equal("healthy", byName["basket"].GetProperty("status").GetString());
+        Assert.Equal("101 constituents", byName["basket"].GetProperty("details").GetString());
+    }
+
+    [Fact]
+    public async Task ReferenceDataWithoutActiveBasketData_OmitsBasketDependency()
+    {
+        // Older reference-data builds (or an empty probe) don't advertise the
+        // constituentCount field — the basket row is simply omitted rather
+        // than emitting a misleading "0 constituents".
+        var client = new ScriptedServiceHealthClient()
+            .SetHealthy("hqqq-reference-data")
+            .SetHealthy("hqqq-ingress")
+            .SetHealthy("hqqq-quote-engine")
+            .SetHealthy("hqqq-persistence")
+            .SetHealthy("hqqq-analytics");
+
+        using var factory = FactoryWithAllServicesConfigured(client);
+        using var http = factory.CreateClient();
+
+        var response = await http.GetAsync("/api/system/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
+        var depNames = doc.RootElement.GetProperty("dependencies")
+            .EnumerateArray()
+            .Select(d => d.GetProperty("name").GetString())
+            .ToArray();
+
+        Assert.DoesNotContain("basket", depNames);
+    }
 }

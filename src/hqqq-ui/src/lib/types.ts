@@ -53,16 +53,7 @@ export interface Mover {
 }
 
 export interface FreshnessMetrics {
-  /**
-   * Raw timestamps preserved from the backend so the page can compute ages
-   * against a local 1s clock rather than freezing a "ms ago" at adapt time.
-   * `null` when the backend did not supply the value.
-   */
-  asOfUtc: string | null;
-  lastTickUtc: string | null;
-  /** @deprecated retained for back-compat; pages should derive from asOfUtc. */
   lastNavCalcMs: number;
-  /** @deprecated retained for back-compat; pages should derive from lastTickUtc. */
   lastTickMs: number;
   networkLatencyMs: number;
   avgTickIntervalMs: number;

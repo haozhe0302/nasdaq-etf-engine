@@ -1,6 +1,4 @@
-import { useMarketData, useSystemData, useNowTick } from "@/lib/hooks";
-import { classifyUpstreamError } from "@/lib/adapters";
-import type { UpstreamErrorClass } from "@/lib/adapters";
+import { useMarketData, useSystemData } from "@/lib/hooks";
 import { Panel } from "@/components/Panel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MetricRow } from "@/components/MetricRow";
@@ -54,20 +52,11 @@ function fmtTimeAgo(isoStr: string | null): string {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ago`;
 }
 
-function UpstreamTransportPanel({
-  upstream,
-  errorClass,
-}: {
-  upstream?: UpstreamTransport;
-  errorClass: UpstreamErrorClass;
-}) {
+function UpstreamTransportPanel({ upstream }: { upstream?: UpstreamTransport }) {
   const wsStatus = upstream?.webSocketConnected ? "Healthy" : "Disconnected";
   const wsBadge: "healthy" | "unhealthy" = upstream?.webSocketConnected ? "healthy" : "unhealthy";
   const fbStatus = upstream?.fallbackActive ? "Active" : "Inactive";
   const fbBadge: "healthy" | "degraded" = upstream?.fallbackActive ? "degraded" : "healthy";
-
-  const isActiveError = errorClass === "active";
-  const isHistoricalWarning = errorClass === "recovered" || errorClass === "historical";
 
   return (
     <Panel title="Upstream Transport">
@@ -80,23 +69,12 @@ function UpstreamTransportPanel({
           label="Fallback"
           value={<StatusBadge status={fbBadge} label={fbStatus} />}
         />
-        {isActiveError && upstream?.lastUpstreamError && (
+        {upstream?.lastUpstreamError && (
           <div className="mt-2 rounded border border-negative/30 bg-negative/10 px-2 py-1.5 text-xs text-negative">
-            <div className="font-medium">Upstream error (active)</div>
+            <div className="font-medium">Last upstream error</div>
             <div className="mt-0.5">{upstream.lastUpstreamError}</div>
             {upstream.lastUpstreamErrorAtUtc && (
               <div className="mt-0.5 text-[10px] text-muted">
-                {fmtTimeAgo(upstream.lastUpstreamErrorAtUtc)}
-              </div>
-            )}
-          </div>
-        )}
-        {isHistoricalWarning && upstream?.lastUpstreamError && (
-          <div className="mt-2 rounded border border-edge bg-surface px-2 py-1.5 text-xs text-muted">
-            <div className="font-medium text-muted">Last warning (recovered)</div>
-            <div className="mt-0.5">{upstream.lastUpstreamError}</div>
-            {upstream.lastUpstreamErrorAtUtc && (
-              <div className="mt-0.5 text-[10px] text-muted/70">
                 {fmtTimeAgo(upstream.lastUpstreamErrorAtUtc)}
               </div>
             )}
@@ -224,10 +202,7 @@ function RuntimeMetricsPanel({
 export function SystemPage() {
   const { data: d, connectionState, error } = useSystemData();
   const { data: marketData } = useMarketData();
-  const nowMs = useNowTick(1_000);
   const rt = d.runtime;
-
-  const upstreamErrorClass = classifyUpstreamError(d.upstream, marketData, nowMs);
 
   return (
     <div className="space-y-3">
@@ -265,7 +240,7 @@ export function SystemPage() {
           </div>
         </Panel>
 
-        <UpstreamTransportPanel upstream={d.upstream} errorClass={upstreamErrorClass} />
+        <UpstreamTransportPanel upstream={d.upstream} />
 
         <Panel title="Notes">
           <div className="space-y-2 p-3 text-xs text-muted">

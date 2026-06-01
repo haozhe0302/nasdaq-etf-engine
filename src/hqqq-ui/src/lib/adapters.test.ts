@@ -66,8 +66,6 @@ function makeSnapshot(seriesOverride?: TimeSeriesPoint[]): MarketSnapshot {
     ],
     movers: [],
     freshness: {
-      asOfUtc: null,
-      lastTickUtc: null,
       lastNavCalcMs: 0,
       lastTickMs: 0,
       networkLatencyMs: 0,

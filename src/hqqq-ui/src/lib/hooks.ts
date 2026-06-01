@@ -20,7 +20,6 @@ import type {
   ConstituentSnapshot,
   SystemSnapshot,
   HistorySnapshot,
-  TimeSeriesPoint,
   AppStatus,
   ConnectionState,
   LiveDataResult,
@@ -40,8 +39,6 @@ const EMPTY_MARKET: MarketSnapshot = {
   series: [],
   movers: [],
   freshness: {
-    asOfUtc: null,
-    lastTickUtc: null,
     lastNavCalcMs: 0,
     lastTickMs: 0,
     networkLatencyMs: 0,
@@ -339,69 +336,6 @@ export function useAppStatus(): AppStatus {
   }, [poll]);
 
   return status;
-}
-
-// ── Local 1s clock (for age displays) ───────────────
-//
-// Returns Date.now() refreshed on a fixed interval so components can render
-// "age since X" values that advance without waiting for the next data push.
-
-export function useNowTick(intervalMs = 1_000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
-// ── Last-session chart fallback (after-hours) ────────
-//
-// When `enabled` (the /market chart is in after-hours mode), fetch the most
-// recent completed regular session from /api/history?range=1D and expose it
-// as a raw TimeSeriesPoint[] (ISO timestamps preserved for the ECharts time
-// axis). Refetches every 5 minutes to absorb late prints. No-op while
-// disabled, so the regular session never spins up a duplicate timer.
-
-interface RawHistorySeries {
-  series?: { time: string; nav: number; marketPrice: number }[];
-}
-
-export function useLastSessionFallback(enabled: boolean): TimeSeriesPoint[] {
-  const [series, setSeries] = useState<TimeSeriesPoint[]>([]);
-
-  useEffect(() => {
-    if (!enabled) {
-      setSeries([]);
-      return;
-    }
-
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const raw = (await fetchHistory("1D")) as RawHistorySeries;
-        if (cancelled) return;
-        setSeries(
-          (raw.series ?? []).map((p) => ({
-            time: p.time,
-            nav: p.nav,
-            market: p.marketPrice,
-          })),
-        );
-      } catch {
-        // Keep the last successfully loaded session on transient failures.
-      }
-    };
-
-    void load();
-    const id = setInterval(() => { void load(); }, 5 * 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [enabled]);
-
-  return series;
 }
 
 export function useEstClock(): string {

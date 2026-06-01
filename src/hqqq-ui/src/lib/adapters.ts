@@ -174,6 +174,12 @@ export function toHealthStatus(s: string): HealthStatus {
 
 export function adaptQuote(raw: unknown): MarketSnapshot {
   const q = raw as BQuoteSnapshot;
+  const now = Date.now();
+  const asOfMs = new Date(q.asOf).getTime();
+  const asOfAgeMs = Number.isFinite(asOfMs) ? Math.max(0, Math.round(now - asOfMs)) : 0;
+  const lastTickMs = q.freshness.lastTickUtc
+    ? now - new Date(q.freshness.lastTickUtc).getTime()
+    : 0;
 
   const series: TimeSeriesPoint[] = q.series.map((p) => ({
     time: p.time,
@@ -188,11 +194,8 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
   }));
 
   const freshness: FreshnessMetrics = {
-    // Preserve raw timestamps; the page computes live ages from these.
-    asOfUtc: q.asOf ?? null,
-    lastTickUtc: q.freshness.lastTickUtc ?? null,
-    lastNavCalcMs: 0,
-    lastTickMs: 0,
+    lastNavCalcMs: asOfAgeMs,
+    lastTickMs: Math.max(0, Math.round(lastTickMs)),
     networkLatencyMs: 0,
     avgTickIntervalMs: q.freshness.avgTickIntervalMs
       ? Math.round(q.freshness.avgTickIntervalMs)
@@ -300,6 +303,12 @@ export interface QuoteDelta {
 
 export function adaptQuoteDelta(raw: unknown): QuoteDelta {
   const q = raw as BQuoteRealtimeUpdate;
+  const now = Date.now();
+  const asOfMs = new Date(q.asOf).getTime();
+  const asOfAgeMs = Number.isFinite(asOfMs) ? Math.max(0, Math.round(now - asOfMs)) : 0;
+  const lastTickMs = q.freshness.lastTickUtc
+    ? now - new Date(q.freshness.lastTickUtc).getTime()
+    : 0;
 
   const latestSeriesPoint: TimeSeriesPoint | null = q.latestSeriesPoint
     ? { time: q.latestSeriesPoint.time, nav: q.latestSeriesPoint.nav, market: q.latestSeriesPoint.market }
@@ -312,10 +321,8 @@ export function adaptQuoteDelta(raw: unknown): QuoteDelta {
   }));
 
   const freshness: FreshnessMetrics = {
-    asOfUtc: q.asOf ?? null,
-    lastTickUtc: q.freshness.lastTickUtc ?? null,
-    lastNavCalcMs: 0,
-    lastTickMs: 0,
+    lastNavCalcMs: asOfAgeMs,
+    lastTickMs: Math.max(0, Math.round(lastTickMs)),
     networkLatencyMs: 0,
     avgTickIntervalMs: q.freshness.avgTickIntervalMs
       ? Math.round(q.freshness.avgTickIntervalMs)
@@ -618,57 +625,6 @@ export function adaptHistory(raw: unknown): HistorySnapshot {
       snapshots: 0, gaps: 0, completenessPct: 0, daysLoaded: 0,
     },
   };
-}
-
-// ── Upstream-error classification (current vs historical) ──
-//
-// An old upstream timeout (e.g. last night's REST hiccup) should not look
-// like a live failure once the feed is healthy again. We classify the most
-// recent reported error against the current transport/pricing state:
-//   - "active":     no WS / fallback / live pricing right now → real
-//                   ongoing problem, surface as a warning regardless of age.
-//   - "recovered":  feed is active again and the error is recent (<15m).
-//   - "historical": feed is active and the error is old (>=15m).
-//   - "none":       no error reported.
-// Never hides a genuinely active failure.
-
-export type UpstreamErrorClass = "active" | "recovered" | "historical" | "none";
-
-const UPSTREAM_HISTORICAL_AGE_MS = 15 * 60_000;
-const PRICING_LIVE_MAX_AGE_MS = 30_000;
-
-export function classifyUpstreamError(
-  upstream: BUpstreamDiagnostics | UpstreamLike | null | undefined,
-  market: MarketSnapshot,
-  nowMs: number = Date.now(),
-): UpstreamErrorClass {
-  if (!upstream || !upstream.lastUpstreamError) return "none";
-
-  const asOfUtc = market.freshness.asOfUtc;
-  const pricingLive =
-    market.quoteState === "live" &&
-    asOfUtc != null &&
-    nowMs - new Date(asOfUtc).getTime() < PRICING_LIVE_MAX_AGE_MS;
-
-  const feedActive =
-    upstream.webSocketConnected || upstream.fallbackActive || pricingLive;
-
-  // Nothing is currently serving upstream data → treat as an active warning
-  // no matter how old the last error timestamp is.
-  if (!feedActive) return "active";
-
-  const at = upstream.lastUpstreamErrorAtUtc
-    ? new Date(upstream.lastUpstreamErrorAtUtc).getTime()
-    : NaN;
-  const ageMs = Number.isFinite(at) ? nowMs - at : Infinity;
-  return ageMs >= UPSTREAM_HISTORICAL_AGE_MS ? "historical" : "recovered";
-}
-
-interface UpstreamLike {
-  webSocketConnected: boolean;
-  fallbackActive: boolean;
-  lastUpstreamError: string | null;
-  lastUpstreamErrorAtUtc: string | null;
 }
 
 // ── Derive symbol count from health response ────────

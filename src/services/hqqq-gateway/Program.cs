@@ -23,6 +23,25 @@ builder.Services.AddHqqqMetricsExporter();
 
 builder.Services.AddGatewaySources(builder.Configuration, builder.Environment);
 
+// CORS — mirror the legacy hqqq-api posture so the browser SPA can reach the
+// gateway's REST endpoints and the /hubs/market SignalR negotiate when served
+// from a different origin (dev: UI :5173 → gateway :5030). Origins come from
+// HQQQ_ALLOWED_ORIGINS (comma-separated); defaults cover the Vite dev server.
+var allowedOrigins =
+    builder.Configuration["HQQQ_ALLOWED_ORIGINS"]?
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    ?? new[] { "http://localhost:5173", "http://localhost:3000" };
+
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+        policy
+            .WithOrigins(allowedOrigins)
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials());
+});
+
 builder.Services.AddSignalR();
 
 // Phase 2D2 — bridge Redis pub/sub to SignalR. Each gateway instance
@@ -97,6 +116,8 @@ app.Services.LogConfigurationPosture(
             string.Join(", ", legacyEndpoints));
     }
 }
+
+app.UseCors();
 
 app.MapHqqqHealthEndpoints();
 

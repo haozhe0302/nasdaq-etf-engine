@@ -66,12 +66,17 @@ public static class SystemHealthPayloadBuilder
     /// <paramref name="upstream"/> populates the system-health <c>upstream</c>
     /// block surfaced to the frontend /system page; pass <c>null</c> to keep
     /// the previous behaviour of omitting the block entirely.
+    /// <paramref name="metrics"/> populates the system-health <c>metrics</c>
+    /// block the frontend Runtime Metrics panel renders; pass <c>null</c> when
+    /// the aggregator has no snapshot to derive runtime metrics from (the
+    /// panel then shows its "waiting for metrics" placeholder).
     /// </summary>
     public static string Build(
         ServiceIdentity identity,
         string topLevelStatus,
         IReadOnlyList<DependencyEntry> dependencies,
-        UpstreamView? upstream = null)
+        UpstreamView? upstream = null,
+        object? metrics = null)
     {
         var runtime = RuntimeInfo.Capture(identity);
         var payload = new
@@ -90,7 +95,7 @@ public static class SystemHealthPayloadBuilder
                 gcGen2 = runtime.GcGen2,
                 threadCount = runtime.ThreadCount,
             },
-            metrics = (object?)null,
+            metrics,
             upstream = upstream is null
                 ? null
                 : new

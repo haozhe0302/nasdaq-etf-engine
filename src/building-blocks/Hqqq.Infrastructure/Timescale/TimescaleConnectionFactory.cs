@@ -17,7 +17,7 @@ public static class TimescaleConnectionFactory
     /// <c>/api/history</c> even though the realtime core is fine. Capping it
     /// keeps the "DB down only degrades history" posture fast.
     /// </summary>
-    public const int DefaultConnectTimeoutSeconds = 5;
+    public const int DefaultConnectTimeoutSeconds = 2;
 
     public static NpgsqlDataSource Create(TimescaleOptions options, ILogger? logger = null)
     {

@@ -70,7 +70,7 @@ public sealed class TimescaleHealthCheck(
         try
         {
             // Cap the connect timeout so a stopped/unreachable DB fails fast
-            // (~5s) instead of blocking this probe for Npgsql's 15s default.
+            // (~2s) instead of blocking this probe for Npgsql's 15s default.
             // Without this the aggregated /api/system/health hangs ~15s while
             // the DB is down even though the realtime core is healthy.
             var connectionString = Hqqq.Infrastructure.Timescale.TimescaleConnectionFactory

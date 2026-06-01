@@ -74,9 +74,11 @@ services:
       ReferenceData__CorporateActions__Tiingo__BaseUrl: ${ReferenceData__CorporateActions__Tiingo__BaseUrl:-https://api.tiingo.com/tiingo/daily}
     ports:
       - "5020:8080"
+    # reference-data does not touch Timescale at runtime (it only binds
+    # TimescaleOptions and never opens a connection), so it intentionally
+    # does NOT depend on `db`. This lets the basket pipeline cold-start and
+    # keep publishing refdata.basket.active.v1 even while psql-hqqq-p2 is down.
     depends_on:
-      db:
-        condition: service_healthy
       cache:
         condition: service_healthy
       kafka:
@@ -234,6 +236,14 @@ services:
       Gateway__Sources__SystemHealth: ${Gateway__Sources__SystemHealth:-aggregated}
       Gateway__Health__RequestTimeoutSeconds: "1.5"
       Gateway__Health__IncludeRedis: "true"
+      # Keep Timescale in the aggregated /api/system/health on purpose: when
+      # the DB is down the top level reports an honest `degraded` while the
+      # core read/realtime path stays up. The gateway keeps the default
+      # `/healthz/*` mapping (Degraded -> 200), so this never marks the
+      # gateway container unhealthy. See docs/phase2/config-matrix.md
+      # "TimescaleDB outage posture". To suppress the persistence `unknown`
+      # row while it crash-loops on a missing DB, set
+      # Gateway__Health__Services__Persistence__BaseUrl=idle.
       Gateway__Health__IncludeTimescale: "true"
       Gateway__Health__Services__ReferenceData__BaseUrl: http://hqqq-reference-data:8080
       Gateway__Health__Services__Ingress__BaseUrl: http://hqqq-ingress:8081
@@ -242,11 +252,19 @@ services:
       Gateway__Health__Services__Analytics__BaseUrl: http://hqqq-analytics:8081
     ports:
       - "5030:8080"
+    # `db` is only `service_started`, NOT `service_healthy`: the gateway's
+    # NpgsqlDataSource is built lazily and only opens a connection per
+    # /api/history query, which already degrades to HTTP 503 on
+    # NpgsqlException. Gating gateway start on a healthy db would let a DB
+    # outage block the entire read/realtime edge from cold-starting, which
+    # defeats the fallback posture. `hqqq-persistence` is likewise only
+    # `service_started` (it is the sacrificial component) so its DB-driven
+    # crash/restart loop never blocks the gateway.
     depends_on:
       cache:
         condition: service_healthy
       db:
-        condition: service_healthy
+        condition: service_started
       hqqq-reference-data:
         condition: service_started
       hqqq-ingress:

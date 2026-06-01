@@ -58,6 +58,47 @@ Cross-references:
 > GitHub Actions plumbing for these secrets is a follow-up diff —
 > today operators set them on the Container App env directly.
 
+> **TimescaleDB outage posture (core stays up when `db` is down).** The
+> Phase 2 fallback contract: if TimescaleDB (`psql-hqqq-p2` /
+> compose service `db`) is unreachable, every service **except**
+> `hqqq-persistence` keeps serving its core function, and only
+> `/api/history` degrades (to HTTP 503 `history_unavailable`). The
+> conventions that make this hold — change them and you break the
+> fallback:
+>
+> 1. **`hqqq-reference-data` must NOT `depends_on: db`.** It binds
+>    `Timescale__ConnectionString` for forward-compat only and never
+>    opens a connection at runtime, so it must be free to cold-start and
+>    keep publishing `refdata.basket.active.v1` while the DB is down.
+> 2. **`hqqq-gateway` depends on `db` with `condition: service_started`,
+>    never `service_healthy`.** The gateway's `NpgsqlDataSource` is built
+>    lazily and only connects per `/api/history` query (which already
+>    catches `NpgsqlException` → 503). Gating gateway cold-start on a
+>    *healthy* DB would let a DB outage block the entire read/realtime
+>    edge.
+> 3. **`hqqq-gateway` must keep the default `/healthz/*` status mapping
+>    (`Degraded → HTTP 200`).** Do NOT pass a
+>    `{ Degraded: 503, Unhealthy: 503 }` map to its
+>    `MapHqqqHealthEndpoints()`. The gateway's container healthcheck hits
+>    `/healthz/ready`; since a DB outage makes the Timescale probe report
+>    `Degraded`, a 503 mapping would mark the gateway unhealthy and the
+>    orchestrator would pull it out of rotation — exactly the cascade this
+>    posture is meant to prevent. (Note: `hqqq-reference-data` *does* use
+>    a `Degraded → 503` map, but that reflects its Kafka publish health,
+>    not the DB.)
+> 4. **`Gateway__Health__IncludeTimescale=true` is intentional.** During a
+>    DB outage `/api/system/health` reports top-level `degraded` with the
+>    `timescale` / `hqqq-persistence` rows showing the fault — an honest
+>    signal. The required-services set that escalates the rollup is only
+>    `hqqq-ingress` + `hqqq-reference-data`, so persistence/timescale
+>    faults never drive the top level past `degraded`. Optional: set
+>    `Gateway__Health__Services__Persistence__BaseUrl=idle` to suppress the
+>    persistence `unknown` row while it crash-loops on a missing DB.
+> 5. **`hqqq-persistence` is the sacrificial component.** Its schema
+>    bootstrap is fail-fast, so with no DB it will crash/restart-loop
+>    (`restart: unless-stopped`). This is expected and must not block any
+>    other service's startup (hence its `service_started`-only edges).
+
 ---
 
 ## `hqqq-gateway` (web)

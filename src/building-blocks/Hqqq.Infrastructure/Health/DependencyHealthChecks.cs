@@ -69,7 +69,13 @@ public sealed class TimescaleHealthCheck(
     {
         try
         {
-            await using var conn = new Npgsql.NpgsqlConnection(options.ConnectionString);
+            // Cap the connect timeout so a stopped/unreachable DB fails fast
+            // (~5s) instead of blocking this probe for Npgsql's 15s default.
+            // Without this the aggregated /api/system/health hangs ~15s while
+            // the DB is down even though the realtime core is healthy.
+            var connectionString = Hqqq.Infrastructure.Timescale.TimescaleConnectionFactory
+                .WithBoundedConnectTimeout(options.ConnectionString);
+            await using var conn = new Npgsql.NpgsqlConnection(connectionString);
             await conn.OpenAsync(ct);
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = "SELECT 1";

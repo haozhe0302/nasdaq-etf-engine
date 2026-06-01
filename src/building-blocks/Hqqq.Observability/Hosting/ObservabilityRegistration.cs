@@ -34,6 +34,21 @@ public static class ObservabilityRegistration
     public const string ReadyTag = "ready";
 
     /// <summary>
+    /// Tag applied to dependency health checks that should be visible in the
+    /// aggregated <c>/api/system/health</c> payload (which runs the full
+    /// <see cref="HealthCheckService"/>) but must NOT gate
+    /// <c>/healthz/ready</c>. This lets a service keep observing a
+    /// non-critical dependency without that dependency's outage flipping the
+    /// readiness probe — and, just as importantly, without a slow dependency
+    /// probe blowing the readiness probe's timeout budget. Used by the
+    /// gateway for TimescaleDB: the edge serves <c>/api/quote</c> /
+    /// <c>/api/constituents</c> from Redis and only <c>/api/history</c>
+    /// degrades when the DB is down, so a DB outage must not take the gateway
+    /// out of ingress rotation.
+    /// </summary>
+    public const string AggregateOnlyTag = "aggregate-only";
+
+    /// <summary>
     /// Registers the shared observability layer (no Prometheus exporter):
     /// <list type="bullet">
     ///   <item><see cref="ServiceIdentity"/> singleton (captured now).</item>
@@ -106,6 +121,14 @@ public static class ObservabilityRegistration
 
         var readyOptions = new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
         {
+            // Run every registered check EXCEPT those explicitly marked
+            // aggregate-only. Without a predicate ASP.NET runs all checks;
+            // excluding AggregateOnlyTag lets a service surface a
+            // non-critical dependency in /api/system/health while keeping it
+            // off the readiness gate. No existing check is tagged
+            // aggregate-only, so this is a no-op for every service that does
+            // not opt in.
+            Predicate = static registration => !registration.Tags.Contains(AggregateOnlyTag),
             ResponseWriter = WriteHealthzResponse,
         };
         if (readyResultStatusCodes is not null)

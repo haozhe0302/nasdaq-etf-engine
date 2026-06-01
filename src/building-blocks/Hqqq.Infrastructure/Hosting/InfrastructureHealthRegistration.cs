@@ -49,16 +49,27 @@ public static class InfrastructureHealthRegistration
             tags: new[] { ReadyTag }));
     }
 
+    /// <summary>
+    /// Registers the TimescaleDB dependency probe. By default it carries the
+    /// <see cref="ReadyTag"/> so it gates <c>/healthz/ready</c>. Pass
+    /// <paramref name="tags"/> to override — e.g. the gateway registers it
+    /// with <c>ObservabilityRegistration.AggregateOnlyTag</c> so the probe is
+    /// visible in <c>/api/system/health</c> but does NOT gate readiness,
+    /// keeping the edge in ingress rotation during a DB outage (only
+    /// <c>/api/history</c> degrades).
+    /// </summary>
     public static IHealthChecksBuilder AddTimescaleHealthCheck(
         this IHealthChecksBuilder builder,
-        string name = "timescale")
+        string name = "timescale",
+        params string[] tags)
     {
+        var effectiveTags = tags is { Length: > 0 } ? tags : new[] { ReadyTag };
         return builder.Add(new HealthCheckRegistration(
             name,
             sp => new TimescaleHealthCheck(
                 sp.GetRequiredService<IOptions<TimescaleOptions>>().Value,
                 sp.GetService<ILogger<TimescaleHealthCheck>>() ?? NullLogger<TimescaleHealthCheck>.Instance),
             failureStatus: null,
-            tags: new[] { ReadyTag }));
+            tags: effectiveTags));
     }
 }

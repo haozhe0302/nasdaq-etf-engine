@@ -18,7 +18,14 @@ builder.Services.AddHqqqOperatingMode(builder.Configuration);
 // HealthChecks (self/live), Prometheus MeterProvider exporter.
 builder.Services.AddHqqqObservability("hqqq-gateway", builder.Environment)
     .AddRedisHealthCheck()
-    .AddTimescaleHealthCheck();
+    // Timescale is registered aggregate-only: it stays visible in the
+    // /api/system/health rollup but is excluded from /healthz/ready. The
+    // gateway serves /api/quote + /api/constituents from Redis and only
+    // /api/history depends on Timescale, so a DB outage must NOT make the
+    // gateway NotReady (which would pull every replica out of ACA ingress
+    // rotation and black out the whole frontend). /api/history independently
+    // degrades to HTTP 503 when the DB is unreachable.
+    .AddTimescaleHealthCheck(tags: new[] { ObservabilityRegistration.AggregateOnlyTag });
 builder.Services.AddHqqqMetricsExporter();
 
 builder.Services.AddGatewaySources(builder.Configuration, builder.Environment);

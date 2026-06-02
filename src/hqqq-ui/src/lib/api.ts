@@ -33,6 +33,16 @@ export function fetchSystemHealth(): Promise<unknown> {
   return get("/api/system/health");
 }
 
+// Lightweight liveness probe used purely to measure frontend↔gateway network
+// RTT. /healthz/live runs only the gateway's "live"-tagged self check — it
+// never fans out to downstream services or touches the database — so its
+// round-trip reflects pure network latency even when the DB is down. We do
+// not read the body or status; any completed response (even 503) is a valid
+// timing sample. cache: "no-store" guards against a cached 200 short-circuit.
+export async function pingLiveness(): Promise<void> {
+  await fetch(`${BASE_URL}/healthz/live`, { cache: "no-store" });
+}
+
 export function fetchHistory(range: string): Promise<unknown> {
   return get(`/api/history?range=${encodeURIComponent(range)}`);
 }

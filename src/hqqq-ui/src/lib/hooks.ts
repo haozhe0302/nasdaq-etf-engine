@@ -5,6 +5,7 @@ import {
   fetchSystemHealth,
   fetchHistory,
   createMarketHubConnection,
+  pingLiveness,
 } from "./api";
 import {
   adaptConstituents,
@@ -88,20 +89,69 @@ const EMPTY_SYSTEM: SystemSnapshot = {
   events: [],
 };
 
-// ── Shared health-probe RTT tracker (EMA) ────────────────────
+// ── Shared network-latency probe (EMA) ───────────────────────
+//
+// "Network Latency" must reflect the pure frontend↔gateway round-trip, NOT
+// server-side work. Previously it timed GET /api/system/health, but that
+// endpoint fans out to every downstream service plus the database probe (with
+// a per-call timeout), so when the DB was down the measured value was pinned
+// above the timeout and no longer represented network latency at all.
+//
+// Instead we run a dedicated probe against /healthz/live — the gateway's
+// "live"-tagged self check that never touches the DB — on its own interval and
+// keep an EMA of the round-trip. The probe is reference-counted across hooks
+// so multiple consumers share a single timer.
 
-const HEALTH_RTT_EMA_ALPHA = 0.3;
-let healthRttEmaMs = 0;
+const NETWORK_RTT_EMA_ALPHA = 0.3;
+const LATENCY_PROBE_INTERVAL_MS = 3_000;
 
-function recordHealthProbeRtt(startMs: number): void {
+let networkRttEmaMs = 0;
+let probeSubscribers = 0;
+let probeTimer: ReturnType<typeof setInterval> | null = null;
+let probeInFlight = false;
+
+function recordNetworkRtt(startMs: number): void {
   const rtt = performance.now() - startMs;
   if (!Number.isFinite(rtt) || rtt < 0) return;
-  const prev = healthRttEmaMs;
-  healthRttEmaMs = prev === 0 ? rtt : prev + HEALTH_RTT_EMA_ALPHA * (rtt - prev);
+  const prev = networkRttEmaMs;
+  networkRttEmaMs = prev === 0 ? rtt : prev + NETWORK_RTT_EMA_ALPHA * (rtt - prev);
 }
 
-function getHealthProbeRttMs(): number {
-  return Math.max(0, Math.round(healthRttEmaMs));
+function getNetworkLatencyMs(): number {
+  return Math.max(0, Math.round(networkRttEmaMs));
+}
+
+async function runLatencyProbe(): Promise<void> {
+  if (probeInFlight) return;
+  probeInFlight = true;
+  const start = performance.now();
+  try {
+    await pingLiveness();
+    recordNetworkRtt(start);
+  } catch {
+    // Gateway unreachable / aborted: a failed fetch carries no meaningful
+    // timing, so we skip the sample and keep the last good EMA rather than
+    // polluting it. Connection state is surfaced separately by each feed.
+  } finally {
+    probeInFlight = false;
+  }
+}
+
+function useNetworkLatencyProbe(): void {
+  useEffect(() => {
+    probeSubscribers += 1;
+    if (probeTimer === null) {
+      void runLatencyProbe();
+      probeTimer = setInterval(() => void runLatencyProbe(), LATENCY_PROBE_INTERVAL_MS);
+    }
+    return () => {
+      probeSubscribers = Math.max(0, probeSubscribers - 1);
+      if (probeSubscribers === 0 && probeTimer !== null) {
+        clearInterval(probeTimer);
+        probeTimer = null;
+      }
+    };
+  }, []);
 }
 
 // ── Market (full REST snapshot + slim SignalR deltas) ─────
@@ -111,6 +161,8 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
   const [error, setError] = useState<string>();
+
+  useNetworkLatencyProbe();
 
   useEffect(() => {
     let cancelled = false;
@@ -123,7 +175,7 @@ export function useMarketData(): LiveDataResult<MarketSnapshot> {
       {
         onSnapshot: (snapshot) => {
           if (cancelled) return;
-          const networkLatencyMs = getHealthProbeRttMs();
+          const networkLatencyMs = getNetworkLatencyMs();
           setData({
             ...snapshot,
             freshness: { ...snapshot.freshness, networkLatencyMs },
@@ -210,9 +262,7 @@ export function useSystemData(): LiveDataResult<SystemSnapshot> {
 
   const poll = useCallback(async () => {
     try {
-      const start = performance.now();
       const raw = await fetchSystemHealth();
-      recordHealthProbeRtt(start);
       setData(adaptSystemHealth(raw));
       recordUpdate("system");
       setConnectionState("live");
@@ -297,9 +347,7 @@ export function useAppStatus(): AppStatus {
 
   const poll = useCallback(async () => {
     try {
-      const start = performance.now();
       const raw = await fetchSystemHealth();
-      recordHealthProbeRtt(start);
       const health = toHealthStatus(
         (raw as { status: string }).status,
       );

@@ -214,7 +214,6 @@ export function MarketPage() {
           </Panel>
           <Panel title="Quote Freshness" className="flex-1">
             <div className="space-y-0.5 p-3">
-              <MetricRow label="Last iNAV Calc" value={`${d.freshness.lastNavCalcMs}ms ago`} />
               <MetricRow label="Last Market Tick" value={lastMarketTickText} />
               <MetricRow label="Network Latency" value={`${networkLatencyMs}ms`} />
               <MetricRow label="Stale Symbols" value={d.marketSession.isRegularSessionOpen ? `${d.freshness.staleSymbols} / ${d.freshness.totalSymbols}` : "Market Closed"} />

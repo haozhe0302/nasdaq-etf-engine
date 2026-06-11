@@ -14,13 +14,19 @@ namespace Hqqq.QuoteEngine.Services;
 /// </summary>
 public sealed class IncrementalNavCalculator
 {
+    private static readonly TimeOnly PreOpenResetStart = new(9, 25);
+    private static readonly TimeOnly RegularOpen = new(9, 30);
+    private static readonly TimeOnly RegularClose = new(16, 0);
+
     private readonly PerSymbolQuoteStore _quotes;
     private readonly BasketStateStore _baskets;
     private readonly EngineRuntimeState _runtime;
     private readonly ISystemClock _clock;
     private readonly QuoteEngineOptions _options;
+    private readonly TimeZoneInfo _marketTimeZone;
 
     private DateTimeOffset _nextSeriesRecordAtUtc = DateTimeOffset.MinValue;
+    private DateOnly? _lastPreOpenResetEtDay;
 
     public IncrementalNavCalculator(
         PerSymbolQuoteStore quotes,
@@ -34,6 +40,7 @@ public sealed class IncrementalNavCalculator
         _runtime = runtime;
         _clock = clock;
         _options = options;
+        _marketTimeZone = ResolveMarketTimeZone(options.MarketTimeZone);
     }
 
     /// <summary>
@@ -184,6 +191,27 @@ public sealed class IncrementalNavCalculator
 
     private void MaybeRecordSeriesPoint(DateTimeOffset now, decimal nav, decimal marketPrice)
     {
+        var marketLocal = TimeZoneInfo.ConvertTime(now.ToUniversalTime(), _marketTimeZone);
+        var marketDate = DateOnly.FromDateTime(marketLocal.DateTime);
+        var marketTime = TimeOnly.FromDateTime(marketLocal.DateTime);
+        var isWeekday = marketLocal.DayOfWeek is >= DayOfWeek.Monday and <= DayOfWeek.Friday;
+
+        // Daily pre-open reset: clear intraday chart once per ET day in the
+        // 09:25–09:30 window so the next session starts from an empty series.
+        if (_options.EnablePreOpenSeriesReset
+            && isWeekday
+            && marketTime >= PreOpenResetStart
+            && marketTime < RegularOpen
+            && _lastPreOpenResetEtDay != marketDate)
+        {
+            _runtime.ClearSeries();
+            _lastPreOpenResetEtDay = marketDate;
+        }
+
+        // Keep series strictly regular-session-only (09:30–16:00 ET).
+        if (!isWeekday || marketTime < RegularOpen || marketTime >= RegularClose)
+            return;
+
         if (now < _nextSeriesRecordAtUtc) return;
 
         _runtime.RecordSeriesPoint(new Hqqq.Contracts.Dtos.SeriesPointDto
@@ -194,5 +222,24 @@ public sealed class IncrementalNavCalculator
         });
 
         _nextSeriesRecordAtUtc = now + _options.SeriesRecordInterval;
+    }
+
+    private static TimeZoneInfo ResolveMarketTimeZone(string? configuredId)
+    {
+        if (!string.IsNullOrWhiteSpace(configuredId))
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(configuredId); }
+            catch (TimeZoneNotFoundException) { }
+            catch (InvalidTimeZoneException) { }
+        }
+
+        foreach (var id in new[] { "America/New_York", "Eastern Standard Time" })
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+            catch (TimeZoneNotFoundException) { }
+            catch (InvalidTimeZoneException) { }
+        }
+
+        return TimeZoneInfo.Utc;
     }
 }

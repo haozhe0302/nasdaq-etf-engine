@@ -28,6 +28,25 @@ function getMarketBoundsUtc(): { open: number; close: number } {
   };
 }
 
+function getEtDateParts(date: Date): { year: string; month: string; day: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  return {
+    year: parts.find((p) => p.type === "year")?.value ?? "1970",
+    month: parts.find((p) => p.type === "month")?.value ?? "01",
+    day: parts.find((p) => p.type === "day")?.value ?? "01",
+  };
+}
+
+function getEtTodayKey(date: Date): string {
+  const p = getEtDateParts(date);
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
 function formatEtTime(utcMs: number): string {
   return new Date(utcMs).toLocaleTimeString("en-US", {
     timeZone: "America/New_York",
@@ -93,7 +112,9 @@ function SessionBanner({ snapshot }: { snapshot: ReturnType<typeof useMarketData
 
 export function MarketPage() {
   const { data: d, connectionState, error } = useMarketData();
-  const bounds = useMemo(() => getMarketBoundsUtc(), []);
+  // Recompute once per ET date so long-lived tabs don't keep yesterday's axis.
+  const etTodayKey = getEtTodayKey(new Date());
+  const bounds = useMemo(() => getMarketBoundsUtc(), [etTodayKey]);
   const hasSeries = d.series.length > 0;
   const networkLatencyMs = Number.isFinite(d.freshness.networkLatencyMs)
     ? d.freshness.networkLatencyMs

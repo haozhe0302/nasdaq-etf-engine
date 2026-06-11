@@ -10,6 +10,21 @@ namespace Hqqq.QuoteEngine.Services;
 public sealed class QuoteEngineOptions
 {
     /// <summary>
+    /// Time-zone id used for market-session boundaries. Accepts either IANA
+    /// (<c>America/New_York</c>) or Windows (<c>Eastern Standard Time</c>)
+    /// ids; unresolved ids fall back to ET defaults in the session helper.
+    /// </summary>
+    public string MarketTimeZone { get; init; } = "America/New_York";
+
+    /// <summary>
+    /// Enables the pre-open chart reset window used by the live market page.
+    /// When true, the engine clears the in-memory intraday series once per
+    /// ET day during 09:25–09:30, so 09:25–09:30 renders empty and a new
+    /// regular session starts from a clean chart.
+    /// </summary>
+    public bool EnablePreOpenSeriesReset { get; init; } = true;
+
+    /// <summary>
     /// A per-symbol quote older than this is considered stale. Matches the
     /// legacy <c>TiingoOptions.StaleAfterSeconds</c> default (30s).
     /// </summary>

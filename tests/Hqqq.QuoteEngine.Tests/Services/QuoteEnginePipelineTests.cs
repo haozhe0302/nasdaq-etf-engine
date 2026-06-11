@@ -14,7 +14,8 @@ public class QuoteEnginePipelineTests
     private sealed record Rig(
         Hqqq.QuoteEngine.Services.QuoteEngine Engine,
         FakeSystemClock Clock,
-        QuoteEngineOptions Options);
+        QuoteEngineOptions Options,
+        EngineRuntimeState Runtime);
 
     private static Rig BuildRig()
     {
@@ -36,7 +37,7 @@ public class QuoteEnginePipelineTests
         var engine = new Hqqq.QuoteEngine.Services.QuoteEngine(
             quotes, baskets, runtime, calculator, snap, delta,
             NullBootstrapCalibrationCoordinator.Instance);
-        return new Rig(engine, clock, options);
+        return new Rig(engine, clock, options, runtime);
     }
 
     [Fact]
@@ -290,5 +291,79 @@ public class QuoteEnginePipelineTests
         Assert.Equal(
             Math.Round(oldScale.Value * oldRaw, 6),
             Math.Round(newScale.Value * newRaw, 6));
+    }
+
+    [Fact]
+    public void Pipeline_DoesNotRecordSeriesOutsideRegularSession()
+    {
+        // 2026-04-16 20:10Z == 16:10 ET (post-close).
+        var rig = BuildRig();
+        rig.Clock.SetTo(new DateTimeOffset(2026, 4, 16, 20, 10, 0, TimeSpan.Zero));
+
+        var basket = new TestBasketBuilder()
+            .WithScaleFactor(0.001m)
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m)
+            .Build();
+
+        rig.Engine.OnBasketActivated(basket);
+        rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 201m, rig.Clock.UtcNow, previousClose: 200m));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+
+        var snapshot = rig.Engine.BuildSnapshot();
+        Assert.NotNull(snapshot);
+        Assert.Empty(snapshot!.Series);
+    }
+
+    [Fact]
+    public void Pipeline_PreOpenReset_ClearsAt0925AndNextRegularSessionRebuilds()
+    {
+        var rig = BuildRig();
+        var basket = new TestBasketBuilder()
+            .WithScaleFactor(0.001m)
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m)
+            .Build();
+
+        rig.Engine.OnBasketActivated(basket);
+
+        // Day 1 regular session point (2026-04-16 19:50Z == 15:50 ET).
+        rig.Clock.SetTo(new DateTimeOffset(2026, 4, 16, 19, 50, 0, TimeSpan.Zero));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 201m, rig.Clock.UtcNow, previousClose: 200m));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("QQQ", 500m, rig.Clock.UtcNow, previousClose: 495m));
+        var day1 = rig.Engine.BuildSnapshot();
+        Assert.NotNull(day1);
+        Assert.NotEmpty(day1!.Series);
+        var day1Count = day1.Series.Count;
+
+        // Day 2 pre-open but before reset window (09:10 ET) keeps Day 1 series.
+        rig.Clock.SetTo(new DateTimeOffset(2026, 4, 17, 13, 10, 0, TimeSpan.Zero));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 202m, rig.Clock.UtcNow, previousClose: 200m));
+        var beforeReset = rig.Engine.BuildSnapshot();
+        Assert.Equal(day1Count, beforeReset!.Series.Count);
+
+        // Day 2 pre-open reset window start (09:25 ET): clear once and keep empty.
+        rig.Clock.SetTo(new DateTimeOffset(2026, 4, 17, 13, 25, 0, TimeSpan.Zero));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 203m, rig.Clock.UtcNow, previousClose: 200m));
+        var atReset = rig.Engine.BuildSnapshot();
+        Assert.Empty(atReset!.Series);
+
+        // During the same pre-open window, a second cycle must not re-clear
+        // again once today's reset has fired.
+        rig.Runtime.RecordSeriesPoint(new Hqqq.Contracts.Dtos.SeriesPointDto
+        {
+            Time = rig.Clock.UtcNow,
+            Nav = 123.45m,
+            Market = 456.78m,
+        });
+        rig.Clock.SetTo(new DateTimeOffset(2026, 4, 17, 13, 26, 0, TimeSpan.Zero));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 203m, rig.Clock.UtcNow, previousClose: 200m));
+        var sameWindow = rig.Engine.BuildSnapshot();
+        Assert.Single(sameWindow!.Series);
+
+        // Regular session opens at 09:30 ET: live series recording resumes.
+        rig.Clock.SetTo(new DateTimeOffset(2026, 4, 17, 13, 30, 0, TimeSpan.Zero));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 204m, rig.Clock.UtcNow, previousClose: 200m));
+        rig.Engine.OnTick(TestBasketBuilder.Tick("QQQ", 501m, rig.Clock.UtcNow, previousClose: 495m));
+        var day2Open = rig.Engine.BuildSnapshot();
+        Assert.True(day2Open!.Series.Count >= 2);
     }
 }

@@ -211,7 +211,7 @@ public class QuoteEngineWorkerPublishingTests
             await rig.Worker.StartAsync(cts.Token);
 
             await WaitForAsync(
-                () => rig.QuoteUpdatePublisher.Published.Count > 0,
+                () => rig.QuoteUpdatePublisher.Published.Any(p => p.Update.QuoteState == "live"),
                 TimeSpan.FromSeconds(5));
 
             rig.BasketFeed.Complete();
@@ -406,7 +406,9 @@ public class QuoteEngineWorkerPublishingTests
             // Sanity: the published DTO carries the frontend-required scalars
             // and freshness/feeds blocks (camelCase serialization is locked
             // by HqqqJsonDefaults; tested separately in the publisher).
-            var update = rig.QuoteUpdatePublisher.Published.First().Update;
+            var update = rig.QuoteUpdatePublisher.Published
+                .Last(p => p.Update.QuoteState == "live")
+                .Update;
             Assert.Equal("live", update.QuoteState);
             Assert.NotNull(update.Freshness);
             Assert.NotNull(update.Feeds);

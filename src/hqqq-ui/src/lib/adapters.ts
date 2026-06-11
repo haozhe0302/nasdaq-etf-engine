@@ -276,10 +276,12 @@ function trimSeriesToWindow(
   if (window.mode === "pre_open_empty") return [];
   if (window.mode === "passthrough") return series;
   if (window.windowStartUtcMs === null || window.windowEndUtcMs === null) return series;
+  const startUtcMs = window.windowStartUtcMs;
+  const endUtcMs = window.windowEndUtcMs;
 
   return series.filter((p) => {
     const ts = new Date(p.time).getTime();
-    return Number.isFinite(ts) && ts >= window.windowStartUtcMs && ts < window.windowEndUtcMs;
+    return Number.isFinite(ts) && ts >= startUtcMs && ts < endUtcMs;
   });
 }
 

@@ -54,8 +54,8 @@ public sealed class QuoteEngine : IQuoteEngine
     public void OnBasketActivated(ActiveBasket basket)
     {
         _baskets.Replace(basket);
-        // New basis implies a new series context — drop the ring buffer so
-        // future B3 wiring can't leak across basket versions. The legacy
+        // New basis implies a new series context — clear session-retained
+        // points so future B3 wiring can't leak across basket versions. The legacy
         // monolith does the same on a new-trading-day boundary.
         _runtime.ClearSeries();
         // Coordinator either restores a persisted calibration or downgrades

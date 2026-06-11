@@ -366,4 +366,36 @@ public class QuoteEnginePipelineTests
         var day2Open = rig.Engine.BuildSnapshot();
         Assert.True(day2Open!.Series.Count >= 2);
     }
+
+    [Fact]
+    public void Pipeline_SeriesRetention_DoesNotDropEarlySessionPoints_WhenCountExceedsLegacyCapacity()
+    {
+        var rig = BuildRig();
+        var basket = new TestBasketBuilder()
+            .WithScaleFactor(0.001m)
+            .AddConstituent("AAPL", "Apple", 1000, 200m, 1.0m)
+            .Build();
+
+        rig.Engine.OnBasketActivated(basket);
+
+        // Start at regular-session open (2026-04-16 13:30Z == 09:30 ET).
+        var sessionOpenUtc = new DateTimeOffset(2026, 4, 16, 13, 30, 0, TimeSpan.Zero);
+        rig.Clock.SetTo(sessionOpenUtc);
+
+        // Legacy ring capacity in this rig is 64. Record 80 points and verify
+        // the first point is still present (no overwrite-by-cap behavior).
+        const int pointsToRecord = 80;
+        for (var i = 0; i < pointsToRecord; i++)
+        {
+            rig.Engine.OnTick(TestBasketBuilder.Tick("AAPL", 200m + i, rig.Clock.UtcNow, previousClose: 199m));
+            rig.Engine.OnTick(TestBasketBuilder.Tick("QQQ", 500m + (i * 0.01m), rig.Clock.UtcNow, previousClose: 495m));
+            rig.Clock.Advance(TimeSpan.FromSeconds(5));
+        }
+
+        var snapshot = rig.Engine.BuildSnapshot();
+        Assert.NotNull(snapshot);
+        Assert.Equal(pointsToRecord, snapshot!.Series.Count);
+        Assert.Equal(sessionOpenUtc, snapshot.Series[0].Time);
+        Assert.Equal(200m, snapshot.Series[0].Nav);
+    }
 }

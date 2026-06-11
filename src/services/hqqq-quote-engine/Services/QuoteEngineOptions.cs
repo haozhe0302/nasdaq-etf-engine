@@ -32,7 +32,7 @@ public sealed class QuoteEngineOptions
 
     /// <summary>
     /// Cadence at which the materializer records a new point into the
-    /// series ring buffer. Matches the legacy
+    /// intraday series store. Matches the legacy
     /// <c>PricingOptions.SeriesRecordIntervalMs</c> default (5s).
     /// </summary>
     public TimeSpan SeriesRecordInterval { get; init; } = TimeSpan.FromSeconds(5);

@@ -28,10 +28,8 @@ public sealed class EngineRuntimeState
     public QuoteReadiness Readiness { get; private set; } = QuoteReadiness.Uninitialized;
     public string? PauseReason { get; private set; }
 
-    // ── Series ring buffer ──────────────────────────────────────
-    private readonly SeriesPointDto?[] _seriesBuffer;
-    private int _seriesHead;
-    private int _seriesCount;
+    // ── Session series storage (in insertion order) ────────────
+    private readonly List<SeriesPointDto> _seriesPoints = [];
 
     /// <summary>
     /// The single series point recorded during the most recent compute cycle,
@@ -44,7 +42,8 @@ public sealed class EngineRuntimeState
     {
         if (seriesCapacity <= 0)
             throw new ArgumentOutOfRangeException(nameof(seriesCapacity));
-        _seriesBuffer = new SeriesPointDto?[seriesCapacity];
+        // Keep ctor compatibility with existing wiring/tests that still pass a
+        // capacity value. Storage is now session-retained (not fixed-point-cap).
     }
 
     public void UpdateScalars(
@@ -85,9 +84,7 @@ public sealed class EngineRuntimeState
     {
         lock (_sync)
         {
-            _seriesBuffer[_seriesHead] = point;
-            _seriesHead = (_seriesHead + 1) % _seriesBuffer.Length;
-            if (_seriesCount < _seriesBuffer.Length) _seriesCount++;
+            _seriesPoints.Add(point);
             _latestSeriesPoint = point;
         }
     }
@@ -110,17 +107,8 @@ public sealed class EngineRuntimeState
     {
         lock (_sync)
         {
-            if (_seriesCount == 0) return [];
-
-            var result = new List<SeriesPointDto>(_seriesCount);
-            for (int i = 0; i < _seriesCount; i++)
-            {
-                var idx = (_seriesHead - _seriesCount + i + _seriesBuffer.Length)
-                    % _seriesBuffer.Length;
-                if (_seriesBuffer[idx] is { } point)
-                    result.Add(point);
-            }
-            return result;
+            if (_seriesPoints.Count == 0) return [];
+            return _seriesPoints.ToList();
         }
     }
 
@@ -128,9 +116,7 @@ public sealed class EngineRuntimeState
     {
         lock (_sync)
         {
-            Array.Clear(_seriesBuffer);
-            _seriesHead = 0;
-            _seriesCount = 0;
+            _seriesPoints.Clear();
             _latestSeriesPoint = null;
         }
     }

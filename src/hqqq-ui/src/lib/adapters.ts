@@ -170,6 +170,119 @@ export function toHealthStatus(s: string): HealthStatus {
   return "unknown";
 }
 
+// ── Session-window helpers for market series ────────
+
+type SessionWindowMode = "regular_open" | "closed_session" | "pre_open_empty" | "passthrough";
+
+export interface SessionSeriesWindow {
+  mode: SessionWindowMode;
+  windowStartUtcMs: number | null;
+  windowEndUtcMs: number | null;
+}
+
+function getEtDateParts(date: Date): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  return {
+    year: Number(parts.find((p) => p.type === "year")?.value ?? "1970"),
+    month: Number(parts.find((p) => p.type === "month")?.value ?? "01"),
+    day: Number(parts.find((p) => p.type === "day")?.value ?? "01"),
+  };
+}
+
+function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
+  const utcParsed = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+  const tzParsed = new Date(date.toLocaleString("en-US", { timeZone }));
+  return utcParsed.getTime() - tzParsed.getTime();
+}
+
+function etWallClockToUtcMs(year: number, month: number, day: number, hour: number, minute: number): number {
+  const localDate = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  return localDate.getTime() + getTimeZoneOffsetMs(localDate, "America/New_York");
+}
+
+function getEtRegularWindowForDate(year: number, month: number, day: number): { startUtcMs: number; endUtcMs: number } {
+  return {
+    startUtcMs: etWallClockToUtcMs(year, month, day, 9, 30),
+    endUtcMs: etWallClockToUtcMs(year, month, day, 16, 0),
+  };
+}
+
+function getMostRecentCompletedEtSessionWindow(nowUtcMs: number): { startUtcMs: number; endUtcMs: number } {
+  const now = new Date(nowUtcMs);
+  const p = getEtDateParts(now);
+  // Use 12:00 UTC as a stable anchor so ET conversion always stays on the
+  // intended calendar date while we walk backward by whole days.
+  let candidate = new Date(Date.UTC(p.year, p.month - 1, p.day, 12, 0, 0));
+  const todayWindow = getEtRegularWindowForDate(p.year, p.month, p.day);
+  const afterTodayClose = nowUtcMs >= todayWindow.endUtcMs;
+
+  if (!afterTodayClose) {
+    candidate.setUTCDate(candidate.getUTCDate() - 1);
+  }
+
+  while (true) {
+    const c = getEtDateParts(candidate);
+    const dow = new Date(Date.UTC(c.year, c.month - 1, c.day)).getUTCDay();
+    if (dow !== 0 && dow !== 6) {
+      return getEtRegularWindowForDate(c.year, c.month, c.day);
+    }
+    candidate.setUTCDate(candidate.getUTCDate() - 1);
+  }
+}
+
+export function resolveSessionSeriesWindow(
+  marketSession: MarketSessionInfo,
+  asOf: Date,
+  now: Date = new Date(),
+): SessionSeriesWindow {
+  const state = marketSession.state?.toLowerCase() ?? "unknown";
+  const refDate = new Date(asOf.getTime());
+  const refParts = getEtDateParts(refDate);
+  const regularWindow = getEtRegularWindowForDate(refParts.year, refParts.month, refParts.day);
+
+  if (state === "pre_open") {
+    return { mode: "pre_open_empty", windowStartUtcMs: null, windowEndUtcMs: null };
+  }
+
+  if (state === "regular_open" || marketSession.isRegularSessionOpen) {
+    return {
+      mode: "regular_open",
+      windowStartUtcMs: regularWindow.startUtcMs,
+      windowEndUtcMs: regularWindow.endUtcMs,
+    };
+  }
+
+  if (state !== "unknown") {
+    const closedWindow = getMostRecentCompletedEtSessionWindow(now.getTime());
+    return {
+      mode: "closed_session",
+      windowStartUtcMs: closedWindow.startUtcMs,
+      windowEndUtcMs: closedWindow.endUtcMs,
+    };
+  }
+
+  return { mode: "passthrough", windowStartUtcMs: null, windowEndUtcMs: null };
+}
+
+function trimSeriesToWindow(
+  series: TimeSeriesPoint[],
+  window: SessionSeriesWindow,
+): TimeSeriesPoint[] {
+  if (window.mode === "pre_open_empty") return [];
+  if (window.mode === "passthrough") return series;
+  if (window.windowStartUtcMs === null || window.windowEndUtcMs === null) return series;
+
+  return series.filter((p) => {
+    const ts = new Date(p.time).getTime();
+    return Number.isFinite(ts) && ts >= window.windowStartUtcMs && ts < window.windowEndUtcMs;
+  });
+}
+
 // ── Quote → MarketSnapshot ──────────────────────────
 
 export function adaptQuote(raw: unknown): MarketSnapshot {
@@ -181,7 +294,7 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     ? now - new Date(q.freshness.lastTickUtc).getTime()
     : 0;
 
-  const series: TimeSeriesPoint[] = q.series.map((p) => ({
+  const rawSeries: TimeSeriesPoint[] = q.series.map((p) => ({
     time: p.time,
     nav: p.nav,
     market: p.market,
@@ -213,6 +326,9 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     isTradingDay: q.feeds.isTradingDay ?? false,
     nextOpenUtc: q.feeds.nextOpenUtc ?? null,
   };
+  const asOf = new Date(q.asOf);
+  const window = resolveSessionSeriesWindow(marketSession, asOf, asOf);
+  const series = trimSeriesToWindow(rawSeries, window);
 
   return {
     nav: q.nav,
@@ -222,7 +338,7 @@ export function adaptQuote(raw: unknown): MarketSnapshot {
     qqq: q.qqq,
     qqqChangePct: q.qqqChangePct ?? 0,
     basketValueB: q.basketValueB,
-    asOf: new Date(q.asOf),
+    asOf,
     series,
     movers,
     freshness,
@@ -408,13 +524,6 @@ function buildFeeds(f: FeedFields): FeedStatus[] {
 
 // ── Merge a slim delta into a full MarketSnapshot ───
 
-const REGULAR_SESSION_MS = 6.5 * 60 * 60 * 1_000; // 9:30–16:00 ET
-const SERIES_RECORD_INTERVAL_MS = 5_000; // matches backend PricingOptions.SeriesRecordIntervalMs (history uses HistoryRecordIntervalMs = 15s separately)
-
-/** Client-side cap: covers a full regular trading day plus a small buffer. */
-export const MAX_SERIES_POINTS =
-  Math.ceil(REGULAR_SESSION_MS / SERIES_RECORD_INTERVAL_MS) + 120;
-
 export function mergeQuoteDelta(
   prev: MarketSnapshot,
   delta: QuoteDelta,
@@ -434,10 +543,9 @@ export function mergeQuoteDelta(
       }
       // incoming.time < lastTs → stale/out-of-order, ignore
     }
-    if (series.length > MAX_SERIES_POINTS) {
-      series = series.slice(series.length - MAX_SERIES_POINTS);
-    }
   }
+  const window = resolveSessionSeriesWindow(delta.marketSession, delta.asOf, delta.asOf);
+  series = trimSeriesToWindow(series, window);
 
   return {
     nav: delta.nav,

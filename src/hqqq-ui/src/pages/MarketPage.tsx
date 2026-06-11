@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { useMarketData } from "@/lib/hooks";
+import { resolveSessionSeriesWindow } from "@/lib/adapters";
 import { Panel } from "@/components/Panel";
 import { StatCard } from "@/components/StatCard";
 import { Chart } from "@/components/Chart";
@@ -45,6 +46,10 @@ function getEtDateParts(date: Date): { year: string; month: string; day: string 
 function getEtTodayKey(date: Date): string {
   const p = getEtDateParts(date);
   return `${p.year}-${p.month}-${p.day}`;
+}
+
+function getFallbackBoundsUtc(): { open: number; close: number } {
+  return getMarketBoundsUtc();
 }
 
 function formatEtTime(utcMs: number): string {
@@ -114,7 +119,13 @@ export function MarketPage() {
   const { data: d, connectionState, error } = useMarketData();
   // Recompute once per ET date so long-lived tabs don't keep yesterday's axis.
   const etTodayKey = getEtTodayKey(new Date());
-  const bounds = useMemo(() => getMarketBoundsUtc(), [etTodayKey]);
+  const bounds = useMemo(() => {
+    const window = resolveSessionSeriesWindow(d.marketSession, d.asOf, new Date());
+    if (window.windowStartUtcMs !== null && window.windowEndUtcMs !== null) {
+      return { open: window.windowStartUtcMs, close: window.windowEndUtcMs };
+    }
+    return getFallbackBoundsUtc();
+  }, [d.marketSession, d.asOf, etTodayKey]);
   const hasSeries = d.series.length > 0;
   const networkLatencyMs = Number.isFinite(d.freshness.networkLatencyMs)
     ? d.freshness.networkLatencyMs

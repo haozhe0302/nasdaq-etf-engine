@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   adaptQuoteDelta,
   mergeQuoteDelta,
-  MAX_SERIES_POINTS,
   adaptQuote,
   adaptConstituents,
+  resolveSessionSeriesWindow,
 } from "./adapters";
 import type { MarketSnapshot, TimeSeriesPoint } from "./types";
 
@@ -165,16 +165,79 @@ describe("adaptQuoteDelta", () => {
   });
 });
 
-// ── MAX_SERIES_POINTS derivation ────────────────────
+// ── Session window resolution ───────────────────────
 
-describe("MAX_SERIES_POINTS", () => {
-  it("covers a full 6.5-hour trading session at 5s cadence", () => {
-    const pointsInSession = Math.ceil((6.5 * 60 * 60 * 1_000) / 5_000);
-    expect(MAX_SERIES_POINTS).toBeGreaterThanOrEqual(pointsInSession);
+describe("resolveSessionSeriesWindow", () => {
+  it("returns today's regular session window when regular_open", () => {
+    const asOf = new Date("2026-04-17T19:40:00Z"); // 15:40 ET
+    const now = new Date("2026-04-17T19:40:00Z");
+    const w = resolveSessionSeriesWindow(
+      {
+        state: "regular_open",
+        label: "Regular Session",
+        isRegularSessionOpen: true,
+        isTradingDay: true,
+        nextOpenUtc: null,
+      },
+      asOf,
+      now,
+    );
+    expect(w.mode).toBe("regular_open");
+    expect(w.windowStartUtcMs).not.toBeNull();
+    expect(w.windowEndUtcMs).not.toBeNull();
   });
 
-  it("is not excessively large", () => {
-    expect(MAX_SERIES_POINTS).toBeLessThan(6_000);
+  it("returns most recent completed session when closed", () => {
+    const asOf = new Date("2026-04-11T13:10:00Z"); // Saturday 09:10 ET
+    const now = new Date("2026-04-11T13:10:00Z");
+    const w = resolveSessionSeriesWindow(
+      {
+        state: "closed",
+        label: "Closed",
+        isRegularSessionOpen: false,
+        isTradingDay: false,
+        nextOpenUtc: null,
+      },
+      asOf,
+      now,
+    );
+    expect(w.mode).toBe("closed_session");
+    expect(w.windowStartUtcMs).not.toBeNull();
+    expect(w.windowEndUtcMs).not.toBeNull();
+    // Last completed session should be Friday close window.
+    expect(new Date(w.windowStartUtcMs!).toISOString().startsWith("2026-04-10")).toBe(true);
+  });
+
+  it("returns empty mode during pre_open", () => {
+    const w = resolveSessionSeriesWindow(
+      {
+        state: "pre_open",
+        label: "Pre-open",
+        isRegularSessionOpen: false,
+        isTradingDay: true,
+        nextOpenUtc: null,
+      },
+      new Date("2026-04-17T13:26:00Z"),
+      new Date("2026-04-17T13:26:00Z"),
+    );
+    expect(w.mode).toBe("pre_open_empty");
+    expect(w.windowStartUtcMs).toBeNull();
+    expect(w.windowEndUtcMs).toBeNull();
+  });
+
+  it("returns passthrough for unknown state", () => {
+    const w = resolveSessionSeriesWindow(
+      {
+        state: "unknown",
+        label: "",
+        isRegularSessionOpen: false,
+        isTradingDay: false,
+        nextOpenUtc: null,
+      },
+      new Date("2026-04-17T15:00:00Z"),
+      new Date("2026-04-17T15:00:00Z"),
+    );
+    expect(w.mode).toBe("passthrough");
   });
 });
 
@@ -251,24 +314,92 @@ describe("mergeQuoteDelta", () => {
     expect(merged.series[0].time).toBe("2026-04-05T14:00:00Z");
   });
 
-  it("caps series at MAX_SERIES_POINTS", () => {
-    const bigSeries: TimeSeriesPoint[] = Array.from(
-      { length: MAX_SERIES_POINTS },
-      (_, i) => ({
-        time: `2026-04-05T10:${String(i).padStart(4, "0")}Z`,
-        nav: 100 + i * 0.01,
-        market: 400 + i * 0.01,
+  it("keeps morning data at 15:40 regular session (no fixed-point truncation)", () => {
+    const prev = makeSnapshot([
+      { time: "2026-04-05T13:49:00Z", nav: 99, market: 399 }, // 09:49 ET
+      { time: "2026-04-05T19:39:00Z", nav: 100, market: 400 }, // 15:39 ET
+    ]);
+    const delta = adaptQuoteDelta(
+      makeBackendDelta({
+        asOf: "2026-04-05T19:40:00Z", // 15:40 ET
+        latestSeriesPoint: { time: "2026-04-05T19:40:00Z", nav: 101, market: 401 },
+        feeds: {
+          webSocketConnected: true,
+          fallbackActive: false,
+          pricingActive: true,
+          basketState: "active",
+          pendingActivationBlocked: false,
+          pendingBlockedReason: null,
+          marketSessionState: "regular_open",
+          isRegularSessionOpen: true,
+          isTradingDay: true,
+          nextOpenUtc: null,
+          sessionLabel: "Regular Session",
+        },
       }),
     );
-    const prev = makeSnapshot(bigSeries);
-    const delta = makeDeltaWith("2026-04-05T20:00:00Z", 200, 500);
     const merged = mergeQuoteDelta(prev, delta);
+    expect(merged.series.map((p) => p.time)).toContain("2026-04-05T13:49:00Z");
+    expect(merged.series.map((p) => p.time)).toContain("2026-04-05T19:40:00Z");
+  });
 
-    expect(merged.series).toHaveLength(MAX_SERIES_POINTS);
-    expect(merged.series[merged.series.length - 1].time).toBe(
-      "2026-04-05T20:00:00Z",
+  it("keeps last completed session during closed state", () => {
+    const prev = makeSnapshot([
+      { time: "2026-04-10T13:30:00Z", nav: 90, market: 390 }, // Friday 09:30 ET
+      { time: "2026-04-10T19:59:00Z", nav: 95, market: 395 }, // Friday 15:59 ET
+      { time: "2026-04-11T13:10:00Z", nav: 96, market: 396 }, // Saturday stray point
+    ]);
+    const delta = adaptQuoteDelta(
+      makeBackendDelta({
+        asOf: "2026-04-11T13:10:00Z", // Saturday 09:10 ET
+        latestSeriesPoint: null,
+        feeds: {
+          webSocketConnected: true,
+          fallbackActive: false,
+          pricingActive: true,
+          basketState: "active",
+          pendingActivationBlocked: false,
+          pendingBlockedReason: null,
+          marketSessionState: "closed",
+          isRegularSessionOpen: false,
+          isTradingDay: false,
+          nextOpenUtc: null,
+          sessionLabel: "Closed",
+        },
+      }),
     );
-    expect(merged.series[0].time).not.toBe(bigSeries[0].time);
+    const merged = mergeQuoteDelta(prev, delta);
+    expect(merged.series.map((p) => p.time)).toContain("2026-04-10T13:30:00Z");
+    expect(merged.series.map((p) => p.time)).toContain("2026-04-10T19:59:00Z");
+    expect(merged.series.map((p) => p.time)).not.toContain("2026-04-11T13:10:00Z");
+  });
+
+  it("returns empty series during pre_open", () => {
+    const prev = makeSnapshot([
+      { time: "2026-04-10T13:30:00Z", nav: 90, market: 390 },
+      { time: "2026-04-10T19:59:00Z", nav: 95, market: 395 },
+    ]);
+    const delta = adaptQuoteDelta(
+      makeBackendDelta({
+        asOf: "2026-04-11T13:26:00Z",
+        latestSeriesPoint: null,
+        feeds: {
+          webSocketConnected: true,
+          fallbackActive: false,
+          pricingActive: true,
+          basketState: "active",
+          pendingActivationBlocked: false,
+          pendingBlockedReason: null,
+          marketSessionState: "pre_open",
+          isRegularSessionOpen: false,
+          isTradingDay: true,
+          nextOpenUtc: null,
+          sessionLabel: "Pre-open",
+        },
+      }),
+    );
+    const merged = mergeQuoteDelta(prev, delta);
+    expect(merged.series).toHaveLength(0);
   });
 
   it("replaces movers and freshness from delta", () => {
@@ -314,6 +445,11 @@ describe("reconnect full snapshot replace", () => {
         basketState: "active",
         pendingActivationBlocked: false,
         pendingBlockedReason: null,
+        marketSessionState: "regular_open",
+        isRegularSessionOpen: true,
+        isTradingDay: true,
+        nextOpenUtc: null,
+        sessionLabel: "Regular Session",
       },
     };
     const snapshot = adaptQuote(fullBackend);
@@ -356,6 +492,11 @@ describe("reconnect full snapshot replace", () => {
         basketState: "active",
         pendingActivationBlocked: false,
         pendingBlockedReason: null,
+        marketSessionState: "regular_open",
+        isRegularSessionOpen: true,
+        isTradingDay: true,
+        nextOpenUtc: null,
+        sessionLabel: "Regular Session",
       },
     };
     const freshSnapshot = adaptQuote(freshBackend);
